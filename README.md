@@ -1,6 +1,7 @@
 # discopt
 
 [![CI](https://github.com/jkitchin/discopt/actions/workflows/ci.yml/badge.svg)](https://github.com/jkitchin/discopt/actions/workflows/ci.yml)
+[![Nightly](https://github.com/jkitchin/discopt/actions/workflows/nightly.yml/badge.svg)](https://github.com/jkitchin/discopt/actions/workflows/nightly.yml)
 
 A hybrid Mixed-Integer Nonlinear Programming (MINLP) solver combining a Rust backend, JAX automatic differentiation, and Python orchestration. Solves MINLP problems via NLP-based spatial Branch & Bound with JIT-compiled objective/gradient/Hessian evaluation.
 

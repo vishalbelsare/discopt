@@ -1,10 +1,9 @@
-name: CI
+name: Nightly
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  schedule:
+    - cron: "0 6 * * *" # 6 AM UTC daily
+  workflow_dispatch: # manual trigger
 
 jobs:
   rust:
@@ -22,18 +21,26 @@ jobs:
       - run: cargo test -p discopt-core
       - run: cargo clippy -p discopt-core -- -D warnings
 
-  python-fast:
-    name: Python fast (3.12, ubuntu)
-    runs-on: ubuntu-latest
+  python-full:
+    name: Python ${{ matrix.python-version }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Install system dependencies (Ipopt)
         run: |
-          sudo apt-get update && sudo apt-get install -y coinor-libipopt-dev liblapack-dev libblas-dev gfortran
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y coinor-libipopt-dev liblapack-dev libblas-dev gfortran
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            brew install ipopt
+          fi
       - name: Install Python dependencies
         run: |
           python -m venv .venv
@@ -50,10 +57,10 @@ jobs:
         run: |
           source .venv/bin/activate
           mypy python/discopt/
-      - name: Test (fast — excludes solve-heavy tests)
+      - name: Test (full suite including MINLPLib solves)
         run: |
           source .venv/bin/activate
-          pytest python/tests/ -v --timeout=120 --ignore=python/tests/test_minlplib.py --ignore=python/tests/test_correctness.py
+          pytest python/tests/ -v --timeout=1800
         env:
           JAX_PLATFORMS: cpu
           JAX_ENABLE_X64: "1"
