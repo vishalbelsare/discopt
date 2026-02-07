@@ -52,12 +52,12 @@ def _random_points(key, lb, ub, n=N_POINTS):
 def _check_soundness(cv, cc, true_val, label=""):
     """Assert the non-negotiable soundness invariant."""
     msg = f" [{label}]" if label else ""
-    assert jnp.all(
-        cv <= true_val + TOL
-    ), f"cv > f(x){msg}: max violation = {jnp.max(cv - true_val)}"
-    assert jnp.all(
-        cc >= true_val - TOL
-    ), f"cc < f(x){msg}: max violation = {jnp.max(true_val - cc)}"
+    assert jnp.all(cv <= true_val + TOL), (
+        f"cv > f(x){msg}: max violation = {jnp.max(cv - true_val)}"
+    )
+    assert jnp.all(cc >= true_val - TOL), (
+        f"cc < f(x){msg}: max violation = {jnp.max(true_val - cc)}"
+    )
     assert jnp.all(cv <= cc + TOL), f"cv > cc{msg}: max violation = {jnp.max(cv - cc)}"
 
 

@@ -90,9 +90,9 @@ class TestGradient:
                 obj_minus = ev.evaluate_objective(x_minus)
                 fd_grad[i] = (obj_plus - obj_minus) / (2 * eps)
 
-            assert np.allclose(
-                grad, fd_grad, atol=1e-6
-            ), f"Gradient mismatch at {x}: AD={grad}, FD={fd_grad}"
+            assert np.allclose(grad, fd_grad, atol=1e-6), (
+                f"Gradient mismatch at {x}: AD={grad}, FD={fd_grad}"
+            )
 
     def test_gradient_shape(self):
         m = examples.example_simple_minlp()
@@ -139,9 +139,9 @@ class TestHessian:
                 g_minus = ev.evaluate_gradient(x_minus)
                 fd_hess[i, :] = (g_plus - g_minus) / (2 * eps)
 
-            assert np.allclose(
-                hess, fd_hess, atol=1e-4
-            ), f"Hessian mismatch:\nAD:\n{hess}\nFD:\n{fd_hess}"
+            assert np.allclose(hess, fd_hess, atol=1e-4), (
+                f"Hessian mismatch:\nAD:\n{hess}\nFD:\n{fd_hess}"
+            )
 
     def test_hessian_shape(self):
         m = examples.example_simple_minlp()
@@ -218,9 +218,9 @@ class TestJacobian:
                 c_minus = ev.evaluate_constraints(x_minus)
                 fd_jac[:, i] = (c_plus - c_minus) / (2 * eps)
 
-            assert np.allclose(
-                jac, fd_jac, atol=1e-5
-            ), f"Jacobian mismatch:\nAD:\n{jac}\nFD:\n{fd_jac}"
+            assert np.allclose(jac, fd_jac, atol=1e-5), (
+                f"Jacobian mismatch:\nAD:\n{jac}\nFD:\n{fd_jac}"
+            )
 
     def test_jacobian_shape(self):
         m = examples.example_simple_minlp()

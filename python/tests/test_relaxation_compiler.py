@@ -364,9 +364,9 @@ class TestGapMonotonicity:
 
         # Gap should be monotonically non-increasing as bounds tighten
         for i in range(len(gaps) - 1):
-            assert (
-                gaps[i] >= gaps[i + 1] - 1e-8
-            ), f"Gap increased: {gaps[i]:.6f} -> {gaps[i + 1]:.6f} at step {i} -> {i + 1}"
+            assert gaps[i] >= gaps[i + 1] - 1e-8, (
+                f"Gap increased: {gaps[i]:.6f} -> {gaps[i + 1]:.6f} at step {i} -> {i + 1}"
+            )
 
     def test_gap_approaches_zero_at_point(self):
         """When bounds collapse to a point, gap should be ~0."""
@@ -456,12 +456,12 @@ class TestLinearExact:
             x_val = _random_point_in_bounds(lb, ub, rng)
             cv, cc = relax_fn(x_val, x_val, lb, ub)
             true_val = true_fn(x_val)
-            assert jnp.allclose(
-                cv, true_val, atol=1e-10
-            ), f"cv={float(cv)} != true={float(true_val)}"
-            assert jnp.allclose(
-                cc, true_val, atol=1e-10
-            ), f"cc={float(cc)} != true={float(true_val)}"
+            assert jnp.allclose(cv, true_val, atol=1e-10), (
+                f"cv={float(cv)} != true={float(true_val)}"
+            )
+            assert jnp.allclose(cc, true_val, atol=1e-10), (
+                f"cc={float(cc)} != true={float(true_val)}"
+            )
 
     def test_multivariate_linear_exact(self):
         """Linear expression in multiple variables should be exact."""
