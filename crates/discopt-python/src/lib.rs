@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 
 mod batch;
+mod bnb_bindings;
 mod expr_bindings;
 mod nl_bindings;
 
@@ -15,6 +16,7 @@ fn version() -> &'static str {
 fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_class::<batch::PyBatchDispatcher>()?;
+    m.add_class::<bnb_bindings::PyTreeManager>()?;
     m.add_class::<expr_bindings::PyModelRepr>()?;
     m.add_function(wrap_pyfunction!(expr_bindings::model_to_repr, m)?)?;
     m.add_function(wrap_pyfunction!(nl_bindings::parse_nl_file, m)?)?;
