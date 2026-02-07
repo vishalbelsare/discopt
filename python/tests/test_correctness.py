@@ -182,8 +182,10 @@ def _compute_exp_nlp_optimum() -> float:
     """Compute exact optimum for exp_nlp via KKT conditions."""
     from scipy.optimize import fsolve
 
-    def eq(y_val: float) -> float:
-        return math.exp(1.0 - y_val) - 2.0 * y_val
+    def eq(y_val):
+        import numpy as np
+
+        return np.exp(1.0 - y_val) - 2.0 * y_val
 
     y_opt = float(fsolve(eq, 0.7)[0])
     x_opt = 1.0 - y_opt
