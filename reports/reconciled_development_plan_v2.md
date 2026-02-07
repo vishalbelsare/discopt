@@ -27,7 +27,7 @@ The project is named **discopt** (discrete optimization). All code, packages, im
 Two repos under `github.com/discopt-org/`:
 
 ```
-discopt-org/ipopt-rs          ← EPL-2.0, standalone Rust NLP solver
+discopt-org/ripopt          ← EPL-2.0, standalone Rust NLP solver
   ├── Cargo.toml
   ├── LICENSE-EPL-2.0
   ├── NOTICE                  (attribution to COIN-OR Ipopt project)
@@ -43,13 +43,13 @@ discopt-org/ipopt-rs          ← EPL-2.0, standalone Rust NLP solver
   └── tests/
 
 discopt-org/discopt           ← MIT/Apache-2.0, monorepo for everything else
-  ├── Cargo.toml              (workspace, depends on ipopt-rs)
+  ├── Cargo.toml              (workspace, depends on ripopt)
   ├── LICENSE-MIT
   ├── LICENSE-APACHE
   ├── pyproject.toml           (maturin build-backend)
   ├── crates/
   │   ├── discopt-core/        (Rust: B&B engine, expression IR, presolve)
-  │   └── discopt-python/      (Rust: PyO3 bindings, wraps discopt-core + ipopt-rs)
+  │   └── discopt-python/      (Rust: PyO3 bindings, wraps discopt-core + ripopt)
   ├── python/discopt/          (Python/JAX: modeling API, DAG compiler, McCormick,
   │   ├── __init__.py            differentiable solving, batch evaluator)
   │   ├── _jax/
@@ -61,17 +61,17 @@ discopt-org/discopt           ← MIT/Apache-2.0, monorepo for everything else
 ```
 
 **Why two repos, not one:**
-1. **License clarity.** `ipopt-rs` is EPL-2.0 (derivative of Ipopt). Everything else is MIT/Apache-2.0. Separate repos make this unambiguous — one license per repo, no confusion for contributors.
-2. **Standalone value.** `ipopt-rs` is useful to the Rust ecosystem independent of discopt. A standalone crate on crates.io attracts contributors and users who don't need MINLP.
-3. **Loose coupling.** `ipopt-rs` exposes a `NlpProblem` trait + `solve()`. `discopt-core` implements that trait. This is a clean crate dependency, not interleaved code.
+1. **License clarity.** `ripopt` is EPL-2.0 (derivative of Ipopt). Everything else is MIT/Apache-2.0. Separate repos make this unambiguous — one license per repo, no confusion for contributors.
+2. **Standalone value.** `ripopt` is useful to the Rust ecosystem independent of discopt. A standalone crate on crates.io attracts contributors and users who don't need MINLP.
+3. **Loose coupling.** `ripopt` exposes a `NlpProblem` trait + `solve()`. `discopt-core` implements that trait. This is a clean crate dependency, not interleaved code.
 
 **Development workflow:** During development, `discopt/Cargo.toml` uses a path dependency:
 ```toml
 [workspace.dependencies]
-ipopt-rs = { path = "../ipopt-rs" }   # local during development
-# ipopt-rs = "0.1"                    # crates.io for releases
+ripopt = { path = "../ripopt" }   # local during development
+# ripopt = "0.1"                    # crates.io for releases
 ```
-Clone both repos side by side. Changes to `ipopt-rs` are immediately visible in discopt without publishing. No git submodules needed — Cargo path dependencies are the right mechanism.
+Clone both repos side by side. Changes to `ripopt` are immediately visible in discopt without publishing. No git submodules needed — Cargo path dependencies are the right mechanism.
 
 ### 0.2 Build-vs-Buy: Translate Ipopt to Rust; Use HiGHS for LP
 
@@ -80,7 +80,7 @@ Clone both repos side by side. Changes to `ipopt-rs` are immediately visible in 
 | Component | Phase 1 (early) | Phase 1 (late) | Phase 2+ |
 |-----------|----------------|----------------|----------|
 | LP solver | HiGHS (via highspy, MIT) | HiGHS | Custom JAX GPU LP (dense Cholesky) |
-| NLP solver | cyipopt (scaffolding) | Rust Ipopt (`ipopt-rs`) | Rust Ipopt adapted for vmap/GPU |
+| NLP solver | cyipopt (scaffolding) | Rust Ipopt (`ripopt`) | Rust Ipopt adapted for vmap/GPU |
 | Sparse LA | Ipopt's MUMPS | faer (Rust, MIT) | Dense JAX Cholesky + faer |
 | B&B engine | Custom Rust (core deliverable) | Same | Same, enhanced |
 | DAG compiler | Custom JAX (core deliverable) | Same | Same |
@@ -98,10 +98,10 @@ Translation is the lowest-risk path: each Rust function can be validated against
 
 Ipopt is licensed under the Eclipse Public License 2.0. A line-by-line translation to Rust is almost certainly a derivative work, requiring the Rust translation to also be distributed under EPL-2.0.
 
-**Decision: Dual-repo licensing.** The Rust Ipopt translation lives in its own repository (`discopt-org/ipopt-rs`) under EPL-2.0. The main discopt repository (`discopt-org/discopt`) is MIT/Apache-2.0 and depends on `ipopt-rs` as a Cargo crate dependency. EPL-2.0 explicitly permits this — it is not a "viral" license like GPL. See Section 0.1 for the full repository structure.
+**Decision: Dual-repo licensing.** The Rust Ipopt translation lives in its own repository (`discopt-org/ripopt`) under EPL-2.0. The main discopt repository (`discopt-org/discopt`) is MIT/Apache-2.0 and depends on `ripopt` as a Cargo crate dependency. EPL-2.0 explicitly permits this — it is not a "viral" license like GPL. See Section 0.1 for the full repository structure.
 
 **Alternative paths considered:**
-- **(a) Clean-room reimplementation**: Study Ipopt's algorithms from published papers (Wächter & Biegler 2006), then reimplement from mathematical description without reference to source code. Produces fully MIT-licensable code but loses edge-case hardening. Higher risk. Could be done later as a clean-room replacement for `ipopt-rs` if EPL becomes a problem.
+- **(a) Clean-room reimplementation**: Study Ipopt's algorithms from published papers (Wächter & Biegler 2006), then reimplement from mathematical description without reference to source code. Produces fully MIT-licensable code but loses edge-case hardening. Higher risk. Could be done later as a clean-room replacement for `ripopt` if EPL becomes a problem.
 - **(b) Upstream relicensing**: Contact COIN-OR / Ipopt maintainers about adding MIT/Apache as a secondary license under EPL-2.0 Section 3. Worth attempting but unlikely to succeed quickly for a multi-contributor codebase.
 - **(c) Functional API boundary**: If the translation produces sufficiently different internal architecture (different data structures, memory layout, linear algebra backend), it may qualify as an independent implementation. Legal gray area.
 
@@ -217,8 +217,8 @@ PHASE 3-4 (Months 20-42):
 ### WS1: Rust Infrastructure & Expression IR (Months 1-3)
 
 **Delivers:**
-- Two repositories: `discopt-org/ipopt-rs` (Rust crate, EPL-2.0) and `discopt-org/discopt` (monorepo, MIT/Apache-2.0)
-- Cargo workspace in `discopt`: `discopt-core` (pure Rust lib) + `discopt-python` (PyO3 bindings), with `ipopt-rs` as a path dependency
+- Two repositories: `discopt-org/ripopt` (Rust crate, EPL-2.0) and `discopt-org/discopt` (monorepo, MIT/Apache-2.0)
+- Cargo workspace in `discopt`: `discopt-core` (pure Rust lib) + `discopt-python` (PyO3 bindings), with `ripopt` as a path dependency
 - `pyproject.toml` with maturin build-backend; `maturin develop` produces `discopt._rust`
 - Expression graph IR in Rust (`ExprNode` enum arena-allocated DAG) mirroring Python DAG types from `core.py` (lines 60-400)
 - `impl From<PyModel> for ModelRepr` — walks Python expression tree, builds Rust arena
@@ -345,7 +345,7 @@ PHASE 3-4 (Months 20-42):
 - HSL linear solvers (separate proprietary license)
 
 **Delivers:**
-- `discopt-org/ipopt-rs` — standalone Rust crate in its own repository (EPL-2.0 licensed)
+- `discopt-org/ripopt` — standalone Rust crate in its own repository (EPL-2.0 licensed)
   - `src/ipm.rs`: Core IPM iteration (filter line search)
   - `src/kkt.rs`: KKT system assembly and factorization via faer
   - `src/filter.rs`: Filter acceptance criteria
@@ -354,7 +354,7 @@ PHASE 3-4 (Months 20-42):
   - `src/problem.rs`: NLP problem trait (objective, gradient, Jacobian, Hessian callbacks)
   - `src/result.rs`: Solution struct (x, multipliers, status)
 - In the `discopt-org/discopt` monorepo:
-  - `crates/discopt-python/src/nlp_ipopt_rs.rs`: PyO3 bindings exposing `ipopt-rs` to Python
+  - `crates/discopt-python/src/nlp_ipopt_rs.rs`: PyO3 bindings exposing `ripopt` to Python
   - `python/discopt/solvers/nlp_ipopt_rs.py`: Python wrapper implementing `SolverBackend`
 
 **Verification (translation correctness):**
@@ -495,7 +495,7 @@ sol = solve_instance(name)  # No more catch — failures are real failures
 
 **Delivers:**
 - `discopt/_jax/ipm.py`: JAX-wrapped Rust Ipopt (Tier 1, dense GPU)
-  - Same algorithm as `ipopt-rs`, but KKT factorization via `jax.scipy.linalg.cholesky`
+  - Same algorithm as `ripopt`, but KKT factorization via `jax.scipy.linalg.cholesky`
   - `jax.jit` + `jax.vmap` compatible — the key requirement
   - Covers problems up to ~5,000 variables in batch mode
 - `discopt/_jax/ipm_iterative.py`: PCG iterative solver (Tier 2)
@@ -595,7 +595,7 @@ sol = solve_instance(name)  # No more catch — failures are real failures
 **WS10-d: Release Engineering (Months 36-42)**
 - Documentation: API docs, tutorials, mathematical ADRs
 - 3-5 example notebooks (modeling, batch solving, sensitivity analysis)
-- v1.0 release: `discopt` under MIT/Apache-2.0, `ipopt-rs` under EPL-2.0
+- v1.0 release: `discopt` under MIT/Apache-2.0, `ripopt` under EPL-2.0
 
 ---
 
@@ -709,7 +709,7 @@ Tasks are organized by execution order. Each task includes its work stream, depe
 | # | Task | WS | Blocked By | Test | Acceptance |
 |---|------|----|-----------|------|------------|
 | T0 | Architectural spike: Rust↔JAX GPU batch latency | WS0 | — | `test_spike.py` | Latency < 100μs, GPU ≥ 10x at batch 512 |
-| T1 | Create repos: `discopt-org/ipopt-rs` + `discopt-org/discopt` with Cargo workspace | WS1 | — | `test_rust_ir.py` (build) | Both repos created, `cargo build` succeeds in both, `maturin develop` produces `discopt._rust`, path dependency wired |
+| T1 | Create repos: `discopt-org/ripopt` + `discopt-org/discopt` with Cargo workspace | WS1 | — | `test_rust_ir.py` (build) | Both repos created, `cargo build` succeeds in both, `maturin develop` produces `discopt._rust`, path dependency wired |
 
 **T0 and T1 run in parallel.** T1 is 1-2 days of setup (create GitHub org, two repos, cargo workspaces, pyproject.toml, maturin, path dependency). T0 is a 2-4 week validation. T1 no longer waits for T0 go/no-go — the Rust workspace is needed immediately for the Ipopt translation (T9a). If T0 fails, the architecture is redesigned but the Ipopt translation work is still valuable.
 
@@ -843,7 +843,7 @@ Each mock is created as part of its owning work stream's test deliverables and p
 | Infrastructure without solver | MEDIUM | First solve at Month 5-6 using HiGHS+cyipopt scaffolding | T14 |
 | From-scratch IPM correctness | **ELIMINATED** | Ipopt-to-Rust translation preserves 20yr of edge-case handling | T9a, T9b |
 | Ipopt translation takes longer than expected | MEDIUM | cyipopt remains as fallback throughout Phase 1; translation can extend into Phase 2 without blocking | T9, T9a |
-| EPL-2.0 license friction | LOW | Dual-module licensing (`ipopt-rs` under EPL-2.0, discopt under MIT); pursue upstream relicensing conversation | Section 0.2a |
+| EPL-2.0 license friction | LOW | Dual-module licensing (`ripopt` under EPL-2.0, discopt under MIT); pursue upstream relicensing conversation | Section 0.2a |
 
 ---
 
