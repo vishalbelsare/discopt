@@ -16,11 +16,9 @@ import pytest
 sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
 sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/python")
 
-from jaxminlp_api.core import Constant, Model, ObjectiveSense
-from jaxminlp_api import examples
-
 from discopt._jax.nlp_evaluator import NLPEvaluator
-
+from jaxminlp_api import examples
+from jaxminlp_api.core import Model
 
 # ─────────────────────────────────────────────────────────────
 # Helpers
@@ -90,7 +88,9 @@ class TestGradient:
                 x_minus = x.copy()
                 x_plus[i] += eps
                 x_minus[i] -= eps
-                fd_grad[i] = (ev.evaluate_objective(x_plus) - ev.evaluate_objective(x_minus)) / (2 * eps)
+                obj_plus = ev.evaluate_objective(x_plus)
+                obj_minus = ev.evaluate_objective(x_minus)
+                fd_grad[i] = (obj_plus - obj_minus) / (2 * eps)
 
             assert np.allclose(grad, fd_grad, atol=1e-6), (
                 f"Gradient mismatch at {x}: AD={grad}, FD={fd_grad}"

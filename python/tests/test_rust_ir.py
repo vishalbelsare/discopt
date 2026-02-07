@@ -7,8 +7,9 @@ Validates:
 - Variable info: names, bounds, types, shapes
 """
 
-import sys
 import os
+import sys
+
 import numpy as np
 import pytest
 
@@ -17,16 +18,15 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..",
                                 "jaxminlp_benchmarks"))
 
 import jaxminlp_api as jm  # noqa: E402
-from jaxminlp_api.examples import (  # noqa: E402
-    example_simple_minlp,
-    example_pooling_haverly,
-    example_reactor_design,
-    example_parametric,
-)
 
 # Import the Rust bindings
-from discopt._rust import model_to_repr, PyModelRepr  # noqa: E402
-
+from discopt._rust import PyModelRepr, model_to_repr  # noqa: E402
+from jaxminlp_api.examples import (  # noqa: E402
+    example_parametric,
+    example_pooling_haverly,
+    example_reactor_design,
+    example_simple_minlp,
+)
 
 # ─────────────────────────────────────────────────────────────
 # Fixtures: build example models

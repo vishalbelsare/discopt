@@ -16,13 +16,11 @@ cyipopt = pytest.importorskip("cyipopt")
 sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
 sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/python")
 
-from jaxminlp_api.core import Constant, Model
-from jaxminlp_api import examples
-
-from discopt._jax.nlp_evaluator import NLPEvaluator
-from discopt.solvers import NLPResult, SolveStatus
-from discopt.solvers.nlp_ipopt import solve_nlp, solve_nlp_from_model
-
+from discopt._jax.nlp_evaluator import NLPEvaluator  # noqa: E402
+from discopt.solvers import NLPResult, SolveStatus  # noqa: E402
+from discopt.solvers.nlp_ipopt import solve_nlp, solve_nlp_from_model  # noqa: E402
+from jaxminlp_api import examples  # noqa: E402
+from jaxminlp_api.core import Model  # noqa: E402
 
 # ─────────────────────────────────────────────────────────────
 # Helpers

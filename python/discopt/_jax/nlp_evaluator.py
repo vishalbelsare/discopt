@@ -11,7 +11,6 @@ with C-based solvers.
 from __future__ import annotations
 
 import sys
-from typing import Callable
 
 import jax
 import jax.numpy as jnp

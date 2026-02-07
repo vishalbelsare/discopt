@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import jax.numpy as jnp
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -95,7 +94,8 @@ def _relax_reciprocal(y, y_lb, y_ub):
     """
     # 1/y is convex when y > 0 and convex when y < 0
     # Both cases: cv = 1/y, cc = secant
-    f = lambda t: 1.0 / t
+    def f(t):
+        return 1.0 / t
     cv = f(y)
     cc = _secant(f, y, y_lb, y_ub)
     return cv, cc
@@ -133,7 +133,8 @@ def relax_pow(x, lb, ub, n):
     - n even: x^n is convex -> cv = x^n, cc = secant
     - n odd >= 3: x^n is convex on [0,inf), concave on (-inf,0]
     """
-    f = lambda t: t ** n
+    def f(t):
+        return t ** n
 
     if n == 1:
         return x, x
@@ -202,7 +203,8 @@ def relax_square(x, lb, ub):
     x^2 is convex: cv = x^2, cc = secant line.
     Returns (cv, cc).
     """
-    f = lambda t: t ** 2
+    def f(t):
+        return t ** 2
     cv = f(x)
     cc = _secant(f, x, lb, ub)
     return cv, cc

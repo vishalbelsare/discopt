@@ -12,30 +12,18 @@ import pytest
 sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
 sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/python")
 
-from jaxminlp_api.core import (
-    BinaryOp,
-    Constant,
-    Constraint,
-    Expression,
-    FunctionCall,
-    IndexExpression,
-    MatMulExpression,
-    Model,
-    Parameter,
-    SumExpression,
-    SumOverExpression,
-    UnaryOp,
-    Variable,
-    _wrap,
-)
-from jaxminlp_api import examples
-
 from discopt._jax.dag_compiler import (
     compile_constraint,
     compile_expression,
     compile_objective,
 )
-
+from jaxminlp_api import examples
+from jaxminlp_api.core import (
+    Constant,
+    Expression,
+    MatMulExpression,
+    Model,
+)
 
 # ─────────────────────────────────────────────────────────────
 # Helpers
@@ -477,7 +465,7 @@ class TestGradientCorrectness:
     def test_grad_finite(self, name, builder, capsys):
         model = builder()
         fn = compile_objective(model)
-        n = _flat_size(model)
+        _flat_size(model)
 
         # Wrap to ensure scalar output for grad
         def scalar_fn(x):
@@ -591,7 +579,7 @@ class TestJIT:
     def test_jit_examples(self, name, builder, capsys):
         model = builder()
         fn = jax.jit(compile_objective(model))
-        n = _flat_size(model)
+        _flat_size(model)
         rng = np.random.default_rng(123)
         x = _random_interior_point(model, rng)
         result = fn(x)

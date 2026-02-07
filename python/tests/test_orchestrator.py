@@ -19,11 +19,9 @@ import pytest
 
 sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
 import jaxminlp_api as jm
-from jaxminlp_api.core import SolveResult, VarType
-from jaxminlp_api.examples import example_simple_minlp
-
 from discopt._rust import PyTreeManager
-
+from jaxminlp_api.core import SolveResult
+from jaxminlp_api.examples import example_simple_minlp
 
 # ──────────────────────────────────────────────────────────
 # TestPyTreeManager — Unit tests for Rust B&B bindings

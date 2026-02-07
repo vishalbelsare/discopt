@@ -11,7 +11,6 @@ import sys
 from typing import Callable
 
 import jax.numpy as jnp
-import numpy as np
 
 # Import expression types from the modeling API
 sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")

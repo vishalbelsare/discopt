@@ -4,14 +4,11 @@ Validates that PyBatchDispatcher correctly exports node bounds as numpy arrays
 with zero-copy semantics and imports relaxation results back.
 """
 
-import ctypes
 import time
 
 import numpy as np
 import pytest
-
 from discopt._rust import PyBatchDispatcher
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -121,7 +118,7 @@ class TestImportResults:
     def test_basic_import(self):
         n_vars = 5
         disp = PyBatchDispatcher(n_vars)
-        node_ids = _fill_dispatcher(disp, 4)
+        _fill_dispatcher(disp, 4)
         lb, ub, ids = disp.export_batch(4)
 
         # Simulate solving: lower_bounds, solutions, feasibility

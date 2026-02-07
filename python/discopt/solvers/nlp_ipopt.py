@@ -24,7 +24,6 @@ from jaxminlp_api.core import Model
 from discopt._jax.nlp_evaluator import NLPEvaluator
 from discopt.solvers import NLPResult, SolveStatus
 
-
 # Ipopt status code mapping
 # See: https://coin-or.github.io/Ipopt/IpReturnCodes_8inc.html
 _IPOPT_STATUS_MAP: dict[int, SolveStatus] = {
@@ -103,7 +102,7 @@ def _infer_constraint_bounds(
       - For `>=` constraints: these are already normalized to <= by the
         Expression.__ge__ method, so we only see <= and == here.
     """
-    from jaxminlp_api.core import Constraint, _IndicatorConstraint
+    from jaxminlp_api.core import Constraint
 
     cl_list = []
     cu_list = []

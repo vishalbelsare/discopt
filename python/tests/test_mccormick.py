@@ -18,8 +18,6 @@ sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/python")
 
 import jax
 import jax.numpy as jnp
-import pytest
-
 from discopt._jax.mccormick import (
     relax_abs,
     relax_add,

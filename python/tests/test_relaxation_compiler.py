@@ -16,23 +16,18 @@ import pytest
 sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
 sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/python")
 
-from jaxminlp_api.core import (
-    Constant,
-    Constraint,
-    Model,
-    Parameter,
-    _wrap,
-)
 import jaxminlp_api.core as jm
-from jaxminlp_api import examples
-
 from discopt._jax.dag_compiler import compile_expression
 from discopt._jax.relaxation_compiler import (
-    compile_relaxation,
-    compile_objective_relaxation,
     compile_constraint_relaxation,
+    compile_objective_relaxation,
+    compile_relaxation,
 )
-
+from jaxminlp_api import examples
+from jaxminlp_api.core import (
+    Constant,
+    Model,
+)
 
 # ─────────────────────────────────────────────────────────────
 # Helpers
@@ -64,7 +59,7 @@ def _check_soundness(relax_fn, true_fn, model, n_samples=10000, seed=42):
     """Verify cv <= f(x) <= cc at many random points within variable bounds."""
     rng = np.random.default_rng(seed)
     lb, ub = _get_var_bounds(model)
-    n = _flat_size(model)
+    _flat_size(model)
 
     violations_cv = 0
     violations_cc = 0
