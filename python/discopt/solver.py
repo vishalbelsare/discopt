@@ -9,22 +9,19 @@ Connects:
 
 from __future__ import annotations
 
-import sys
 import time
 from typing import Optional
 
 import numpy as np
 
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
-from jaxminlp_api.core import (
+from discopt._jax.nlp_evaluator import NLPEvaluator
+from discopt._rust import PyTreeManager
+from discopt.modeling.core import (
     Constraint,
     Model,
     SolveResult,
     VarType,
 )
-
-from discopt._jax.nlp_evaluator import NLPEvaluator
-from discopt._rust import PyTreeManager
 from discopt.solvers import SolveStatus
 from discopt.solvers.nlp_ipopt import solve_nlp
 
@@ -218,8 +215,12 @@ def solve_model(
             # Solve NLP with node-specific bounds
             t_jax_start = time.perf_counter()
             nlp_result = _solve_node_nlp(
-                evaluator, x0, node_lb, node_ub,
-                constraint_bounds, opts,
+                evaluator,
+                x0,
+                node_lb,
+                node_ub,
+                constraint_bounds,
+                opts,
             )
             jax_time += time.perf_counter() - t_jax_start
 

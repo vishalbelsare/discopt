@@ -14,6 +14,7 @@ from discopt._rust import PyBatchDispatcher
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _fill_dispatcher(disp: PyBatchDispatcher, n_nodes: int) -> list[int]:
     """Add n_nodes with random bounds and return their IDs."""
     rng = np.random.default_rng(42)
@@ -29,6 +30,7 @@ def _fill_dispatcher(disp: PyBatchDispatcher, n_nodes: int) -> list[int]:
 # ---------------------------------------------------------------------------
 # 1. Export shape
 # ---------------------------------------------------------------------------
+
 
 class TestExportShape:
     """Verify exported arrays have correct shapes."""
@@ -63,6 +65,7 @@ class TestExportShape:
 # 2. Export dtype
 # ---------------------------------------------------------------------------
 
+
 class TestExportDtype:
     """Verify exported arrays have correct dtypes."""
 
@@ -84,6 +87,7 @@ class TestExportDtype:
 # 3. Zero-copy verification
 # ---------------------------------------------------------------------------
 
+
 class TestZeroCopy:
     """Verify that exported arrays share memory with Rust allocation."""
 
@@ -94,9 +98,7 @@ class TestZeroCopy:
         # The Rust side stores the data pointer of the lb array.
         rust_ptr = disp.last_export_ptr()
         numpy_ptr = lb.ctypes.data
-        assert rust_ptr == numpy_ptr, (
-            f"Pointer mismatch: Rust={rust_ptr:#x}, numpy={numpy_ptr:#x}"
-        )
+        assert rust_ptr == numpy_ptr, f"Pointer mismatch: Rust={rust_ptr:#x}, numpy={numpy_ptr:#x}"
 
     def test_no_copy_on_read(self):
         """Reading the exported array should not trigger a copy."""
@@ -111,6 +113,7 @@ class TestZeroCopy:
 # ---------------------------------------------------------------------------
 # 4. Import correctness
 # ---------------------------------------------------------------------------
+
 
 class TestImportResults:
     """Verify that imported results are stored correctly."""
@@ -191,6 +194,7 @@ class TestImportResults:
 # 5. Batch sizes
 # ---------------------------------------------------------------------------
 
+
 class TestBatchSizes:
     """Test with various batch sizes."""
 
@@ -212,6 +216,7 @@ class TestBatchSizes:
 # ---------------------------------------------------------------------------
 # 6. Latency
 # ---------------------------------------------------------------------------
+
 
 class TestLatency:
     """Round-trip export -> import should be fast."""
@@ -257,6 +262,7 @@ class TestLatency:
 # 7. Empty batch
 # ---------------------------------------------------------------------------
 
+
 class TestEmptyBatch:
     """Export from empty dispatcher returns empty arrays."""
 
@@ -281,6 +287,7 @@ class TestEmptyBatch:
 # ---------------------------------------------------------------------------
 # 8. Variable dimensions
 # ---------------------------------------------------------------------------
+
 
 class TestVariableDimensions:
     """Test with different n_vars values."""
@@ -310,6 +317,7 @@ class TestVariableDimensions:
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
+
 
 class TestEdgeCases:
     """Additional edge case tests."""

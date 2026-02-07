@@ -24,11 +24,10 @@ Example:
 
 from __future__ import annotations
 
-import operator
-from dataclasses import dataclass, field
+import builtins as _builtins
+from dataclasses import dataclass
 from enum import Enum
 from typing import (
-    Any,
     Callable,
     Iterator,
     Optional,
@@ -38,10 +37,12 @@ from typing import (
 
 import numpy as np
 
+builtins_sum = _builtins.sum
 
 # ─────────────────────────────────────────────────────────────
 # Variable Types
 # ─────────────────────────────────────────────────────────────
+
 
 class VarType(Enum):
     CONTINUOUS = "continuous"
@@ -57,6 +58,7 @@ class VarType(Enum):
 #   (1) A Rust-side expression graph for structure detection
 #   (2) A JAX-traceable function for evaluation and autodiff
 # ─────────────────────────────────────────────────────────────
+
 
 class Expression:
     """
@@ -275,49 +277,61 @@ def _wrap(x) -> Expression:
 # Mathematical Functions (jm.exp, jm.log, jm.sin, etc.)
 # ─────────────────────────────────────────────────────────────
 
+
 def exp(x: Union[Expression, float]) -> Expression:
     """Exponential function."""
     return FunctionCall("exp", _wrap(x))
+
 
 def log(x: Union[Expression, float]) -> Expression:
     """Natural logarithm."""
     return FunctionCall("log", _wrap(x))
 
+
 def log2(x: Union[Expression, float]) -> Expression:
     """Base-2 logarithm."""
     return FunctionCall("log2", _wrap(x))
+
 
 def log10(x: Union[Expression, float]) -> Expression:
     """Base-10 logarithm."""
     return FunctionCall("log10", _wrap(x))
 
+
 def sqrt(x: Union[Expression, float]) -> Expression:
     """Square root."""
     return FunctionCall("sqrt", _wrap(x))
+
 
 def sin(x: Union[Expression, float]) -> Expression:
     """Sine."""
     return FunctionCall("sin", _wrap(x))
 
+
 def cos(x: Union[Expression, float]) -> Expression:
     """Cosine."""
     return FunctionCall("cos", _wrap(x))
+
 
 def tan(x: Union[Expression, float]) -> Expression:
     """Tangent."""
     return FunctionCall("tan", _wrap(x))
 
+
 def abs_(x: Union[Expression, float]) -> Expression:
     """Absolute value (use jm.abs_ to avoid shadowing builtins)."""
     return FunctionCall("abs", _wrap(x))
+
 
 def sign(x: Union[Expression, float]) -> Expression:
     """Sign function."""
     return FunctionCall("sign", _wrap(x))
 
+
 def minimum(x: Union[Expression, float], y: Union[Expression, float]) -> Expression:
     """Element-wise minimum."""
     return FunctionCall("min", _wrap(x), _wrap(y))
+
 
 def maximum(x: Union[Expression, float], y: Union[Expression, float]) -> Expression:
     """Element-wise maximum."""
@@ -328,9 +342,13 @@ def maximum(x: Union[Expression, float], y: Union[Expression, float]) -> Express
 # Aggregation Functions
 # ─────────────────────────────────────────────────────────────
 
-def sum(x: Union[Expression, list, Callable], *,
-        over: Optional[Sequence] = None,
-        axis: Optional[int] = None) -> Expression:
+
+def sum(
+    x: Union[Expression, list, Callable],
+    *,
+    over: Optional[Sequence] = None,
+    axis: Optional[int] = None,
+) -> Expression:
     """
     Summation.
 
@@ -348,8 +366,8 @@ def sum(x: Union[Expression, list, Callable], *,
         return SumOverExpression(terms)
     return SumExpression(_wrap(x), axis=axis)
 
-def prod(x: Union[Expression, list, Callable], *,
-         over: Optional[Sequence] = None) -> Expression:
+
+def prod(x: Union[Expression, list, Callable], *, over: Optional[Sequence] = None) -> Expression:
     """Product — analogous to sum."""
     if over is not None and callable(x):
         terms = [_wrap(x(i)) for i in over]
@@ -359,6 +377,7 @@ def prod(x: Union[Expression, list, Callable], *,
         return result
     return FunctionCall("prod", _wrap(x))
 
+
 def norm(x: Expression, ord: int = 2) -> Expression:
     """Vector norm."""
     return FunctionCall(f"norm{ord}", _wrap(x))
@@ -367,6 +386,7 @@ def norm(x: Expression, ord: int = 2) -> Expression:
 # ─────────────────────────────────────────────────────────────
 # Constraints
 # ─────────────────────────────────────────────────────────────
+
 
 class ConstraintSense(Enum):
     LE = "<="
@@ -387,6 +407,7 @@ class Constraint:
         jm.exp(x[2]) == 1.0
         A @ x >= b
     """
+
     body: Expression
     sense: str
     rhs: float = 0.0
@@ -399,6 +420,7 @@ class Constraint:
 @dataclass
 class ConstraintList:
     """A collection of constraints created from vectorized expressions."""
+
     constraints: list[Constraint]
     name: Optional[str] = None
 
@@ -410,6 +432,7 @@ class ConstraintList:
 # Objective
 # ─────────────────────────────────────────────────────────────
 
+
 class ObjectiveSense(Enum):
     MINIMIZE = "minimize"
     MAXIMIZE = "maximize"
@@ -418,6 +441,7 @@ class ObjectiveSense(Enum):
 @dataclass
 class Objective:
     """Objective function with sense (minimize/maximize)."""
+
     expression: Expression
     sense: ObjectiveSense
 
@@ -425,6 +449,7 @@ class Objective:
 # ─────────────────────────────────────────────────────────────
 # Parameter (for parametric optimization / sensitivity)
 # ─────────────────────────────────────────────────────────────
+
 
 class Parameter(Expression):
     """
@@ -457,6 +482,7 @@ class Parameter(Expression):
 # Solve Result
 # ─────────────────────────────────────────────────────────────
 
+
 @dataclass
 class SolveResult:
     """
@@ -465,10 +491,11 @@ class SolveResult:
     Provides solution values, solve statistics, explanation,
     and sensitivity analysis (for models with Parameters).
     """
-    status: str                             # optimal, feasible, infeasible, ...
-    objective: Optional[float] = None       # Optimal objective value
-    bound: Optional[float] = None           # Best dual bound
-    gap: Optional[float] = None             # Relative optimality gap
+
+    status: str  # optimal, feasible, infeasible, ...
+    objective: Optional[float] = None  # Optimal objective value
+    bound: Optional[float] = None  # Best dual bound
+    gap: Optional[float] = None  # Relative optimality gap
     x: Optional[dict[str, np.ndarray]] = None  # Variable values by name
     wall_time: float = 0.0
     node_count: int = 0
@@ -505,9 +532,7 @@ class SolveResult:
         Uses implicit differentiation through KKT conditions.
         Requires the model to have been solved with sensitivity=True.
         """
-        raise NotImplementedError(
-            "Sensitivity analysis requires JAX backend (Phase 3 feature)"
-        )
+        raise NotImplementedError("Sensitivity analysis requires JAX backend (Phase 3 feature)")
 
     def __repr__(self):
         return (
@@ -519,6 +544,7 @@ class SolveResult:
 # ─────────────────────────────────────────────────────────────
 # Model
 # ─────────────────────────────────────────────────────────────
+
 
 class Model:
     """
@@ -737,11 +763,13 @@ class Model:
             c.name = f"{name}_then_{k}" if name else None
             # Store as indicator constraint; Rust presolve will handle
             # reformulation to big-M or GDP branching
-            self._constraints.append(_IndicatorConstraint(
-                indicator=indicator,
-                constraint=c,
-                active_value=1,
-            ))
+            self._constraints.append(
+                _IndicatorConstraint(
+                    indicator=indicator,
+                    constraint=c,
+                    active_value=1,
+                )
+            )
 
     def either_or(
         self,
@@ -759,10 +787,12 @@ class Model:
                 [x[0] >= 15, x[1] <= 3],   # mode B
             ], name="operating_mode")
         """
-        self._constraints.append(_DisjunctiveConstraint(
-            disjuncts=disjuncts,
-            name=name,
-        ))
+        self._constraints.append(
+            _DisjunctiveConstraint(
+                disjuncts=disjuncts,
+                name=name,
+            )
+        )
 
     # ── Special ordered sets ──
 
@@ -812,6 +842,7 @@ class Model:
             )
 
         from discopt.solver import solve_model
+
         return solve_model(
             self,
             time_limit=time_limit,
@@ -848,9 +879,7 @@ class Model:
                 raise ValueError(f"Duplicate variable name: '{var.name}'")
             names.add(var.name)
             if np.any(var.lb > var.ub):
-                raise ValueError(
-                    f"Variable '{var.name}' has lb > ub at some index"
-                )
+                raise ValueError(f"Variable '{var.name}' has lb > ub at some index")
 
     # ── Model statistics ──
 
@@ -860,15 +889,12 @@ class Model:
 
     @property
     def num_continuous(self) -> int:
-        return builtins_sum(
-            v.size for v in self._variables if v.var_type == VarType.CONTINUOUS
-        )
+        return builtins_sum(v.size for v in self._variables if v.var_type == VarType.CONTINUOUS)
 
     @property
     def num_integer(self) -> int:
         return builtins_sum(
-            v.size for v in self._variables
-            if v.var_type in (VarType.INTEGER, VarType.BINARY)
+            v.size for v in self._variables if v.var_type in (VarType.INTEGER, VarType.BINARY)
         )
 
     @property
@@ -899,6 +925,7 @@ class Model:
 
 # Internal constraint types (not part of public API)
 
+
 @dataclass
 class _IndicatorConstraint:
     indicator: Variable
@@ -906,10 +933,12 @@ class _IndicatorConstraint:
     active_value: int = 1
     name: Optional[str] = None
 
+
 @dataclass
 class _DisjunctiveConstraint:
     disjuncts: list[list[Constraint]]
     name: Optional[str] = None
+
 
 @dataclass
 class _SOSConstraint:
@@ -922,9 +951,11 @@ class _SOSConstraint:
 # Streaming updates
 # ─────────────────────────────────────────────────────────────
 
+
 @dataclass
 class SolveUpdate:
     """Intermediate update from streaming solve."""
+
     elapsed: float
     incumbent: Optional[float]
     lower_bound: float
@@ -937,6 +968,7 @@ class SolveUpdate:
 # ─────────────────────────────────────────────────────────────
 # Import functions
 # ─────────────────────────────────────────────────────────────
+
 
 def from_pyomo(pyomo_model) -> Model:
     """
@@ -1017,8 +1049,3 @@ def from_description(
         result = model.solve()
     """
     raise NotImplementedError("LLM formulation requires LLM integration (Phase 2)")
-
-
-# Keep Python's built-in sum accessible
-import builtins as _builtins
-builtins_sum = _builtins.sum

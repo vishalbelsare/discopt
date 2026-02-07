@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import time
 
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
@@ -12,17 +11,14 @@ os.environ.setdefault("JAX_ENABLE_X64", "1")
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/python")
-
 from discopt._jax.nlp_evaluator import NLPEvaluator
-from jaxminlp_api import examples
-from jaxminlp_api.core import Model
+from discopt.modeling import examples
+from discopt.modeling.core import Model
 
 # ─────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────
+
 
 def _flat_size(model: Model) -> int:
     """Total size of the flat variable vector."""
@@ -44,6 +40,7 @@ def _random_interior_point(model: Model, rng: np.random.Generator) -> np.ndarray
 # ─────────────────────────────────────────────────────────────
 # Test 1: Objective evaluation
 # ─────────────────────────────────────────────────────────────
+
 
 class TestObjectiveEvaluation:
     def test_simple_minlp_objective(self):
@@ -69,6 +66,7 @@ class TestObjectiveEvaluation:
 # Test 2: Gradient vs finite differences
 # ─────────────────────────────────────────────────────────────
 
+
 class TestGradient:
     def test_gradient_vs_finite_diff(self):
         """At 50 random interior points, verify gradient matches finite differences."""
@@ -92,9 +90,9 @@ class TestGradient:
                 obj_minus = ev.evaluate_objective(x_minus)
                 fd_grad[i] = (obj_plus - obj_minus) / (2 * eps)
 
-            assert np.allclose(grad, fd_grad, atol=1e-6), (
-                f"Gradient mismatch at {x}: AD={grad}, FD={fd_grad}"
-            )
+            assert np.allclose(
+                grad, fd_grad, atol=1e-6
+            ), f"Gradient mismatch at {x}: AD={grad}, FD={fd_grad}"
 
     def test_gradient_shape(self):
         m = examples.example_simple_minlp()
@@ -116,6 +114,7 @@ class TestGradient:
 # ─────────────────────────────────────────────────────────────
 # Test 3: Hessian vs finite differences
 # ─────────────────────────────────────────────────────────────
+
 
 class TestHessian:
     def test_hessian_vs_finite_diff(self):
@@ -140,9 +139,9 @@ class TestHessian:
                 g_minus = ev.evaluate_gradient(x_minus)
                 fd_hess[i, :] = (g_plus - g_minus) / (2 * eps)
 
-            assert np.allclose(hess, fd_hess, atol=1e-4), (
-                f"Hessian mismatch:\nAD:\n{hess}\nFD:\n{fd_hess}"
-            )
+            assert np.allclose(
+                hess, fd_hess, atol=1e-4
+            ), f"Hessian mismatch:\nAD:\n{hess}\nFD:\n{fd_hess}"
 
     def test_hessian_shape(self):
         m = examples.example_simple_minlp()
@@ -173,6 +172,7 @@ class TestHessian:
 # Test 4: Constraint evaluation
 # ─────────────────────────────────────────────────────────────
 
+
 class TestConstraints:
     def test_constraint_evaluation(self):
         """Verify constraint bodies evaluate correctly for simple_minlp."""
@@ -193,6 +193,7 @@ class TestConstraints:
 # ─────────────────────────────────────────────────────────────
 # Test 5: Jacobian vs finite differences
 # ─────────────────────────────────────────────────────────────
+
 
 class TestJacobian:
     def test_jacobian_vs_finite_diff(self):
@@ -217,9 +218,9 @@ class TestJacobian:
                 c_minus = ev.evaluate_constraints(x_minus)
                 fd_jac[:, i] = (c_plus - c_minus) / (2 * eps)
 
-            assert np.allclose(jac, fd_jac, atol=1e-5), (
-                f"Jacobian mismatch:\nAD:\n{jac}\nFD:\n{fd_jac}"
-            )
+            assert np.allclose(
+                jac, fd_jac, atol=1e-5
+            ), f"Jacobian mismatch:\nAD:\n{jac}\nFD:\n{fd_jac}"
 
     def test_jacobian_shape(self):
         m = examples.example_simple_minlp()
@@ -237,16 +238,19 @@ class TestJacobian:
         ev = NLPEvaluator(m)
         x = np.array([1.0, 2.0, 0.5])
         jac = ev.evaluate_jacobian(x)
-        expected = np.array([
-            [-1.0, -1.0, 0.0],
-            [2.0, 1.0, 0.0],
-        ])
+        expected = np.array(
+            [
+                [-1.0, -1.0, 0.0],
+                [2.0, 1.0, 0.0],
+            ]
+        )
         assert np.allclose(jac, expected, atol=1e-10)
 
 
 # ─────────────────────────────────────────────────────────────
 # Test 6: JIT warmup performance
 # ─────────────────────────────────────────────────────────────
+
 
 class TestJITPerformance:
     def test_jit_warmup_speedup(self):
@@ -290,10 +294,19 @@ _EXAMPLE_FACTORIES = [
 
 
 class TestAllExamples:
-    @pytest.mark.parametrize("factory", _EXAMPLE_FACTORIES, ids=[
-        "simple_minlp", "pooling_haverly", "process_synthesis",
-        "portfolio", "reactor_design", "facility_location", "parametric",
-    ])
+    @pytest.mark.parametrize(
+        "factory",
+        _EXAMPLE_FACTORIES,
+        ids=[
+            "simple_minlp",
+            "pooling_haverly",
+            "process_synthesis",
+            "portfolio",
+            "reactor_design",
+            "facility_location",
+            "parametric",
+        ],
+    )
     def test_objective_no_nan_inf(self, factory):
         """Evaluate objective for each example model — no NaN, no Inf."""
         m = factory()
@@ -303,10 +316,19 @@ class TestAllExamples:
         obj = ev.evaluate_objective(x)
         assert np.isfinite(obj), f"Non-finite objective: {obj}"
 
-    @pytest.mark.parametrize("factory", _EXAMPLE_FACTORIES, ids=[
-        "simple_minlp", "pooling_haverly", "process_synthesis",
-        "portfolio", "reactor_design", "facility_location", "parametric",
-    ])
+    @pytest.mark.parametrize(
+        "factory",
+        _EXAMPLE_FACTORIES,
+        ids=[
+            "simple_minlp",
+            "pooling_haverly",
+            "process_synthesis",
+            "portfolio",
+            "reactor_design",
+            "facility_location",
+            "parametric",
+        ],
+    )
     def test_gradient_no_nan_inf(self, factory):
         """Evaluate gradient for each example model — no NaN, no Inf."""
         m = factory()
@@ -320,6 +342,7 @@ class TestAllExamples:
 # ─────────────────────────────────────────────────────────────
 # Test 8: Return types are numpy arrays
 # ─────────────────────────────────────────────────────────────
+
 
 class TestReturnTypes:
     def test_objective_returns_float(self):
@@ -363,6 +386,7 @@ class TestReturnTypes:
 # Test 9: Variable bounds
 # ─────────────────────────────────────────────────────────────
 
+
 class TestVariableBounds:
     def test_bounds_simple_minlp(self):
         """Verify variable_bounds returns correct lb/ub."""
@@ -392,12 +416,13 @@ class TestVariableBounds:
 # Test 10: Zero constraints
 # ─────────────────────────────────────────────────────────────
 
+
 class TestZeroConstraints:
     def test_no_constraints(self):
         """Model with only objective, no constraints."""
         m = Model("unconstrained")
         x = m.continuous("x", lb=-10, ub=10)
-        m.minimize(x ** 2)
+        m.minimize(x**2)
         ev = NLPEvaluator(m)
 
         assert ev.n_constraints == 0
@@ -415,7 +440,7 @@ class TestZeroConstraints:
         """Unconstrained model still computes objective and gradient."""
         m = Model("unconstrained")
         x = m.continuous("x", lb=-10, ub=10)
-        m.minimize(x ** 2)
+        m.minimize(x**2)
         ev = NLPEvaluator(m)
 
         test_x = np.array([3.0])
@@ -427,12 +452,13 @@ class TestZeroConstraints:
 # Test 11: Maximize objective (negation)
 # ─────────────────────────────────────────────────────────────
 
+
 class TestMaximize:
     def test_maximize_negates_objective(self):
         """Model with maximize => evaluator negates internally."""
         m = Model("maximize_test")
         x = m.continuous("x", lb=0, ub=10)
-        m.maximize(x ** 2 + 3 * x)
+        m.maximize(x**2 + 3 * x)
         ev = NLPEvaluator(m)
 
         test_x = np.array([2.0])
@@ -444,7 +470,7 @@ class TestMaximize:
         """Gradient should also be negated for maximize."""
         m = Model("maximize_test")
         x = m.continuous("x", lb=0, ub=10)
-        m.maximize(x ** 2 + 3 * x)
+        m.maximize(x**2 + 3 * x)
         ev = NLPEvaluator(m)
 
         test_x = np.array([2.0])
@@ -457,7 +483,7 @@ class TestMaximize:
         """Hessian should also be negated for maximize."""
         m = Model("maximize_test")
         x = m.continuous("x", lb=0, ub=10)
-        m.maximize(x ** 2 + 3 * x)
+        m.maximize(x**2 + 3 * x)
         ev = NLPEvaluator(m)
 
         test_x = np.array([2.0])
@@ -470,7 +496,7 @@ class TestMaximize:
         """Minimize should not negate."""
         m = Model("minimize_test")
         x = m.continuous("x", lb=0, ub=10)
-        m.minimize(x ** 2 + 3 * x)
+        m.minimize(x**2 + 3 * x)
         ev = NLPEvaluator(m)
 
         test_x = np.array([2.0])
@@ -480,6 +506,7 @@ class TestMaximize:
 # ─────────────────────────────────────────────────────────────
 # Test: n_variables and n_constraints properties
 # ─────────────────────────────────────────────────────────────
+
 
 class TestProperties:
     def test_n_variables(self):

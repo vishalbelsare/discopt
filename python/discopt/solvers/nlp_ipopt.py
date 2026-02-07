@@ -12,33 +12,30 @@ Maps NLPEvaluator callbacks to cyipopt.Problem interface:
 
 from __future__ import annotations
 
-import sys
 import time
 from typing import Optional
 
 import numpy as np
 
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
-from jaxminlp_api.core import Model
-
 from discopt._jax.nlp_evaluator import NLPEvaluator
+from discopt.modeling.core import Model
 from discopt.solvers import NLPResult, SolveStatus
 
 # Ipopt status code mapping
 # See: https://coin-or.github.io/Ipopt/IpReturnCodes_8inc.html
 _IPOPT_STATUS_MAP: dict[int, SolveStatus] = {
-    0: SolveStatus.OPTIMAL,        # Solve_Succeeded
-    1: SolveStatus.OPTIMAL,        # Solved_To_Acceptable_Level
-    2: SolveStatus.INFEASIBLE,     # Infeasible_Problem_Detected
-    3: SolveStatus.UNBOUNDED,      # Search_Direction_Becomes_Too_Small
-    4: SolveStatus.ERROR,          # Diverging_Iterates
-    5: SolveStatus.ERROR,          # User_Requested_Stop
-    6: SolveStatus.ERROR,          # Feasible_Point_Found (not optimal)
+    0: SolveStatus.OPTIMAL,  # Solve_Succeeded
+    1: SolveStatus.OPTIMAL,  # Solved_To_Acceptable_Level
+    2: SolveStatus.INFEASIBLE,  # Infeasible_Problem_Detected
+    3: SolveStatus.UNBOUNDED,  # Search_Direction_Becomes_Too_Small
+    4: SolveStatus.ERROR,  # Diverging_Iterates
+    5: SolveStatus.ERROR,  # User_Requested_Stop
+    6: SolveStatus.ERROR,  # Feasible_Point_Found (not optimal)
     -1: SolveStatus.ITERATION_LIMIT,  # Maximum_Iterations_Exceeded
-    -2: SolveStatus.ERROR,         # Restoration_Failed
-    -3: SolveStatus.ERROR,         # Error_In_Step_Computation
-    -4: SolveStatus.TIME_LIMIT,    # Maximum_CpuTime_Exceeded
-    -5: SolveStatus.TIME_LIMIT,    # Maximum_WallTime_Exceeded
+    -2: SolveStatus.ERROR,  # Restoration_Failed
+    -3: SolveStatus.ERROR,  # Error_In_Step_Computation
+    -4: SolveStatus.TIME_LIMIT,  # Maximum_CpuTime_Exceeded
+    -5: SolveStatus.TIME_LIMIT,  # Maximum_WallTime_Exceeded
 }
 
 
@@ -66,14 +63,10 @@ class _IpoptCallbacks:
 
     def jacobianstructure(self) -> tuple[np.ndarray, np.ndarray]:
         # Dense structure: all (row, col) pairs
-        rows, cols = np.meshgrid(
-            np.arange(self._m), np.arange(self._n), indexing="ij"
-        )
+        rows, cols = np.meshgrid(np.arange(self._m), np.arange(self._n), indexing="ij")
         return (rows.flatten(), cols.flatten())
 
-    def hessian(
-        self, x: np.ndarray, lagrange: np.ndarray, obj_factor: float
-    ) -> np.ndarray:
+    def hessian(self, x: np.ndarray, lagrange: np.ndarray, obj_factor: float) -> np.ndarray:
         # Hessian of the Lagrangian = obj_factor * H_obj + sum(lagrange[i] * H_c[i])
         # For now we only provide the objective Hessian (constraint Hessians
         # would require second derivatives of each constraint, which NLPEvaluator
@@ -102,7 +95,7 @@ def _infer_constraint_bounds(
       - For `>=` constraints: these are already normalized to <= by the
         Expression.__ge__ method, so we only see <= and == here.
     """
-    from jaxminlp_api.core import Constraint
+    from discopt.modeling.core import Constraint
 
     cl_list = []
     cu_list = []

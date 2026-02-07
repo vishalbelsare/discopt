@@ -42,11 +42,13 @@ class TestInequalityConstraints:
 
     def test_solution(self):
         c = np.array([-3.0, -5.0])
-        A_ub = np.array([
-            [1.0, 0.0],
-            [0.0, 2.0],
-            [3.0, 5.0],
-        ])
+        A_ub = np.array(
+            [
+                [1.0, 0.0],
+                [0.0, 2.0],
+                [3.0, 5.0],
+            ]
+        )
         b_ub = np.array([4.0, 12.0, 25.0])
         result = solve_lp(c=c, A_ub=A_ub, b_ub=b_ub)
         assert result.status == SolveStatus.OPTIMAL
@@ -88,15 +90,19 @@ class TestMixedConstraints:
 
     def _solve(self):
         c = np.array([2.0, 3.0, 1.0, 4.0])
-        A_eq = np.array([
-            [1.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 1.0],
-        ])
+        A_eq = np.array(
+            [
+                [1.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 1.0],
+            ]
+        )
         b_eq = np.array([10.0, 15.0])
-        A_ub = np.array([
-            [-1.0, 0.0, -1.0, 0.0],
-            [0.0, -1.0, 0.0, -1.0],
-        ])
+        A_ub = np.array(
+            [
+                [-1.0, 0.0, -1.0, 0.0],
+                [0.0, -1.0, 0.0, -1.0],
+            ]
+        )
         b_ub = np.array([-8.0, -12.0])
         return solve_lp(c=c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq)
 
@@ -148,10 +154,12 @@ class TestInfeasible:
     def test_infeasible(self):
         result = solve_lp(
             c=np.array([1.0, 1.0]),
-            A_ub=np.array([
-                [1.0, 1.0],
-                [-1.0, -1.0],
-            ]),
+            A_ub=np.array(
+                [
+                    [1.0, 1.0],
+                    [-1.0, -1.0],
+                ]
+            ),
             b_ub=np.array([1.0, -10.0]),
         )
         assert result.status == SolveStatus.INFEASIBLE
@@ -301,11 +309,13 @@ class TestSparseMatrices:
     def test_sparse_A_ub(self):
         """Same LP as TestInequalityConstraints but with sparse A_ub."""
         c = np.array([-3.0, -5.0])
-        A_dense = np.array([
-            [1.0, 0.0],
-            [0.0, 2.0],
-            [3.0, 5.0],
-        ])
+        A_dense = np.array(
+            [
+                [1.0, 0.0],
+                [0.0, 2.0],
+                [3.0, 5.0],
+            ]
+        )
         A_sparse = sp.csr_matrix(A_dense)
         b_ub = np.array([4.0, 12.0, 25.0])
 
@@ -313,12 +323,8 @@ class TestSparseMatrices:
         result_sparse = solve_lp(c=c, A_ub=A_sparse, b_ub=b_ub)
 
         assert result_sparse.status == SolveStatus.OPTIMAL
-        np.testing.assert_allclose(
-            result_sparse.x, result_dense.x, atol=1e-6
-        )
-        np.testing.assert_allclose(
-            result_sparse.objective, result_dense.objective, atol=1e-6
-        )
+        np.testing.assert_allclose(result_sparse.x, result_dense.x, atol=1e-6)
+        np.testing.assert_allclose(result_sparse.objective, result_dense.objective, atol=1e-6)
 
     def test_sparse_A_eq(self):
         c = np.array([1.0, 1.0])

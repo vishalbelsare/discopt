@@ -3,28 +3,23 @@
 from __future__ import annotations
 
 import os
-import sys
 
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 os.environ.setdefault("JAX_ENABLE_X64", "1")
 
+import discopt.modeling.core as dm
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/python")
-
-import jaxminlp_api.core as jm
 from discopt._jax.dag_compiler import compile_expression
 from discopt._jax.relaxation_compiler import (
     compile_constraint_relaxation,
     compile_objective_relaxation,
     compile_relaxation,
 )
-from jaxminlp_api import examples
-from jaxminlp_api.core import (
+from discopt.modeling import examples
+from discopt.modeling.core import (
     Constant,
     Model,
 )
@@ -32,6 +27,7 @@ from jaxminlp_api.core import (
 # ─────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────
+
 
 def _flat_size(model: Model) -> int:
     return sum(v.size for v in model._variables)
@@ -83,8 +79,8 @@ def _check_soundness(relax_fn, true_fn, model, n_samples=10000, seed=42):
 # Test 1: Soundness on simple expressions
 # ─────────────────────────────────────────────────────────────
 
-class TestSimpleExpressionSoundness:
 
+class TestSimpleExpressionSoundness:
     def test_linear_2x_plus_3y(self):
         m = Model("test")
         x = m.continuous("x", lb=0, ub=5)
@@ -119,7 +115,7 @@ class TestSimpleExpressionSoundness:
         y = m.continuous("y", lb=0.1, ub=3)
         m.minimize(x)
 
-        expr = jm.exp(x) + jm.log(y)
+        expr = dm.exp(x) + dm.log(y)
         relax_fn = compile_relaxation(expr, m)
         true_fn = compile_expression(expr, m)
 
@@ -132,7 +128,7 @@ class TestSimpleExpressionSoundness:
         x = m.continuous("x", lb=-3, ub=3)
         m.minimize(x)
 
-        expr = x ** 2
+        expr = x**2
         relax_fn = compile_relaxation(expr, m)
         true_fn = compile_expression(expr, m)
 
@@ -145,7 +141,7 @@ class TestSimpleExpressionSoundness:
         x = m.continuous("x", lb=0.1, ub=10)
         m.minimize(x)
 
-        expr = jm.sqrt(x)
+        expr = dm.sqrt(x)
         relax_fn = compile_relaxation(expr, m)
         true_fn = compile_expression(expr, m)
 
@@ -158,7 +154,7 @@ class TestSimpleExpressionSoundness:
         x = m.continuous("x", lb=0, ub=3)
         m.minimize(x)
 
-        expr = jm.sin(x)
+        expr = dm.sin(x)
         relax_fn = compile_relaxation(expr, m)
         true_fn = compile_expression(expr, m)
 
@@ -211,7 +207,7 @@ class TestSimpleExpressionSoundness:
         x = m.continuous("x", lb=0, ub=2)
         m.minimize(x)
 
-        expr = jm.cos(x)
+        expr = dm.cos(x)
         relax_fn = compile_relaxation(expr, m)
         true_fn = compile_expression(expr, m)
 
@@ -224,8 +220,8 @@ class TestSimpleExpressionSoundness:
 # Test 2: JIT + vmap compatibility
 # ─────────────────────────────────────────────────────────────
 
-class TestJitVmap:
 
+class TestJitVmap:
     def test_jit_works(self):
         m = Model("test")
         x = m.continuous("x", lb=0, ub=5)
@@ -252,7 +248,7 @@ class TestJitVmap:
         y = m.continuous("y", lb=0, ub=5)
         m.minimize(x)
 
-        expr = x ** 2 + jm.exp(y)
+        expr = x**2 + dm.exp(y)
         relax_fn = compile_relaxation(expr, m)
 
         batch_size = 128
@@ -279,7 +275,7 @@ class TestJitVmap:
         y = m.continuous("y", lb=0.1, ub=5)
         m.minimize(x)
 
-        expr = jm.log(x) + y * y
+        expr = dm.log(x) + y * y
         relax_fn = compile_relaxation(expr, m)
 
         batch_size = 128
@@ -303,8 +299,8 @@ class TestJitVmap:
 # Test 3: All 7 example model objectives
 # ─────────────────────────────────────────────────────────────
 
-class TestExampleObjectives:
 
+class TestExampleObjectives:
     def _test_example_model(self, build_fn, n_samples=5000):
         """Generic test: compile objective relaxation and verify soundness."""
         m = build_fn()
@@ -341,15 +337,15 @@ class TestExampleObjectives:
 # Test 4: Gap monotonicity — tighter bounds -> smaller gap
 # ─────────────────────────────────────────────────────────────
 
-class TestGapMonotonicity:
 
+class TestGapMonotonicity:
     def test_gap_decreases_with_tighter_bounds(self):
         m = Model("test")
         x = m.continuous("x", lb=0.5, ub=5)
         y = m.continuous("y", lb=0.5, ub=5)
         m.minimize(x)
 
-        expr = x * y + jm.exp(x)
+        expr = x * y + dm.exp(x)
         relax_fn = compile_relaxation(expr, m)
 
         # Pick a target point
@@ -368,10 +364,9 @@ class TestGapMonotonicity:
 
         # Gap should be monotonically non-increasing as bounds tighten
         for i in range(len(gaps) - 1):
-            assert gaps[i] >= gaps[i + 1] - 1e-8, (
-                f"Gap increased: {gaps[i]:.6f} -> {gaps[i+1]:.6f} "
-                f"at step {i} -> {i+1}"
-            )
+            assert (
+                gaps[i] >= gaps[i + 1] - 1e-8
+            ), f"Gap increased: {gaps[i]:.6f} -> {gaps[i + 1]:.6f} at step {i} -> {i + 1}"
 
     def test_gap_approaches_zero_at_point(self):
         """When bounds collapse to a point, gap should be ~0."""
@@ -379,7 +374,7 @@ class TestGapMonotonicity:
         x = m.continuous("x", lb=0.1, ub=10)
         m.minimize(x)
 
-        expr = jm.exp(x) + x ** 2
+        expr = dm.exp(x) + x**2
         relax_fn = compile_relaxation(expr, m)
 
         x_pt = jnp.array([3.0])
@@ -395,8 +390,8 @@ class TestGapMonotonicity:
 # Test 5: Constant expressions
 # ─────────────────────────────────────────────────────────────
 
-class TestConstantExpressions:
 
+class TestConstantExpressions:
     def test_scalar_constant(self):
         m = Model("test")
         x = m.continuous("x", lb=0, ub=1)
@@ -441,8 +436,8 @@ class TestConstantExpressions:
 # Test 6: Linear expressions — relaxation is exact
 # ─────────────────────────────────────────────────────────────
 
-class TestLinearExact:
 
+class TestLinearExact:
     def test_linear_relaxation_exact(self):
         """For a*x + b, relaxation should be exact when x_cv = x_cc = x."""
         m = Model("test")
@@ -461,12 +456,12 @@ class TestLinearExact:
             x_val = _random_point_in_bounds(lb, ub, rng)
             cv, cc = relax_fn(x_val, x_val, lb, ub)
             true_val = true_fn(x_val)
-            assert jnp.allclose(cv, true_val, atol=1e-10), (
-                f"cv={float(cv)} != true={float(true_val)}"
-            )
-            assert jnp.allclose(cc, true_val, atol=1e-10), (
-                f"cc={float(cc)} != true={float(true_val)}"
-            )
+            assert jnp.allclose(
+                cv, true_val, atol=1e-10
+            ), f"cv={float(cv)} != true={float(true_val)}"
+            assert jnp.allclose(
+                cc, true_val, atol=1e-10
+            ), f"cc={float(cc)} != true={float(true_val)}"
 
     def test_multivariate_linear_exact(self):
         """Linear expression in multiple variables should be exact."""
@@ -496,8 +491,8 @@ class TestLinearExact:
 # Test 7: Constraint relaxation
 # ─────────────────────────────────────────────────────────────
 
-class TestConstraintRelaxation:
 
+class TestConstraintRelaxation:
     def test_constraint_body_relaxation(self):
         m = Model("test")
         x = m.continuous("x", lb=0, ub=5)
@@ -505,7 +500,7 @@ class TestConstraintRelaxation:
         m.minimize(x)
 
         # Constraint: x^2 + y <= 10
-        constraint = (x ** 2 + y <= 10)
+        constraint = x**2 + y <= 10
         relax_fn = compile_constraint_relaxation(constraint, m)
         true_fn = compile_expression(constraint.body, m)
 
@@ -520,7 +515,7 @@ class TestConstraintRelaxation:
         m.minimize(x)
 
         # Constraint: exp(x) + log(y) <= 20
-        constraint = (jm.exp(x) + jm.log(y) <= 20)
+        constraint = dm.exp(x) + dm.log(y) <= 20
         relax_fn = compile_constraint_relaxation(constraint, m)
         true_fn = compile_expression(constraint.body, m)
 
@@ -533,8 +528,8 @@ class TestConstraintRelaxation:
 # Test: Parameter handling
 # ─────────────────────────────────────────────────────────────
 
-class TestParameterHandling:
 
+class TestParameterHandling:
     def test_parameter_relaxation_exact(self):
         m = Model("test")
         x = m.continuous("x", lb=0, ub=5)
@@ -561,12 +556,12 @@ class TestParameterHandling:
 # Test: IndexExpression
 # ─────────────────────────────────────────────────────────────
 
-class TestIndexExpression:
 
+class TestIndexExpression:
     def test_array_indexing(self):
         m = Model("test")
         x = m.continuous("x", shape=(3,), lb=0, ub=5)
-        m.minimize(jm.sum(x))
+        m.minimize(dm.sum(x))
 
         expr = x[1] * 2.0 + x[0]
         relax_fn = compile_relaxation(expr, m)
@@ -581,14 +576,14 @@ class TestIndexExpression:
 # Test: SumExpression
 # ─────────────────────────────────────────────────────────────
 
-class TestSumExpression:
 
+class TestSumExpression:
     def test_sum_of_array_variable(self):
         m = Model("test")
         x = m.continuous("x", shape=(4,), lb=0, ub=5)
-        m.minimize(jm.sum(x))
+        m.minimize(dm.sum(x))
 
-        expr = jm.sum(x)
+        expr = dm.sum(x)
         relax_fn = compile_relaxation(expr, m)
         true_fn = compile_expression(expr, m)
 
@@ -601,8 +596,8 @@ class TestSumExpression:
 # Test: No-objective error
 # ─────────────────────────────────────────────────────────────
 
-class TestErrors:
 
+class TestErrors:
     def test_no_objective_raises(self):
         m = Model("test")
         m.continuous("x", lb=0, ub=1)

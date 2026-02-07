@@ -9,8 +9,7 @@ Each example is self-contained and runnable (once the solver backend exists).
 import numpy as np
 
 # The standard import
-import jaxminlp_api as jm
-
+import discopt.modeling as dm
 
 # ═══════════════════════════════════════════════════════════════
 # EXAMPLE 1: Simple MINLP (textbook)
@@ -22,8 +21,9 @@ import jaxminlp_api as jm
 #               x₁, x₂ ∈ [0, 5]
 # ═══════════════════════════════════════════════════════════════
 
+
 def example_simple_minlp():
-    m = jm.Model("textbook")
+    m = dm.Model("textbook")
 
     x1 = m.continuous("x1", lb=0, ub=5)
     x2 = m.continuous("x2", lb=0, ub=5)
@@ -45,13 +45,11 @@ def example_simple_minlp():
 # where GPU batching should provide advantage.
 # ═══════════════════════════════════════════════════════════════
 
+
 def example_pooling_haverly():
-    m = jm.Model("haverly_pooling")
+    m = dm.Model("haverly_pooling")
 
     # Sources, pools, products
-    n_sources = 3
-    n_pools = 1
-    n_products = 2
 
     # Flow variables
     # y[i] = flow from source i to pool (sources 0,1 feed pool)
@@ -70,11 +68,13 @@ def example_pooling_haverly():
     quality = np.array([3.0, 1.0, 2.0])  # sulfur content
 
     # Objective: maximize profit
-    revenue = np.array([9.0, 15.0])    # price per unit of product
+    revenue = np.array([9.0, 15.0])  # price per unit of product
     source_cost = np.array([6.0, 16.0, 10.0])
     m.maximize(
-        revenue[0] * x[0] + revenue[1] * (x[1] + z)
-        - source_cost[0] * y[0] - source_cost[1] * y[1]
+        revenue[0] * x[0]
+        + revenue[1] * (x[1] + z)
+        - source_cost[0] * y[0]
+        - source_cost[1] * y[1]
         - source_cost[2] * z
     )
 
@@ -82,16 +82,13 @@ def example_pooling_haverly():
     m.subject_to(y[0] + y[1] == x[0] + x[1], name="pool_mass_balance")
 
     # Pool quality balance (bilinear: p = quality[0]*y[0] + quality[1]*y[1])
-    m.subject_to(
-        p == quality[0] * y[0] + quality[1] * y[1],
-        name="pool_quality_balance"
-    )
+    m.subject_to(p == quality[0] * y[0] + quality[1] * y[1], name="pool_quality_balance")
 
     # Product quality specs (bilinear: p * fraction <= spec * flow)
-    m.subject_to(p * x[0] <= 2.5 * x[0] * (y[0] + y[1]),
-                 name="product0_sulfur_spec")
-    m.subject_to(p * x[1] + quality[2] * z <= 1.5 * (x[1] + z) * (y[0] + y[1]),
-                 name="product1_sulfur_spec")
+    m.subject_to(p * x[0] <= 2.5 * x[0] * (y[0] + y[1]), name="product0_sulfur_spec")
+    m.subject_to(
+        p * x[1] + quality[2] * z <= 1.5 * (x[1] + z) * (y[0] + y[1]), name="product1_sulfur_spec"
+    )
 
     # Product demand
     m.subject_to(x[0] <= 100, name="product0_demand")
@@ -109,8 +106,9 @@ def example_pooling_haverly():
 # indicator constraints.
 # ═══════════════════════════════════════════════════════════════
 
+
 def example_process_synthesis():
-    m = jm.Model("process_synthesis")
+    m = dm.Model("process_synthesis")
 
     n_units = 4
     n_streams = 6
@@ -131,9 +129,9 @@ def example_process_synthesis():
 
     # Objective: maximize profit
     m.maximize(
-        revenue_per_unit * f[5]              # revenue from final product
-        - jm.sum(lambda i: fixed_cost[i] * y[i], over=range(n_units))
-        - jm.sum(lambda i: variable_cost[i] * x[i], over=range(n_units))
+        revenue_per_unit * f[5]  # revenue from final product
+        - dm.sum(lambda i: fixed_cost[i] * y[i], over=range(n_units))
+        - dm.sum(lambda i: variable_cost[i] * x[i], over=range(n_units))
     )
 
     # Feed availability
@@ -149,22 +147,23 @@ def example_process_synthesis():
 
     # Indicator constraints: unit operates only if built
     for i in range(n_units):
-        m.if_then(y[i], [
-            x[i] >= 10,     # Minimum operating level
-            x[i] <= 500,    # Maximum capacity
-        ], name=f"unit{i}_active")
+        m.if_then(
+            y[i],
+            [
+                x[i] >= 10,  # Minimum operating level
+                x[i] <= 500,  # Maximum capacity
+            ],
+            name=f"unit{i}_active",
+        )
 
         # If not built, capacity is zero
         m.subject_to(x[i] <= 500 * y[i], name=f"unit{i}_bigM")
 
     # At least 2 units must be built
-    m.subject_to(jm.sum(y) >= 2, name="min_units")
+    m.subject_to(dm.sum(y) >= 2, name="min_units")
 
     # Nonlinear yield: unit 2 has diminishing returns
-    m.subject_to(
-        f[5] <= jm.log(1 + x[2]) * 100 + x[3] * 0.85,
-        name="nonlinear_yield"
-    )
+    m.subject_to(f[5] <= dm.log(1 + x[2]) * 100 + x[3] * 0.85, name="nonlinear_yield")
 
     print(m)
     return m
@@ -178,6 +177,7 @@ def example_process_synthesis():
 # This is MIQCQP.
 # ═══════════════════════════════════════════════════════════════
 
+
 def example_portfolio():
     n_assets = 20
     np.random.seed(42)
@@ -189,7 +189,7 @@ def example_portfolio():
     target_return = 0.08
     max_assets = 8
 
-    m = jm.Model("portfolio")
+    m = dm.Model("portfolio")
 
     # Continuous: portfolio weights
     w = m.continuous("weight", shape=(n_assets,), lb=0, ub=0.3)
@@ -199,33 +199,30 @@ def example_portfolio():
 
     # Minimize portfolio variance (quadratic objective)
     # w^T Σ w — this is a quadratic form
-    m.minimize(jm.sum(lambda i: jm.sum(lambda j:
-        cov[i, j] * w[i] * w[j], over=range(n_assets)
-    ), over=range(n_assets)))
+    m.minimize(
+        dm.sum(
+            lambda i: dm.sum(lambda j: cov[i, j] * w[i] * w[j], over=range(n_assets)),
+            over=range(n_assets),
+        )
+    )
 
     # Return target
     m.subject_to(
-        jm.sum(lambda i: expected_return[i] * w[i], over=range(n_assets)) >= target_return,
-        name="min_return"
+        dm.sum(lambda i: expected_return[i] * w[i], over=range(n_assets)) >= target_return,
+        name="min_return",
     )
 
     # Weights sum to 1
-    m.subject_to(jm.sum(w) == 1.0, name="budget")
+    m.subject_to(dm.sum(w) == 1.0, name="budget")
 
     # Cardinality: invest in at most K assets
-    m.subject_to(jm.sum(z) <= max_assets, name="cardinality")
+    m.subject_to(dm.sum(z) <= max_assets, name="cardinality")
 
     # Linking: w[i] > 0 only if z[i] = 1
-    m.subject_to([
-        w[i] <= 0.3 * z[i]
-        for i in range(n_assets)
-    ], name="linking")
+    m.subject_to([w[i] <= 0.3 * z[i] for i in range(n_assets)], name="linking")
 
     # Minimum investment if selected
-    m.subject_to([
-        w[i] >= 0.02 * z[i]
-        for i in range(n_assets)
-    ], name="min_invest")
+    m.subject_to([w[i] >= 0.02 * z[i] for i in range(n_assets)], name="min_invest")
 
     print(m)
     return m
@@ -238,52 +235,48 @@ def example_portfolio():
 # integer number of reactor stages. Signomial terms.
 # ═══════════════════════════════════════════════════════════════
 
+
 def example_reactor_design():
-    m = jm.Model("reactor_design")
+    m = dm.Model("reactor_design")
 
     # Design variables
     T = m.continuous("temperature", shape=(3,), lb=300, ub=800)  # K
-    V = m.continuous("volume", shape=(3,), lb=0.1, ub=10)         # m³
-    F = m.continuous("feed_rate", lb=0.1, ub=100)                 # mol/s
-    n_stages = m.integer("n_stages", lb=1, ub=5)
+    V = m.continuous("volume", shape=(3,), lb=0.1, ub=10)  # m³
+    F = m.continuous("feed_rate", lb=0.1, ub=100)  # mol/s
+    m.integer("n_stages", lb=1, ub=5)
 
     # Kinetic parameters
-    k0 = 1e6       # pre-exponential factor
-    Ea = 50000.0    # activation energy (J/mol)
-    R = 8.314       # gas constant
+    k0 = 1e6  # pre-exponential factor
+    Ea = 50000.0  # activation energy (J/mol)
+    R = 8.314  # gas constant
 
     # Minimize total reactor volume (cost proxy)
-    m.minimize(jm.sum(V))
+    m.minimize(dm.sum(V))
 
     # Conversion target: 95% of feed must react
     # Arrhenius kinetics at each stage (nonlinear!)
     for i in range(3):
-        rate_constant = k0 * jm.exp(-Ea / (R * T[i]))
+        rate_constant = k0 * dm.exp(-Ea / (R * T[i]))
         m.subject_to(
             rate_constant * V[i] >= F * 0.3,  # Each stage converts ≥30%
-            name=f"conversion_stage{i}"
+            name=f"conversion_stage{i}",
         )
 
     # Heat balance: adiabatic temperature rise
-    Cp = 75.0      # J/(mol·K)
+    Cp = 75.0  # J/(mol·K)
     dH = -80000.0  # J/mol (exothermic)
     for i in range(3):
         if i == 0:
             m.subject_to(
                 T[i] <= 400,  # Feed temperature limit
-                name="feed_temp"
+                name="feed_temp",
             )
         else:
             # Temperature rises due to reaction
-            m.subject_to(
-                T[i] == T[i-1] - dH * 0.3 * F / (Cp * F),
-                name=f"heat_balance_stage{i}"
-            )
+            m.subject_to(T[i] == T[i - 1] - dH * 0.3 * F / (Cp * F), name=f"heat_balance_stage{i}")
 
     # Material limit on temperature
-    m.subject_to([
-        T[i] <= 750 for i in range(3)
-    ], name="max_temperature")
+    m.subject_to([T[i] <= 750 for i in range(3)], name="max_temperature")
 
     # Only n_stages stages are active (others have zero volume)
     for i in range(3):
@@ -303,6 +296,7 @@ def example_reactor_design():
 # (economies of scale: cost per unit decreases with volume).
 # ═══════════════════════════════════════════════════════════════
 
+
 def example_facility_location():
     n_facilities = 5
     n_customers = 20
@@ -314,7 +308,7 @@ def example_facility_location():
     demand = np.random.uniform(50, 200, n_customers)
     distance = np.random.uniform(10, 500, (n_facilities, n_customers))
 
-    m = jm.Model("facility_location")
+    m = dm.Model("facility_location")
 
     # Binary: open facility
     y = m.binary("open", shape=(n_facilities,))
@@ -324,29 +318,36 @@ def example_facility_location():
 
     # Objective: minimize fixed + transportation cost
     # Transportation has economies of scale: cost = distance * sqrt(shipment)
-    transport_cost = jm.sum(lambda i: jm.sum(lambda j:
-        distance[i, j] * jm.sqrt(x[i, j] + 1),  # +1 avoids sqrt(0) issues
-        over=range(n_customers)
-    ), over=range(n_facilities))
-
-    m.minimize(
-        jm.sum(lambda i: fixed_cost[i] * y[i], over=range(n_facilities)) + transport_cost
+    transport_cost = dm.sum(
+        lambda i: dm.sum(
+            lambda j: distance[i, j] * dm.sqrt(x[i, j] + 1),  # +1 avoids sqrt(0) issues
+            over=range(n_customers),
+        ),
+        over=range(n_facilities),
     )
 
+    m.minimize(dm.sum(lambda i: fixed_cost[i] * y[i], over=range(n_facilities)) + transport_cost)
+
     # Demand satisfaction
-    m.subject_to([
-        jm.sum(lambda i: x[i, j], over=range(n_facilities)) >= demand[j]
-        for j in range(n_customers)
-    ], name="demand")
+    m.subject_to(
+        [
+            dm.sum(lambda i: x[i, j], over=range(n_facilities)) >= demand[j]
+            for j in range(n_customers)
+        ],
+        name="demand",
+    )
 
     # Capacity limits (active only if open)
-    m.subject_to([
-        jm.sum(lambda j: x[i, j], over=range(n_customers)) <= capacity[i] * y[i]
-        for i in range(n_facilities)
-    ], name="capacity")
+    m.subject_to(
+        [
+            dm.sum(lambda j: x[i, j], over=range(n_customers)) <= capacity[i] * y[i]
+            for i in range(n_facilities)
+        ],
+        name="capacity",
+    )
 
     # At least 2 facilities must be open
-    m.subject_to(jm.sum(y) >= 2, name="min_open")
+    m.subject_to(dm.sum(y) >= 2, name="min_open")
 
     print(m)
     return m
@@ -355,12 +356,13 @@ def example_facility_location():
 # ═══════════════════════════════════════════════════════════════
 # EXAMPLE 7: Parametric Optimization with Sensitivity
 #
-# Demonstrates jm.Parameter for differentiating through the solve.
+# Demonstrates dm.Parameter for differentiating through the solve.
 # Useful for: what-if analysis, bilevel optimization, pricing.
 # ═══════════════════════════════════════════════════════════════
 
+
 def example_parametric():
-    m = jm.Model("parametric_blending")
+    m = dm.Model("parametric_blending")
 
     # Parameters: values that are fixed per solve but differentiable
     price_A = m.parameter("price_A", value=50.0)
@@ -373,28 +375,20 @@ def example_parametric():
 
     # Minimize cost
     m.minimize(
-        price_A * jm.sum(x[0, :]) + price_B * jm.sum(x[1, :])
-        + 1000 * jm.sum(y)  # fixed costs
+        price_A * dm.sum(x[0, :]) + price_B * dm.sum(x[1, :]) + 1000 * dm.sum(y)  # fixed costs
     )
 
     # Meet demand for each product
     for j in range(2):
-        m.subject_to(
-            x[0, j] + x[1, j] >= demand[j],
-            name=f"demand_product{j}"
-        )
+        m.subject_to(x[0, j] + x[1, j] >= demand[j], name=f"demand_product{j}")
 
     # Source activation
     for i in range(2):
-        m.subject_to(
-            jm.sum(x[i, :]) <= 300 * y[i],
-            name=f"source{i}_activation"
-        )
+        m.subject_to(dm.sum(x[i, :]) <= 300 * y[i], name=f"source{i}_activation")
 
     # Quality constraint (nonlinear)
     m.subject_to(
-        0.3 * x[0, 0] + 0.7 * x[1, 0] >= 0.5 * (x[0, 0] + x[1, 0]),
-        name="quality_product0"
+        0.3 * x[0, 0] + 0.7 * x[1, 0] >= 0.5 * (x[0, 0] + x[1, 0]), name="quality_product0"
     )
 
     # After solving:
@@ -411,6 +405,7 @@ def example_parametric():
 #
 # Shows the bridge from existing Pyomo models to JaxMINLP.
 # ═══════════════════════════════════════════════════════════════
+
 
 def example_pyomo_import():
     """
@@ -431,7 +426,7 @@ def example_pyomo_import():
     pyo_model.c2 = pyo.Constraint(expr=pyo_model.x[3] * pyo_model.y[1] <= 8)
 
     # One-line import to JaxMINLP
-    jm_model = jm.from_pyomo(pyo_model)
+    jm_model = dm.from_pyomo(pyo_model)
 
     # Now solve with GPU acceleration
     result = jm_model.solve(gpu=True)
@@ -449,12 +444,13 @@ def example_pyomo_import():
 # Standard interchange format for optimization problems.
 # ═══════════════════════════════════════════════════════════════
 
+
 def example_nl_import():
     """
     import jaxminlp as jm
 
     # Load from AMPL .nl format (parsed by Rust for speed)
-    model = jm.from_nl("benchmarks/minlplib/ex1221.nl")
+    model = dm.from_nl("benchmarks/minlplib/ex1221.nl")
     result = model.solve()
 
     print(f"Optimal: {result.objective}")
@@ -468,6 +464,7 @@ def example_nl_import():
 #
 # The LLM-native interface: describe your problem, get a model.
 # ═══════════════════════════════════════════════════════════════
+
 
 def example_llm_formulation():
     """
@@ -487,7 +484,7 @@ def example_llm_formulation():
     shipping_rates = np.random.uniform(5, 50, (3, 5))
 
     # Describe the problem in natural language
-    model = jm.from_description(
+    model = dm.from_description(
         '''
         Minimize total cost (fixed + shipping) of serving customers from warehouses.
         Each warehouse has a fixed cost to open and a maximum capacity.
@@ -522,11 +519,12 @@ def example_llm_formulation():
 # EXAMPLE 11: Streaming Solve with Live Progress
 # ═══════════════════════════════════════════════════════════════
 
+
 def example_streaming():
     """
     import jaxminlp as jm
 
-    m = jm.Model("large_problem")
+    m = dm.Model("large_problem")
     # ... build model ...
 
     # Streaming solve: get updates during branch-and-bound
@@ -577,25 +575,25 @@ if __name__ == "__main__":
     ]
 
     for name, func in examples:
-        print(f"\n{'─'*60}")
+        print(f"\n{'─' * 60}")
         print(f"Example: {name}")
-        print(f"{'─'*60}")
+        print(f"{'─' * 60}")
         try:
             model = func()
             if model:
-                print(f"\n  ✓ Model built successfully")
+                print("\n  ✓ Model built successfully")
         except Exception as e:
             print(f"\n  ✗ Error: {e}")
 
-    print(f"\n{'─'*60}")
+    print(f"\n{'─' * 60}")
     print("Import examples (stubs):")
-    print(f"{'─'*60}")
+    print(f"{'─' * 60}")
     example_pyomo_import()
     example_nl_import()
     example_llm_formulation()
     example_streaming()
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("All model-building examples completed.")
     print("Solve requires the Rust+JAX backend (under development).")
     print("=" * 60)

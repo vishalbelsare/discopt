@@ -44,9 +44,9 @@ Model.solve()  -->  Python orchestrator  -->  Rust TreeManager (B&B engine)
 ## Quick Start
 
 ```python
-import jaxminlp_api as jm
+from discopt import Model
 
-m = jm.Model("example")
+m = Model("example")
 x = m.continuous("x", lb=0, ub=5)
 y = m.continuous("y", lb=0, ub=5)
 z = m.binary("z")

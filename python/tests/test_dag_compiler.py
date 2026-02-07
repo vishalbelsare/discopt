@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
-import sys
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/python")
-
 from discopt._jax.dag_compiler import (
     compile_constraint,
     compile_expression,
     compile_objective,
 )
-from jaxminlp_api import examples
-from jaxminlp_api.core import (
+from discopt.modeling import examples
+from discopt.modeling.core import (
     Constant,
     Expression,
     MatMulExpression,
@@ -28,6 +22,7 @@ from jaxminlp_api.core import (
 # ─────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────
+
 
 def _flat_size(model: Model) -> int:
     """Total size of the flat variable vector."""
@@ -50,6 +45,7 @@ def _random_interior_point(model: Model, rng: np.random.Generator) -> jnp.ndarra
 # ─────────────────────────────────────────────────────────────
 # Individual Node Type Tests
 # ─────────────────────────────────────────────────────────────
+
 
 class TestConstant:
     def test_scalar_constant(self):
@@ -148,8 +144,8 @@ class TestBinaryOp:
     def test_pow(self):
         m = Model("test")
         x = m.continuous("x", lb=0, ub=10)
-        m.minimize(x ** 2)
-        fn = compile_expression(x ** 2, m)
+        m.minimize(x**2)
+        fn = compile_expression(x**2, m)
         assert jnp.allclose(fn(jnp.array([3.0])), 9.0)
 
     def test_constant_on_left(self):
@@ -181,7 +177,8 @@ class TestFunctionCall:
         m = Model("test")
         x = m.continuous("x", lb=0, ub=5)
         m.minimize(x)
-        from jaxminlp_api.core import exp
+        from discopt.modeling.core import exp
+
         fn = compile_expression(exp(x), m)
         assert jnp.allclose(fn(jnp.array([1.0])), jnp.exp(1.0))
 
@@ -189,7 +186,8 @@ class TestFunctionCall:
         m = Model("test")
         x = m.continuous("x", lb=0.1, ub=10)
         m.minimize(x)
-        from jaxminlp_api.core import log
+        from discopt.modeling.core import log
+
         fn = compile_expression(log(x), m)
         assert jnp.allclose(fn(jnp.array([jnp.e])), 1.0, atol=1e-5)
 
@@ -197,7 +195,8 @@ class TestFunctionCall:
         m = Model("test")
         x = m.continuous("x", lb=0.1, ub=10)
         m.minimize(x)
-        from jaxminlp_api.core import log2
+        from discopt.modeling.core import log2
+
         fn = compile_expression(log2(x), m)
         assert jnp.allclose(fn(jnp.array([8.0])), 3.0)
 
@@ -205,7 +204,8 @@ class TestFunctionCall:
         m = Model("test")
         x = m.continuous("x", lb=0.1, ub=10000)
         m.minimize(x)
-        from jaxminlp_api.core import log10
+        from discopt.modeling.core import log10
+
         fn = compile_expression(log10(x), m)
         assert jnp.allclose(fn(jnp.array([1000.0])), 3.0)
 
@@ -213,7 +213,8 @@ class TestFunctionCall:
         m = Model("test")
         x = m.continuous("x", lb=0, ub=100)
         m.minimize(x)
-        from jaxminlp_api.core import sqrt
+        from discopt.modeling.core import sqrt
+
         fn = compile_expression(sqrt(x), m)
         assert jnp.allclose(fn(jnp.array([9.0])), 3.0)
 
@@ -221,7 +222,8 @@ class TestFunctionCall:
         m = Model("test")
         x = m.continuous("x", lb=0, ub=10)
         m.minimize(x)
-        from jaxminlp_api.core import sin
+        from discopt.modeling.core import sin
+
         fn = compile_expression(sin(x), m)
         assert jnp.allclose(fn(jnp.array([jnp.pi / 2])), 1.0, atol=1e-5)
 
@@ -229,7 +231,8 @@ class TestFunctionCall:
         m = Model("test")
         x = m.continuous("x", lb=0, ub=10)
         m.minimize(x)
-        from jaxminlp_api.core import cos
+        from discopt.modeling.core import cos
+
         fn = compile_expression(cos(x), m)
         assert jnp.allclose(fn(jnp.array([0.0])), 1.0)
 
@@ -237,7 +240,8 @@ class TestFunctionCall:
         m = Model("test")
         x = m.continuous("x", lb=0, ub=1)
         m.minimize(x)
-        from jaxminlp_api.core import tan
+        from discopt.modeling.core import tan
+
         fn = compile_expression(tan(x), m)
         assert jnp.allclose(fn(jnp.array([0.0])), 0.0, atol=1e-6)
 
@@ -245,7 +249,8 @@ class TestFunctionCall:
         m = Model("test")
         x = m.continuous("x", lb=-10, ub=10)
         m.minimize(x)
-        from jaxminlp_api.core import abs_ as abs_fn
+        from discopt.modeling.core import abs_ as abs_fn
+
         fn = compile_expression(abs_fn(x), m)
         assert jnp.allclose(fn(jnp.array([-5.0])), 5.0)
 
@@ -253,7 +258,8 @@ class TestFunctionCall:
         m = Model("test")
         x = m.continuous("x", lb=-10, ub=10)
         m.minimize(x)
-        from jaxminlp_api.core import sign
+        from discopt.modeling.core import sign
+
         fn = compile_expression(sign(x), m)
         assert jnp.allclose(fn(jnp.array([-5.0])), -1.0)
 
@@ -262,7 +268,8 @@ class TestFunctionCall:
         x = m.continuous("x", lb=0, ub=10)
         y = m.continuous("y", lb=0, ub=10)
         m.minimize(x)
-        from jaxminlp_api.core import minimum
+        from discopt.modeling.core import minimum
+
         fn = compile_expression(minimum(x, y), m)
         assert jnp.allclose(fn(jnp.array([3.0, 5.0])), 3.0)
 
@@ -271,7 +278,8 @@ class TestFunctionCall:
         x = m.continuous("x", lb=0, ub=10)
         y = m.continuous("y", lb=0, ub=10)
         m.minimize(x)
-        from jaxminlp_api.core import maximum
+        from discopt.modeling.core import maximum
+
         fn = compile_expression(maximum(x, y), m)
         assert jnp.allclose(fn(jnp.array([3.0, 5.0])), 5.0)
 
@@ -279,7 +287,8 @@ class TestFunctionCall:
         m = Model("test")
         x = m.continuous("x", shape=(3,), lb=1, ub=10)
         m.minimize(x[0])
-        from jaxminlp_api.core import prod
+        from discopt.modeling.core import prod
+
         fn = compile_expression(prod(x), m)
         assert jnp.allclose(fn(jnp.array([2.0, 3.0, 4.0])), 24.0)
 
@@ -287,7 +296,8 @@ class TestFunctionCall:
         m = Model("test")
         x = m.continuous("x", shape=(3,), lb=0, ub=10)
         m.minimize(x[0])
-        from jaxminlp_api.core import norm
+        from discopt.modeling.core import norm
+
         fn = compile_expression(norm(x), m)
         assert jnp.allclose(fn(jnp.array([3.0, 4.0, 0.0])), 5.0)
 
@@ -347,7 +357,8 @@ class TestSumExpression:
         m = Model("test")
         x = m.continuous("x", shape=(3,), lb=0, ub=10)
         m.minimize(x[0])
-        from jaxminlp_api.core import sum as jm_sum
+        from discopt.modeling.core import sum as jm_sum
+
         expr = jm_sum(x)
         fn = compile_expression(expr, m)
         assert jnp.allclose(fn(jnp.array([1.0, 2.0, 3.0])), 6.0)
@@ -356,7 +367,8 @@ class TestSumExpression:
         m = Model("test")
         x = m.continuous("x", shape=(2, 3), lb=0, ub=10)
         m.minimize(x[0, 0])
-        from jaxminlp_api.core import sum as jm_sum
+        from discopt.modeling.core import sum as jm_sum
+
         expr = jm_sum(x, axis=0)
         fn = compile_expression(expr, m)
         x_flat = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
@@ -369,7 +381,8 @@ class TestSumOverExpression:
         m = Model("test")
         x = m.continuous("x", shape=(3,), lb=0, ub=10)
         m.minimize(x[0])
-        from jaxminlp_api.core import sum as jm_sum
+        from discopt.modeling.core import sum as jm_sum
+
         c = np.array([2.0, 3.0, 4.0])
         expr = jm_sum(lambda i: c[i] * x[i], over=range(3))
         fn = compile_expression(expr, m)
@@ -390,7 +403,8 @@ class TestParameter:
         p = m.parameter("prices", value=np.array([10.0, 20.0]))
         x = m.continuous("x", shape=(2,), lb=0, ub=10)
         m.minimize(x[0])
-        from jaxminlp_api.core import sum as jm_sum
+        from discopt.modeling.core import sum as jm_sum
+
         expr = jm_sum(lambda i: p[i] * x[i], over=range(2))
         fn = compile_expression(expr, m)
         assert jnp.allclose(fn(jnp.array([1.0, 2.0])), 50.0)
@@ -402,7 +416,7 @@ class TestConstraintCompilation:
         x = m.continuous("x", lb=0, ub=10)
         y = m.continuous("y", lb=0, ub=10)
         m.minimize(x + y)
-        con = (x + y <= 5)  # body = (x + y) - 5
+        con = x + y <= 5  # body = (x + y) - 5
         fn = compile_constraint(con, m)
         # At x=2, y=1: body = (2+1) - 5 = -2
         assert jnp.allclose(fn(jnp.array([2.0, 1.0])), -2.0)
@@ -412,7 +426,7 @@ class TestConstraintCompilation:
         x = m.continuous("x", lb=0, ub=10)
         y = m.continuous("y", lb=0, ub=10)
         m.minimize(x + y)
-        con = (x == y)  # body = x - y
+        con = x == y  # body = x - y
         fn = compile_constraint(con, m)
         assert jnp.allclose(fn(jnp.array([3.0, 3.0])), 0.0)
 
@@ -421,7 +435,7 @@ class TestConstraintCompilation:
         x = m.continuous("x", lb=0, ub=10)
         y = m.continuous("y", lb=0, ub=10)
         m.minimize(x + y)
-        con = (x + y >= 5)  # internally stored as 5 - (x+y) <= 0, body = 5 - (x+y)
+        con = x + y >= 5  # internally stored as 5 - (x+y) <= 0, body = 5 - (x+y)
         fn = compile_constraint(con, m)
         # At x=4, y=3: body = 5 - 7 = -2
         assert jnp.allclose(fn(jnp.array([4.0, 3.0])), -2.0)
@@ -430,6 +444,7 @@ class TestConstraintCompilation:
 # ─────────────────────────────────────────────────────────────
 # Tests on the 7 example models
 # ─────────────────────────────────────────────────────────────
+
 
 def _build_all_examples():
     """Build all 7 example models."""
@@ -480,9 +495,7 @@ class TestGradientCorrectness:
         for i in range(n_points):
             x = _random_interior_point(model, rng)
             g = grad_fn(x)
-            assert jnp.all(jnp.isfinite(g)), (
-                f"Non-finite gradient at point {i} for {name}: {g}"
-            )
+            assert jnp.all(jnp.isfinite(g)), f"Non-finite gradient at point {i} for {name}: {g}"
 
 
 class TestNumericalCorrectness:
@@ -544,7 +557,7 @@ class TestCompileObjectiveAndConstraint:
     def test_compile_objective_returns_callable(self):
         m = Model("test")
         x = m.continuous("x", lb=0, ub=10)
-        m.minimize(x ** 2)
+        m.minimize(x**2)
         fn = compile_objective(m)
         assert callable(fn)
         assert jnp.allclose(fn(jnp.array([3.0])), 9.0)
@@ -570,7 +583,7 @@ class TestJIT:
         m = Model("test")
         x = m.continuous("x", lb=0, ub=10)
         y = m.continuous("y", lb=0, ub=10)
-        m.minimize(x ** 2 + y ** 2)
+        m.minimize(x**2 + y**2)
         fn = jax.jit(compile_objective(m))
         result = fn(jnp.array([3.0, 4.0]))
         assert jnp.allclose(result, 25.0)

@@ -11,55 +11,45 @@ Test classes:
   - TestDeterminism: Reproducibility check
 """
 
-import sys
 import time
 
+import discopt.modeling as dm
 import numpy as np
 import pytest
-
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
-import jaxminlp_api as jm
 from discopt._rust import PyTreeManager
-from jaxminlp_api.core import SolveResult
-from jaxminlp_api.examples import example_simple_minlp
+from discopt.modeling.core import SolveResult
+from discopt.modeling.examples import example_simple_minlp
 
 # ──────────────────────────────────────────────────────────
 # TestPyTreeManager — Unit tests for Rust B&B bindings
 # ──────────────────────────────────────────────────────────
 
+
 class TestPyTreeManager:
     """Unit tests for the PyTreeManager Rust bindings."""
 
     def test_construct(self):
-        tm = PyTreeManager(
-            2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first"
-        )
+        tm = PyTreeManager(2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first")
         stats = tm.stats()
         assert stats["total_nodes"] == 0
         assert stats["open_nodes"] == 0
 
     def test_initialize(self):
-        tm = PyTreeManager(
-            2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first"
-        )
+        tm = PyTreeManager(2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first")
         tm.initialize()
         stats = tm.stats()
         assert stats["total_nodes"] == 1
         assert stats["open_nodes"] == 1
 
     def test_export_empty(self):
-        tm = PyTreeManager(
-            2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first"
-        )
+        tm = PyTreeManager(2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first")
         lb, ub, ids = tm.export_batch(10)
         assert lb.shape == (0, 2)
         assert ub.shape == (0, 2)
         assert ids.shape == (0,)
 
     def test_export_root(self):
-        tm = PyTreeManager(
-            2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first"
-        )
+        tm = PyTreeManager(2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first")
         tm.initialize()
         lb, ub, ids = tm.export_batch(10)
         assert lb.shape == (1, 2)
@@ -70,9 +60,7 @@ class TestPyTreeManager:
         np.testing.assert_array_equal(ub[0], [1.0, 1.0])
 
     def test_import_and_process(self):
-        tm = PyTreeManager(
-            2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first"
-        )
+        tm = PyTreeManager(2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first")
         tm.initialize()
         lb, ub, ids = tm.export_batch(1)
 
@@ -94,9 +82,7 @@ class TestPyTreeManager:
         assert stats["open_nodes"] == 2
 
     def test_fathom_integer_feasible(self):
-        tm = PyTreeManager(
-            2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first"
-        )
+        tm = PyTreeManager(2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first")
         tm.initialize()
         lb, ub, ids = tm.export_batch(1)
 
@@ -120,15 +106,11 @@ class TestPyTreeManager:
         np.testing.assert_array_equal(sol, [1.0, 0.0])
 
     def test_gap(self):
-        tm = PyTreeManager(
-            2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first"
-        )
+        tm = PyTreeManager(2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first")
         assert tm.gap() == float("inf")
 
     def test_depth_first_strategy(self):
-        tm = PyTreeManager(
-            2, [0.0, 0.0], [1.0, 1.0], [0], [2], "depth_first"
-        )
+        tm = PyTreeManager(2, [0.0, 0.0], [1.0, 1.0], [0], [2], "depth_first")
         tm.initialize()
         stats = tm.stats()
         assert stats["open_nodes"] == 1
@@ -143,9 +125,7 @@ class TestPyTreeManager:
 
     def test_full_lifecycle(self):
         """Test a complete B&B lifecycle with branching and pruning."""
-        tm = PyTreeManager(
-            1, [0.0], [10.0], [0], [1], "best_first"
-        )
+        tm = PyTreeManager(1, [0.0], [10.0], [0], [1], "best_first")
         tm.initialize()
 
         # Root: fractional
@@ -185,6 +165,7 @@ class TestPyTreeManager:
 # ──────────────────────────────────────────────────────────
 # TestSolveSimple — End-to-end solve
 # ──────────────────────────────────────────────────────────
+
 
 class TestSolveSimple:
     """End-to-end tests solving example_simple_minlp."""
@@ -253,6 +234,7 @@ class TestSolveSimple:
 # TestSolveCorrectness — Verify against known optima
 # ──────────────────────────────────────────────────────────
 
+
 class TestSolveCorrectness:
     """Verify solver finds correct optimal values."""
 
@@ -270,7 +252,7 @@ class TestSolveCorrectness:
 
     def test_pure_continuous_nlp(self):
         """A pure continuous NLP should solve directly (no B&B)."""
-        m = jm.Model("continuous_test")
+        m = dm.Model("continuous_test")
         x = m.continuous("x", lb=-5, ub=5)
         y = m.continuous("y", lb=-5, ub=5)
         m.minimize(x**2 + y**2)
@@ -284,7 +266,7 @@ class TestSolveCorrectness:
 
     def test_binary_knapsack(self):
         """Simple binary knapsack problem."""
-        m = jm.Model("knapsack")
+        m = dm.Model("knapsack")
         x1 = m.binary("x1")
         x2 = m.binary("x2")
         x3 = m.binary("x3")
@@ -305,6 +287,7 @@ class TestSolveCorrectness:
 # ──────────────────────────────────────────────────────────
 # TestTermination — Time limit, gap tolerance
 # ──────────────────────────────────────────────────────────
+
 
 class TestTermination:
     """Test solver termination conditions."""
@@ -329,7 +312,7 @@ class TestTermination:
 
     def test_infeasible_detection(self):
         """Solver should detect infeasible models."""
-        m = jm.Model("infeasible")
+        m = dm.Model("infeasible")
         x = m.continuous("x", lb=0, ub=1)
         m.minimize(x)
         # Contradictory constraints
@@ -345,6 +328,7 @@ class TestTermination:
 # ──────────────────────────────────────────────────────────
 # TestProfiling — Verify time breakdown
 # ──────────────────────────────────────────────────────────
+
 
 class TestProfiling:
     """Test that profiling times are populated and consistent."""
@@ -370,6 +354,7 @@ class TestProfiling:
 # TestDeterminism — Reproducibility
 # ──────────────────────────────────────────────────────────
 
+
 class TestDeterminism:
     """Test that deterministic mode produces identical results."""
 
@@ -389,6 +374,7 @@ class TestDeterminism:
 # ──────────────────────────────────────────────────────────
 # TestSolveResult — Result API
 # ──────────────────────────────────────────────────────────
+
 
 class TestSolveResult:
     """Test SolveResult API methods."""

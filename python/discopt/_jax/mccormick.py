@@ -19,6 +19,7 @@ import jax.numpy as jnp
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _secant(f, x, lb, ub):
     """Secant line of f between (lb, f(lb)) and (ub, f(ub)) evaluated at x.
 
@@ -35,6 +36,7 @@ def _secant(f, x, lb, ub):
 # ---------------------------------------------------------------------------
 # Bilinear product:  f(x,y) = x * y
 # ---------------------------------------------------------------------------
+
 
 def relax_bilinear(x, y, x_lb, x_ub, y_lb, y_ub):
     """McCormick relaxation of x*y given bounds on x and y.
@@ -57,6 +59,7 @@ def relax_bilinear(x, y, x_lb, x_ub, y_lb, y_ub):
 # ---------------------------------------------------------------------------
 # Addition / Subtraction / Negation  (exact relaxations)
 # ---------------------------------------------------------------------------
+
 
 def relax_add(cv_x, cc_x, cv_y, cc_y):
     """Relaxation of x + y given relaxations of x and y.
@@ -86,16 +89,19 @@ def relax_neg(cv_x, cc_x):
 # Division:  f(x,y) = x / y  via  x * (1/y)
 # ---------------------------------------------------------------------------
 
+
 def _relax_reciprocal(y, y_lb, y_ub):
     """McCormick relaxation of 1/y on [y_lb, y_ub].
 
     Requires that 0 is not in [y_lb, y_ub].
     1/y is convex on (0, inf) and convex on (-inf, 0).
     """
+
     # 1/y is convex when y > 0 and convex when y < 0
     # Both cases: cv = 1/y, cc = secant
     def f(t):
         return 1.0 / t
+
     cv = f(y)
     cc = _secant(f, y, y_lb, y_ub)
     return cv, cc
@@ -124,6 +130,7 @@ def relax_div(x, y, x_lb, x_ub, y_lb, y_ub):
 # Power:  f(x) = x^n  (integer exponent)
 # ---------------------------------------------------------------------------
 
+
 def relax_pow(x, lb, ub, n):
     """McCormick relaxation of x^n for integer n on [lb, ub].
 
@@ -133,8 +140,9 @@ def relax_pow(x, lb, ub, n):
     - n even: x^n is convex -> cv = x^n, cc = secant
     - n odd >= 3: x^n is convex on [0,inf), concave on (-inf,0]
     """
+
     def f(t):
-        return t ** n
+        return t**n
 
     if n == 1:
         return x, x
@@ -171,13 +179,9 @@ def relax_pow(x, lb, ub, n):
     is_nonneg = lb >= 0
     is_nonpos = ub <= 0
 
-    cv = jnp.where(is_nonneg, case1_cv,
-         jnp.where(is_nonpos, case2_cv,
-                    case3_cv))
+    cv = jnp.where(is_nonneg, case1_cv, jnp.where(is_nonpos, case2_cv, case3_cv))
 
-    cc = jnp.where(is_nonneg, case1_cc,
-         jnp.where(is_nonpos, case2_cc,
-                    case3_cc))
+    cc = jnp.where(is_nonneg, case1_cc, jnp.where(is_nonpos, case2_cc, case3_cc))
 
     return cv, cc
 
@@ -185,6 +189,7 @@ def relax_pow(x, lb, ub, n):
 # ---------------------------------------------------------------------------
 # Univariate convex functions: cv = f(x), cc = secant
 # ---------------------------------------------------------------------------
+
 
 def relax_exp(x, lb, ub):
     """McCormick relaxation of exp(x) on [lb, ub].
@@ -203,8 +208,10 @@ def relax_square(x, lb, ub):
     x^2 is convex: cv = x^2, cc = secant line.
     Returns (cv, cc).
     """
+
     def f(t):
-        return t ** 2
+        return t**2
+
     cv = f(x)
     cc = _secant(f, x, lb, ub)
     return cv, cc
@@ -229,6 +236,7 @@ def relax_abs(x, lb, ub):
 # ---------------------------------------------------------------------------
 # Univariate concave functions: cv = secant, cc = f(x)
 # ---------------------------------------------------------------------------
+
 
 def relax_sqrt(x, lb, ub):
     """McCormick relaxation of sqrt(x) on [lb, ub] (lb >= 0).
@@ -277,6 +285,7 @@ def relax_log10(x, lb, ub):
 # ---------------------------------------------------------------------------
 # Trigonometric: sin, cos, tan
 # ---------------------------------------------------------------------------
+
 
 def relax_sin(x, lb, ub):
     """McCormick relaxation of sin(x) on [lb, ub].
@@ -354,12 +363,8 @@ def relax_sin(x, lb, ub):
     is_concave = sin_range_min >= -1e-10
     is_convex = sin_range_max <= 1e-10
 
-    narrow_cv = jnp.where(is_concave, concave_cv,
-                jnp.where(is_convex, convex_cv,
-                          mixed_cv))
-    narrow_cc = jnp.where(is_concave, concave_cc,
-                jnp.where(is_convex, convex_cc,
-                          mixed_cc))
+    narrow_cv = jnp.where(is_concave, concave_cv, jnp.where(is_convex, convex_cv, mixed_cv))
+    narrow_cc = jnp.where(is_concave, concave_cc, jnp.where(is_convex, convex_cc, mixed_cc))
 
     cv = jnp.where(wide, -1.0 * jnp.ones_like(x), narrow_cv)
     cc = jnp.where(wide, 1.0 * jnp.ones_like(x), narrow_cc)
@@ -416,12 +421,8 @@ def relax_tan(x, lb, ub):
     is_convex_half = lb >= center
     is_concave_half = ub <= center
 
-    cv = jnp.where(is_convex_half, case1_cv,
-         jnp.where(is_concave_half, case2_cv,
-                    case3_cv))
-    cc = jnp.where(is_convex_half, case1_cc,
-         jnp.where(is_concave_half, case2_cc,
-                    case3_cc))
+    cv = jnp.where(is_convex_half, case1_cv, jnp.where(is_concave_half, case2_cv, case3_cv))
+    cc = jnp.where(is_convex_half, case1_cc, jnp.where(is_concave_half, case2_cc, case3_cc))
 
     return cv, cc
 
@@ -429,6 +430,7 @@ def relax_tan(x, lb, ub):
 # ---------------------------------------------------------------------------
 # Composite: sign, min, max
 # ---------------------------------------------------------------------------
+
 
 def relax_sign(x, lb, ub):
     """McCormick relaxation of sign(x) on [lb, ub].
@@ -450,25 +452,15 @@ def relax_sign(x, lb, ub):
     # If ub == 0: cv = -1, cc = 0
     # If lb < 0 < ub: cv = -1, cc = 1
 
-    cv = jnp.where(lb > 0, 1.0,
-         jnp.where(ub < 0, -1.0,
-         jnp.where(lb == 0, 0.0,
-                    -1.0)))
+    cv = jnp.where(lb > 0, 1.0, jnp.where(ub < 0, -1.0, jnp.where(lb == 0, 0.0, -1.0)))
 
-    cc = jnp.where(lb > 0, 1.0,
-         jnp.where(ub < 0, -1.0,
-         jnp.where(ub == 0, 0.0,
-                    1.0)))
+    cc = jnp.where(lb > 0, 1.0, jnp.where(ub < 0, -1.0, jnp.where(ub == 0, 0.0, 1.0)))
 
     # Tighten: ensure cv <= sign(x) <= cc
     # The constant bounds above are always sound.
     # We can tighten by using sign(x) where it's exact.
-    cv = jnp.where(lb > 0, sign_x,
-         jnp.where(ub < 0, sign_x,
-                    cv))
-    cc = jnp.where(lb > 0, sign_x,
-         jnp.where(ub < 0, sign_x,
-                    cc))
+    cv = jnp.where(lb > 0, sign_x, jnp.where(ub < 0, sign_x, cv))
+    cc = jnp.where(lb > 0, sign_x, jnp.where(ub < 0, sign_x, cc))
 
     return cv, cc
 

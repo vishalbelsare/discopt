@@ -52,20 +52,19 @@ def _random_points(key, lb, ub, n=N_POINTS):
 def _check_soundness(cv, cc, true_val, label=""):
     """Assert the non-negotiable soundness invariant."""
     msg = f" [{label}]" if label else ""
-    assert jnp.all(cv <= true_val + TOL), (
-        f"cv > f(x){msg}: max violation = {jnp.max(cv - true_val)}"
-    )
-    assert jnp.all(cc >= true_val - TOL), (
-        f"cc < f(x){msg}: max violation = {jnp.max(true_val - cc)}"
-    )
-    assert jnp.all(cv <= cc + TOL), (
-        f"cv > cc{msg}: max violation = {jnp.max(cv - cc)}"
-    )
+    assert jnp.all(
+        cv <= true_val + TOL
+    ), f"cv > f(x){msg}: max violation = {jnp.max(cv - true_val)}"
+    assert jnp.all(
+        cc >= true_val - TOL
+    ), f"cc < f(x){msg}: max violation = {jnp.max(true_val - cc)}"
+    assert jnp.all(cv <= cc + TOL), f"cv > cc{msg}: max violation = {jnp.max(cv - cc)}"
 
 
 # ===================================================================
 # Soundness tests (10,000 random points each)
 # ===================================================================
+
 
 class TestBilinearSoundness:
     def test_positive_bounds(self):
@@ -128,14 +127,14 @@ class TestSquareSoundness:
         lb, ub = 1.0, 4.0
         x = _random_points(key, lb, ub)
         cv, cc = relax_square(x, lb, ub)
-        _check_soundness(cv, cc, x ** 2, "square [1,4]")
+        _check_soundness(cv, cc, x**2, "square [1,4]")
 
     def test_mixed_sign(self):
         key = jax.random.PRNGKey(21)
         lb, ub = -3.0, 2.0
         x = _random_points(key, lb, ub)
         cv, cc = relax_square(x, lb, ub)
-        _check_soundness(cv, cc, x ** 2, "square [-3,2]")
+        _check_soundness(cv, cc, x**2, "square [-3,2]")
 
 
 class TestSqrtSoundness:
@@ -275,42 +274,42 @@ class TestPowSoundness:
         lb, ub = 1.0, 3.0
         x = _random_points(key, lb, ub)
         cv, cc = relax_pow(x, lb, ub, 2)
-        _check_soundness(cv, cc, x ** 2, "x^2 [1,3]")
+        _check_soundness(cv, cc, x**2, "x^2 [1,3]")
 
     def test_even_power_mixed(self):
         key = jax.random.PRNGKey(91)
         lb, ub = -2.0, 3.0
         x = _random_points(key, lb, ub)
         cv, cc = relax_pow(x, lb, ub, 2)
-        _check_soundness(cv, cc, x ** 2, "x^2 [-2,3]")
+        _check_soundness(cv, cc, x**2, "x^2 [-2,3]")
 
     def test_even_power_4(self):
         key = jax.random.PRNGKey(92)
         lb, ub = -2.0, 2.0
         x = _random_points(key, lb, ub)
         cv, cc = relax_pow(x, lb, ub, 4)
-        _check_soundness(cv, cc, x ** 4, "x^4 [-2,2]")
+        _check_soundness(cv, cc, x**4, "x^4 [-2,2]")
 
     def test_odd_power_positive(self):
         key = jax.random.PRNGKey(93)
         lb, ub = 0.5, 3.0
         x = _random_points(key, lb, ub)
         cv, cc = relax_pow(x, lb, ub, 3)
-        _check_soundness(cv, cc, x ** 3, "x^3 [0.5,3]")
+        _check_soundness(cv, cc, x**3, "x^3 [0.5,3]")
 
     def test_odd_power_negative(self):
         key = jax.random.PRNGKey(94)
         lb, ub = -3.0, -0.5
         x = _random_points(key, lb, ub)
         cv, cc = relax_pow(x, lb, ub, 3)
-        _check_soundness(cv, cc, x ** 3, "x^3 [-3,-0.5]")
+        _check_soundness(cv, cc, x**3, "x^3 [-3,-0.5]")
 
     def test_odd_power_mixed(self):
         key = jax.random.PRNGKey(95)
         lb, ub = -2.0, 3.0
         x = _random_points(key, lb, ub)
         cv, cc = relax_pow(x, lb, ub, 3)
-        _check_soundness(cv, cc, x ** 3, "x^3 [-2,3]")
+        _check_soundness(cv, cc, x**3, "x^3 [-2,3]")
 
     def test_linear(self):
         key = jax.random.PRNGKey(96)
@@ -426,6 +425,7 @@ class TestMinMaxSoundness:
 # Tightness at bounds
 # ===================================================================
 
+
 class TestTightnessAtBounds:
     """When x = lb or x = ub, relaxations should equal the true value."""
 
@@ -445,7 +445,7 @@ class TestTightnessAtBounds:
         for x in [lb, ub]:
             x = jnp.float64(x)
             cv, cc = relax_square(x, lb, ub)
-            fval = x ** 2
+            fval = x**2
             assert jnp.abs(cv - fval) < self.TIGHT_TOL, f"square cv not tight at x={x}"
             assert jnp.abs(cc - fval) < self.TIGHT_TOL, f"square cc not tight at x={x}"
 
@@ -492,12 +492,8 @@ class TestTightnessAtBounds:
             x, y = jnp.float64(x), jnp.float64(y)
             cv, cc = relax_bilinear(x, y, x_lb, x_ub, y_lb, y_ub)
             fval = x * y
-            assert jnp.abs(cv - fval) < self.TIGHT_TOL, (
-                f"bilinear cv not tight at x={x}, y={y}"
-            )
-            assert jnp.abs(cc - fval) < self.TIGHT_TOL, (
-                f"bilinear cc not tight at x={x}, y={y}"
-            )
+            assert jnp.abs(cv - fval) < self.TIGHT_TOL, f"bilinear cv not tight at x={x}, y={y}"
+            assert jnp.abs(cc - fval) < self.TIGHT_TOL, f"bilinear cc not tight at x={x}, y={y}"
 
     def test_abs_tight(self):
         lb, ub = -3.0, 5.0
@@ -521,6 +517,7 @@ class TestTightnessAtBounds:
 # ===================================================================
 # Degenerate bounds (lb ≈ ub)
 # ===================================================================
+
 
 class TestDegenerateBounds:
     """When lb ≈ ub, both relaxations should approximate f(x)."""
@@ -563,7 +560,7 @@ class TestDegenerateBounds:
         x = jnp.float64(3.0)
         lb = ub = x
         cv, cc = relax_square(x, lb, ub)
-        fval = x ** 2
+        fval = x**2
         assert jnp.abs(cv - fval) < self.DEGEN_TOL
         assert jnp.abs(cc - fval) < self.DEGEN_TOL
 
@@ -571,6 +568,7 @@ class TestDegenerateBounds:
 # ===================================================================
 # Gap monotonicity
 # ===================================================================
+
 
 class TestGapMonotonicity:
     """As bounds tighten, relaxation gap should decrease."""
@@ -594,38 +592,31 @@ class TestGapMonotonicity:
         half_widths = [4.0, 2.0, 1.0, 0.5, 0.1]
         gaps = self._gap_at_midpoint(relax_exp, jnp.exp, 1.0, half_widths)
         for i in range(len(gaps) - 1):
-            assert gaps[i + 1] <= gaps[i] + 1e-10, (
-                f"exp gap not monotone: {gaps}"
-            )
+            assert gaps[i + 1] <= gaps[i] + 1e-10, f"exp gap not monotone: {gaps}"
 
     def test_log_gap_decreases(self):
         half_widths = [3.0, 1.5, 0.75, 0.3, 0.1]
         gaps = self._gap_at_midpoint(relax_log, jnp.log, 4.0, half_widths)
         for i in range(len(gaps) - 1):
-            assert gaps[i + 1] <= gaps[i] + 1e-10, (
-                f"log gap not monotone: {gaps}"
-            )
+            assert gaps[i + 1] <= gaps[i] + 1e-10, f"log gap not monotone: {gaps}"
 
     def test_sqrt_gap_decreases(self):
         half_widths = [3.0, 1.5, 0.75, 0.3, 0.1]
         gaps = self._gap_at_midpoint(relax_sqrt, jnp.sqrt, 4.0, half_widths)
         for i in range(len(gaps) - 1):
-            assert gaps[i + 1] <= gaps[i] + 1e-10, (
-                f"sqrt gap not monotone: {gaps}"
-            )
+            assert gaps[i + 1] <= gaps[i] + 1e-10, f"sqrt gap not monotone: {gaps}"
 
     def test_square_gap_decreases(self):
         half_widths = [4.0, 2.0, 1.0, 0.5, 0.1]
-        gaps = self._gap_at_midpoint(relax_square, lambda x: x ** 2, 2.0, half_widths)
+        gaps = self._gap_at_midpoint(relax_square, lambda x: x**2, 2.0, half_widths)
         for i in range(len(gaps) - 1):
-            assert gaps[i + 1] <= gaps[i] + 1e-10, (
-                f"square gap not monotone: {gaps}"
-            )
+            assert gaps[i + 1] <= gaps[i] + 1e-10, f"square gap not monotone: {gaps}"
 
 
 # ===================================================================
 # JIT compatibility
 # ===================================================================
+
 
 class TestJITCompatibility:
     """All relaxation functions should work under jax.jit."""
@@ -702,6 +693,7 @@ class TestJITCompatibility:
 # vmap compatibility
 # ===================================================================
 
+
 class TestVmapCompatibility:
     """Relaxation functions should work under jax.vmap over batched inputs/bounds."""
 
@@ -758,7 +750,7 @@ class TestVmapCompatibility:
         ubs = jnp.full(batch, 3.0)
         cv, cc = jax.vmap(lambda xi, lbi, ubi: relax_pow(xi, lbi, ubi, 3))(x, lbs, ubs)
         assert cv.shape == (batch,)
-        _check_soundness(cv, cc, x ** 3, "vmap pow")
+        _check_soundness(cv, cc, x**3, "vmap pow")
 
     def test_vmap_different_bounds(self):
         """Test that vmap works with varying bounds per element."""
@@ -779,6 +771,7 @@ class TestVmapCompatibility:
 # Gradient through relaxations
 # ===================================================================
 
+
 class TestGradients:
     """jax.grad of relaxations should return finite values."""
 
@@ -786,6 +779,7 @@ class TestGradients:
         def loss(x):
             cv, cc = relax_exp(x, -2.0, 2.0)
             return cv + cc
+
         g = jax.grad(loss)(jnp.float64(0.5))
         assert jnp.isfinite(g), f"exp grad is not finite: {g}"
 
@@ -793,6 +787,7 @@ class TestGradients:
         def loss(x):
             cv, cc = relax_square(x, -2.0, 2.0)
             return cv + cc
+
         g = jax.grad(loss)(jnp.float64(0.5))
         assert jnp.isfinite(g), f"square grad is not finite: {g}"
 
@@ -800,6 +795,7 @@ class TestGradients:
         def loss(x):
             cv, cc = relax_sqrt(x, 0.1, 5.0)
             return cv + cc
+
         g = jax.grad(loss)(jnp.float64(1.0))
         assert jnp.isfinite(g), f"sqrt grad is not finite: {g}"
 
@@ -807,6 +803,7 @@ class TestGradients:
         def loss(x):
             cv, cc = relax_log(x, 0.1, 5.0)
             return cv + cc
+
         g = jax.grad(loss)(jnp.float64(1.0))
         assert jnp.isfinite(g), f"log grad is not finite: {g}"
 
@@ -814,6 +811,7 @@ class TestGradients:
         def loss(x):
             cv, cc = relax_sin(x, -1.0, 2.0)
             return cv + cc
+
         g = jax.grad(loss)(jnp.float64(0.5))
         assert jnp.isfinite(g), f"sin grad is not finite: {g}"
 
@@ -821,6 +819,7 @@ class TestGradients:
         def loss(x):
             cv, cc = relax_cos(x, -1.0, 2.0)
             return cv + cc
+
         g = jax.grad(loss)(jnp.float64(0.5))
         assert jnp.isfinite(g), f"cos grad is not finite: {g}"
 
@@ -828,6 +827,7 @@ class TestGradients:
         def loss(x):
             cv, cc = relax_tan(x, -1.0, 1.0)
             return cv + cc
+
         g = jax.grad(loss)(jnp.float64(0.3))
         assert jnp.isfinite(g), f"tan grad is not finite: {g}"
 
@@ -835,6 +835,7 @@ class TestGradients:
         def loss(x):
             cv, cc = relax_bilinear(x, x + 1, 0.0, 3.0, 1.0, 4.0)
             return cv + cc
+
         g = jax.grad(loss)(jnp.float64(1.0))
         assert jnp.isfinite(g), f"bilinear grad is not finite: {g}"
 
@@ -842,6 +843,7 @@ class TestGradients:
         def loss(x):
             cv, cc = relax_abs(x, -3.0, 3.0)
             return cv + cc
+
         g = jax.grad(loss)(jnp.float64(1.0))
         assert jnp.isfinite(g), f"abs grad is not finite: {g}"
 
@@ -849,5 +851,6 @@ class TestGradients:
         def loss(x):
             cv, cc = relax_pow(x, -2.0, 3.0, 3)
             return cv + cc
+
         g = jax.grad(loss)(jnp.float64(1.0))
         assert jnp.isfinite(g), f"pow grad is not finite: {g}"

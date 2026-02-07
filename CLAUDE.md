@@ -32,8 +32,8 @@ python jaxminlp_benchmarks/run_benchmarks.py --suite comparison --solvers jaxmin
 
 ### Linting & Type Checking
 ```bash
-ruff check jaxminlp_benchmarks/benchmarks jaxminlp_benchmarks/utils jaxminlp_benchmarks/jaxminlp_api
-mypy jaxminlp_benchmarks/benchmarks jaxminlp_benchmarks/utils jaxminlp_benchmarks/jaxminlp_api
+ruff check jaxminlp_benchmarks/benchmarks jaxminlp_benchmarks/utils python/discopt/
+mypy jaxminlp_benchmarks/benchmarks jaxminlp_benchmarks/utils python/discopt/
 ```
 
 ## Architecture
@@ -43,7 +43,7 @@ All framework code lives under `jaxminlp_benchmarks/`:
 - **`benchmarks/`** — Benchmark orchestration: `runner.py` loads instances (MINLPLib, Netlib, CUTEst, SuiteSparse), launches solvers with time/memory limits, `metrics.py` computes shifted geometric means, Dolan-Moré performance profiles, root gap analysis, GPU speedup, and regression detection.
 - **`tests/`** — Pytest suite with markers: `smoke`, `unit`, `integration`, `correctness`, `regression`, `property`, `adversarial`, `slow`, `gpu`. GPU tests auto-skip when unavailable. `test_correctness.py` validates against 25+ known MINLPLib optima (zero incorrect results is a hard requirement at every phase gate).
 - **`config/benchmarks.toml`** — Single source of truth for benchmark suites, phase gate criteria, solver configurations, and performance targets. Phase gates (1–4) define automated go/no-go criteria.
-- **`jaxminlp_api/`** — Python modeling API with expression DAG system for MINLP formulation, supporting continuous/binary/integer variables and operator overloading that maps to Rust AST.
+- **`python/discopt/modeling/`** — Python modeling API with expression DAG system for MINLP formulation, supporting continuous/binary/integer variables and operator overloading that maps to Rust AST. Imported as `from discopt import Model` or `import discopt.modeling as dm`.
 - **`utils/`** — Statistical utilities (`statistics.py`), Dolan-Moré profiles (`profiles.py`), and markdown report generation (`reporting.py`).
 - **`agents/`** — Automated literature review agent monitoring arXiv and optimization journals.
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 os.environ.setdefault("JAX_ENABLE_X64", "1")
@@ -13,18 +12,16 @@ import pytest
 
 cyipopt = pytest.importorskip("cyipopt")
 
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/python")
-
 from discopt._jax.nlp_evaluator import NLPEvaluator  # noqa: E402
+from discopt.modeling import examples  # noqa: E402
+from discopt.modeling.core import Model  # noqa: E402
 from discopt.solvers import NLPResult, SolveStatus  # noqa: E402
 from discopt.solvers.nlp_ipopt import solve_nlp, solve_nlp_from_model  # noqa: E402
-from jaxminlp_api import examples  # noqa: E402
-from jaxminlp_api.core import Model  # noqa: E402
 
 # ─────────────────────────────────────────────────────────────
 # Helpers
 # ─────────────────────────────────────────────────────────────
+
 
 def _flat_size(model: Model) -> int:
     return sum(v.size for v in model._variables)
@@ -43,13 +40,14 @@ def _midpoint(model: Model) -> np.ndarray:
 # Test 1: Simple unconstrained NLP
 # ─────────────────────────────────────────────────────────────
 
+
 class TestUnconstrainedNLP:
     def test_minimize_quadratic(self):
         """min x^2 + y^2 => optimal at (0, 0) with obj = 0."""
         m = Model("unconstrained_quad")
         x = m.continuous("x", lb=-10, ub=10)
         y = m.continuous("y", lb=-10, ub=10)
-        m.minimize(x ** 2 + y ** 2)
+        m.minimize(x**2 + y**2)
 
         result = solve_nlp_from_model(m, x0=np.array([5.0, 3.0]))
         assert result.status == SolveStatus.OPTIMAL
@@ -73,13 +71,14 @@ class TestUnconstrainedNLP:
 # Test 2: Constrained NLP
 # ─────────────────────────────────────────────────────────────
 
+
 class TestConstrainedNLP:
     def test_constrained_quadratic(self):
         """min x^2 + y^2 s.t. x + y >= 1 => optimal at (0.5, 0.5)."""
         m = Model("constrained_quad")
         x = m.continuous("x", lb=-10, ub=10)
         y = m.continuous("y", lb=-10, ub=10)
-        m.minimize(x ** 2 + y ** 2)
+        m.minimize(x**2 + y**2)
         m.subject_to(x + y >= 1)
 
         result = solve_nlp_from_model(m, x0=np.array([5.0, 5.0]))
@@ -92,7 +91,7 @@ class TestConstrainedNLP:
         m = Model("eq_constrained")
         x = m.continuous("x", lb=-10, ub=10)
         y = m.continuous("y", lb=-10, ub=10)
-        m.minimize(x ** 2 + y ** 2)
+        m.minimize(x**2 + y**2)
         m.subject_to(x + y == 2)
 
         result = solve_nlp_from_model(m, x0=np.array([3.0, 1.0]))
@@ -105,7 +104,7 @@ class TestConstrainedNLP:
         m = Model("multiplier_test")
         x = m.continuous("x", lb=-10, ub=10)
         y = m.continuous("y", lb=-10, ub=10)
-        m.minimize(x ** 2 + y ** 2)
+        m.minimize(x**2 + y**2)
         m.subject_to(x + y >= 1)
 
         result = solve_nlp_from_model(m, x0=np.array([5.0, 5.0]))
@@ -134,21 +133,24 @@ _HARD_EXAMPLES = [
 
 
 class TestExampleModels:
-    @pytest.mark.parametrize("name,factory", _SOLVABLE_EXAMPLES,
-                             ids=[e[0] for e in _SOLVABLE_EXAMPLES])
+    @pytest.mark.parametrize(
+        "name,factory", _SOLVABLE_EXAMPLES, ids=[e[0] for e in _SOLVABLE_EXAMPLES]
+    )
     def test_example_converges(self, name, factory):
         """Solve continuous relaxation of example models, verify convergence."""
         m = factory()
         result = solve_nlp_from_model(m, options={"max_iter": 3000})
-        assert result.status in (SolveStatus.OPTIMAL, SolveStatus.ITERATION_LIMIT), (
-            f"Example {name} failed with status {result.status}"
-        )
+        assert result.status in (
+            SolveStatus.OPTIMAL,
+            SolveStatus.ITERATION_LIMIT,
+        ), f"Example {name} failed with status {result.status}"
         assert result.x is not None
         assert np.all(np.isfinite(result.x))
         assert np.isfinite(result.objective)
 
-    @pytest.mark.parametrize("name,factory", _SOLVABLE_EXAMPLES,
-                             ids=[e[0] for e in _SOLVABLE_EXAMPLES])
+    @pytest.mark.parametrize(
+        "name,factory", _SOLVABLE_EXAMPLES, ids=[e[0] for e in _SOLVABLE_EXAMPLES]
+    )
     def test_example_objective_finite(self, name, factory):
         """Optimal objective must be finite for all examples."""
         m = factory()
@@ -156,8 +158,7 @@ class TestExampleModels:
         if result.status == SolveStatus.OPTIMAL:
             assert np.isfinite(result.objective)
 
-    @pytest.mark.parametrize("name,factory", _HARD_EXAMPLES,
-                             ids=[e[0] for e in _HARD_EXAMPLES])
+    @pytest.mark.parametrize("name,factory", _HARD_EXAMPLES, ids=[e[0] for e in _HARD_EXAMPLES])
     def test_hard_example_runs_without_error(self, name, factory):
         """Hard nonlinear models run without crashing; any terminal status is OK."""
         m = factory()
@@ -175,12 +176,13 @@ class TestExampleModels:
 # Test 4: Infeasible problem
 # ─────────────────────────────────────────────────────────────
 
+
 class TestInfeasible:
     def test_contradictory_constraints(self):
         """Contradictory constraints should yield INFEASIBLE status."""
         m = Model("infeasible")
         x = m.continuous("x", lb=-10, ub=10)
-        m.minimize(x ** 2)
+        m.minimize(x**2)
         # x <= 1 AND x >= 5 (contradictory)
         m.subject_to(x <= 1)
         m.subject_to(x >= 5)
@@ -193,13 +195,14 @@ class TestInfeasible:
 # Test 5: solve_nlp_from_model convenience
 # ─────────────────────────────────────────────────────────────
 
+
 class TestConvenience:
     def test_from_model_no_x0(self):
         """solve_nlp_from_model generates default x0 from bounds midpoint."""
         m = Model("convenience")
         x = m.continuous("x", lb=0, ub=10)
         y = m.continuous("y", lb=0, ub=10)
-        m.minimize(x ** 2 + y ** 2)
+        m.minimize(x**2 + y**2)
         m.subject_to(x + y >= 1)
 
         result = solve_nlp_from_model(m)
@@ -220,7 +223,7 @@ class TestConvenience:
         """Result should be an NLPResult."""
         m = Model("type_test")
         x = m.continuous("x", lb=-5, ub=5)
-        m.minimize(x ** 2)
+        m.minimize(x**2)
 
         result = solve_nlp_from_model(m)
         assert isinstance(result, NLPResult)
@@ -229,7 +232,7 @@ class TestConvenience:
         """Wall time should be recorded."""
         m = Model("time_test")
         x = m.continuous("x", lb=-5, ub=5)
-        m.minimize(x ** 2)
+        m.minimize(x**2)
 
         result = solve_nlp_from_model(m)
         assert result.wall_time > 0.0
@@ -239,25 +242,24 @@ class TestConvenience:
 # Test 6: Custom options
 # ─────────────────────────────────────────────────────────────
 
+
 class TestOptions:
     def test_max_iter_respected(self):
         """Setting max_iter=1 should hit iteration limit."""
         m = Model("options_test")
         x = m.continuous("x", lb=-10, ub=10)
         y = m.continuous("y", lb=-10, ub=10)
-        m.minimize(x ** 2 + y ** 2)
+        m.minimize(x**2 + y**2)
         m.subject_to(x + y >= 1)
 
-        result = solve_nlp_from_model(
-            m, x0=np.array([8.0, 8.0]), options={"max_iter": 1}
-        )
+        result = solve_nlp_from_model(m, x0=np.array([8.0, 8.0]), options={"max_iter": 1})
         assert result.status == SolveStatus.ITERATION_LIMIT
 
     def test_tol_option(self):
         """Custom tolerance should be accepted without error."""
         m = Model("tol_test")
         x = m.continuous("x", lb=0, ub=10)
-        m.minimize(x ** 2)
+        m.minimize(x**2)
 
         result = solve_nlp_from_model(m, options={"tol": 1e-12})
         assert result.status == SolveStatus.OPTIMAL
@@ -266,7 +268,7 @@ class TestOptions:
         """Default print_level=0 should suppress output."""
         m = Model("silent_test")
         x = m.continuous("x", lb=0, ub=10)
-        m.minimize(x ** 2)
+        m.minimize(x**2)
 
         # This should not print anything (print_level=0 is default)
         result = solve_nlp_from_model(m)
@@ -277,13 +279,14 @@ class TestOptions:
 # Test 7: Gradient/Hessian callbacks are used (not finite-diff)
 # ─────────────────────────────────────────────────────────────
 
+
 class TestCallbacksUsed:
     def test_gradient_callback_called(self):
         """Verify the gradient callback is called during solve."""
         m = Model("grad_callback")
         x = m.continuous("x", lb=-10, ub=10)
         y = m.continuous("y", lb=-10, ub=10)
-        m.minimize(x ** 2 + y ** 2)
+        m.minimize(x**2 + y**2)
         m.subject_to(x + y >= 1)
 
         ev = NLPEvaluator(m)
@@ -307,7 +310,7 @@ class TestCallbacksUsed:
         m = Model("hess_callback")
         x = m.continuous("x", lb=-10, ub=10)
         y = m.continuous("y", lb=-10, ub=10)
-        m.minimize(x ** 2 + y ** 2)
+        m.minimize(x**2 + y**2)
         m.subject_to(x + y >= 1)
 
         ev = NLPEvaluator(m)
@@ -329,6 +332,7 @@ class TestCallbacksUsed:
 # ─────────────────────────────────────────────────────────────
 # Test 8: NLPResult dataclass
 # ─────────────────────────────────────────────────────────────
+
 
 class TestNLPResult:
     def test_result_fields(self):
@@ -359,13 +363,14 @@ class TestNLPResult:
 # Test 9: solve_nlp with explicit constraint_bounds
 # ─────────────────────────────────────────────────────────────
 
+
 class TestExplicitBounds:
     def test_explicit_constraint_bounds(self):
         """Pass constraint_bounds explicitly instead of inferring."""
         m = Model("explicit_bounds")
         x = m.continuous("x", lb=-10, ub=10)
         y = m.continuous("y", lb=-10, ub=10)
-        m.minimize(x ** 2 + y ** 2)
+        m.minimize(x**2 + y**2)
         m.subject_to(x + y >= 1)
 
         ev = NLPEvaluator(m)
@@ -382,6 +387,7 @@ class TestExplicitBounds:
 # ─────────────────────────────────────────────────────────────
 # Test 10: Maximize objective
 # ─────────────────────────────────────────────────────────────
+
 
 class TestMaximize:
     def test_maximize_via_negation(self):

@@ -117,33 +117,23 @@ def solve_lp(
     if A_ub is not None:
         shape = A_ub.shape if sp.issparse(A_ub) else np.asarray(A_ub).shape
         if len(shape) != 2 or shape[1] != n:
-            raise ValueError(
-                f"A_ub has {shape[1]} columns but c has {n} elements"
-            )
+            raise ValueError(f"A_ub has {shape[1]} columns but c has {n} elements")
         if b_ub is None:
             raise ValueError("b_ub is required when A_ub is provided")
         b_ub_arr = np.asarray(b_ub).ravel()
         if b_ub_arr.shape[0] != shape[0]:
-            raise ValueError(
-                f"A_ub has {shape[0]} rows but b_ub has {b_ub_arr.shape[0]} elements"
-            )
+            raise ValueError(f"A_ub has {shape[0]} rows but b_ub has {b_ub_arr.shape[0]} elements")
     if A_eq is not None:
         shape = A_eq.shape if sp.issparse(A_eq) else np.asarray(A_eq).shape
         if len(shape) != 2 or shape[1] != n:
-            raise ValueError(
-                f"A_eq has {shape[1]} columns but c has {n} elements"
-            )
+            raise ValueError(f"A_eq has {shape[1]} columns but c has {n} elements")
         if b_eq is None:
             raise ValueError("b_eq is required when A_eq is provided")
         b_eq_arr = np.asarray(b_eq).ravel()
         if b_eq_arr.shape[0] != shape[0]:
-            raise ValueError(
-                f"A_eq has {shape[0]} rows but b_eq has {b_eq_arr.shape[0]} elements"
-            )
+            raise ValueError(f"A_eq has {shape[0]} rows but b_eq has {b_eq_arr.shape[0]} elements")
     if bounds is not None and len(bounds) != n:
-        raise ValueError(
-            f"bounds has {len(bounds)} entries but c has {n} elements"
-        )
+        raise ValueError(f"bounds has {len(bounds)} entries but c has {n} elements")
 
     # ---- variable bounds -----------------------------------------------------
     inf = highspy.kHighsInf
@@ -155,9 +145,7 @@ def solve_lp(
         col_upper = np.full(n, inf, dtype=np.float64)
 
     # ---- build constraint matrix ---------------------------------------------
-    row_lower, row_upper, csc, m = _build_constraint_matrix(
-        A_ub, b_ub, A_eq, b_eq, n
-    )
+    row_lower, row_upper, csc, m = _build_constraint_matrix(A_ub, b_ub, A_eq, b_eq, n)
 
     # ---- build HighsLp object ------------------------------------------------
     lp = highspy.HighsLp()

@@ -10,16 +10,12 @@ with C-based solvers.
 
 from __future__ import annotations
 
-import sys
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/jaxminlp_benchmarks")
-from jaxminlp_api.core import Constraint, Model, ObjectiveSense
-
 from discopt._jax.dag_compiler import compile_constraint, compile_objective
+from discopt.modeling.core import Constraint, Model, ObjectiveSense
 
 
 class NLPEvaluator:
@@ -61,6 +57,7 @@ class NLPEvaluator:
         # Compile objective
         raw_obj_fn = compile_objective(model)
         if self._negate:
+
             def obj_fn(x_flat: jnp.ndarray) -> jnp.ndarray:
                 return -raw_obj_fn(x_flat)
         else:
@@ -86,6 +83,7 @@ class NLPEvaluator:
             self._constraint_fns = constraint_fns
 
             if len(constraint_fns) > 0:
+
                 def stacked_constraints(x_flat: jnp.ndarray) -> jnp.ndarray:
                     return jnp.array([fn(x_flat) for fn in constraint_fns])
 

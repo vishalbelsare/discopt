@@ -21,6 +21,7 @@ import pytest
 # Try importing the .nl parser binding; skip all tests if unavailable.
 try:
     from discopt._rust import parse_nl_file, parse_nl_string
+
     HAS_NL_BINDINGS = True
 except ImportError:
     HAS_NL_BINDINGS = False
@@ -34,6 +35,7 @@ pytestmark = pytest.mark.skipif(
 # ─────────────────────────────────────────────────────────────
 # .nl content generators (mirror the Rust test helpers)
 # ─────────────────────────────────────────────────────────────
+
 
 def _linear_nl() -> str:
     """min 2*x + 3*y  s.t. x + y <= 10, 0 <= x,y <= 100."""
@@ -87,8 +89,12 @@ def _quadratic_nl() -> str:
         " 0 0 0 0 0",
         "O0 0",
         "o0",
-        "o5", "v0", "n2",
-        "o5", "v1", "n2",
+        "o5",
+        "v0",
+        "n2",
+        "o5",
+        "v1",
+        "n2",
         "C0",
         "n0",
         "x2",
@@ -126,8 +132,10 @@ def _nonlinear_nl() -> str:
         " 0 0 0 0 0",
         "O0 0",
         "o0",
-        "o46", "v0",
-        "o45", "v1",
+        "o46",
+        "v0",
+        "o45",
+        "v1",
         "C0",
         "n0",
         "x2",
@@ -193,6 +201,7 @@ def _mixed_integer_nl() -> str:
 # Helper to write .nl content to a temp file
 # ─────────────────────────────────────────────────────────────
 
+
 def _write_nl(content: str) -> str:
     """Write .nl content to a temp file and return the path."""
     fd, path = tempfile.mkstemp(suffix=".nl", prefix="test_nl_")
@@ -204,6 +213,7 @@ def _write_nl(content: str) -> str:
 # ─────────────────────────────────────────────────────────────
 # Tests: parse_nl_string
 # ─────────────────────────────────────────────────────────────
+
 
 class TestParseNlString:
     def test_linear_n_vars(self):
@@ -275,6 +285,7 @@ class TestParseNlString:
 # Tests: parse_nl_file
 # ─────────────────────────────────────────────────────────────
 
+
 class TestParseNlFile:
     def test_file_linear(self):
         path = _write_nl(_linear_nl())
@@ -304,6 +315,7 @@ class TestParseNlFile:
 # ─────────────────────────────────────────────────────────────
 # Tests: variable bounds
 # ─────────────────────────────────────────────────────────────
+
 
 class TestVarBounds:
     def test_linear_bounds(self):

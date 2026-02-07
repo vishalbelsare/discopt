@@ -7,21 +7,13 @@ Validates:
 - Variable info: names, bounds, types, shapes
 """
 
-import os
-import sys
-
+import discopt.modeling as dm
 import numpy as np
 import pytest
 
-# Add jaxminlp_api to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..",
-                                "jaxminlp_benchmarks"))
-
-import jaxminlp_api as jm  # noqa: E402
-
 # Import the Rust bindings
-from discopt._rust import PyModelRepr, model_to_repr  # noqa: E402
-from jaxminlp_api.examples import (  # noqa: E402
+from discopt._rust import PyModelRepr, model_to_repr
+from discopt.modeling.examples import (
     example_parametric,
     example_pooling_haverly,
     example_reactor_design,
@@ -32,10 +24,11 @@ from jaxminlp_api.examples import (  # noqa: E402
 # Fixtures: build example models
 # ─────────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def simple_model():
     """Example 1: x1^2 + x2^2 + x3, 2 constraints."""
-    m = jm.Model("textbook")
+    m = dm.Model("textbook")
     x1 = m.continuous("x1", lb=0, ub=5)
     x2 = m.continuous("x2", lb=0, ub=5)
     x3 = m.binary("x3")
@@ -48,10 +41,10 @@ def simple_model():
 @pytest.fixture
 def linear_model():
     """A purely linear model for structure detection."""
-    m = jm.Model("linear")
+    m = dm.Model("linear")
     x = m.continuous("x", shape=(3,), lb=0, ub=10)
     c = np.array([2.0, 3.0, 5.0])
-    m.minimize(jm.sum(lambda i: c[i] * x[i], over=range(3)))
+    m.minimize(dm.sum(lambda i: c[i] * x[i], over=range(3)))
     m.subject_to(x[0] + x[1] + x[2] <= 15)
     m.subject_to(x[0] >= 1)
     return m
@@ -60,10 +53,10 @@ def linear_model():
 @pytest.fixture
 def nonlinear_model():
     """Model with exp/log nonlinearity."""
-    m = jm.Model("nonlinear")
+    m = dm.Model("nonlinear")
     x = m.continuous("x", lb=0.1, ub=10)
     y = m.continuous("y", lb=0.1, ub=10)
-    m.minimize(jm.exp(x) + jm.log(y))
+    m.minimize(dm.exp(x) + dm.log(y))
     m.subject_to(x + y <= 5)
     return m
 
@@ -71,7 +64,7 @@ def nonlinear_model():
 @pytest.fixture
 def bilinear_model():
     """Model with bilinear x*y terms."""
-    m = jm.Model("bilinear")
+    m = dm.Model("bilinear")
     x = m.continuous("x", lb=0, ub=10)
     y = m.continuous("y", lb=0, ub=10)
     z = m.continuous("z", lb=0, ub=10)
@@ -83,7 +76,7 @@ def bilinear_model():
 @pytest.fixture
 def parametric_model():
     """Model with parameters (Example 7 simplified)."""
-    m = jm.Model("parametric")
+    m = dm.Model("parametric")
     price = m.parameter("price", value=50.0)
     x = m.continuous("x", lb=0, ub=100)
     m.minimize(price * x)
@@ -94,6 +87,7 @@ def parametric_model():
 # ─────────────────────────────────────────────────────────────
 # Test: Basic conversion
 # ─────────────────────────────────────────────────────────────
+
 
 class TestConversion:
     def test_simple_model_converts(self, simple_model):
@@ -144,6 +138,7 @@ class TestConversion:
 # Test: Variable info
 # ─────────────────────────────────────────────────────────────
 
+
 class TestVariableInfo:
     def test_var_names(self, simple_model):
         repr = model_to_repr(simple_model)
@@ -191,6 +186,7 @@ class TestVariableInfo:
 # Test: Structure detection
 # ─────────────────────────────────────────────────────────────
 
+
 class TestStructureDetection:
     def test_linear_objective_detected(self, linear_model):
         repr = model_to_repr(linear_model)
@@ -231,6 +227,7 @@ class TestStructureDetection:
 # ─────────────────────────────────────────────────────────────
 # Test: Evaluation
 # ─────────────────────────────────────────────────────────────
+
 
 class TestEvaluation:
     def test_evaluate_linear_objective(self, linear_model):
@@ -286,6 +283,7 @@ class TestEvaluation:
 # Test: Example models from examples.py
 # ─────────────────────────────────────────────────────────────
 
+
 class TestExampleModels:
     def test_simple_minlp(self):
         m = example_simple_minlp()
@@ -331,6 +329,7 @@ class TestExampleModels:
 # Test: Constraint names
 # ─────────────────────────────────────────────────────────────
 
+
 class TestConstraintNames:
     def test_unnamed_constraints(self, simple_model):
         repr = model_to_repr(simple_model)
@@ -339,7 +338,7 @@ class TestConstraintNames:
         assert repr.constraint_name(1) is None
 
     def test_named_constraints(self):
-        m = jm.Model("named")
+        m = dm.Model("named")
         x = m.continuous("x", lb=0, ub=10)
         y = m.continuous("y", lb=0, ub=10)
         m.minimize(x + y)
@@ -354,10 +353,11 @@ class TestConstraintNames:
 # Test: Edge cases
 # ─────────────────────────────────────────────────────────────
 
+
 class TestEdgeCases:
     def test_scalar_constant_model(self):
         """Minimize a constant (trivial model)."""
-        m = jm.Model("trivial")
+        m = dm.Model("trivial")
         x = m.continuous("x", lb=0, ub=1)
         m.minimize(x + 0.0)
         repr = model_to_repr(m)
@@ -367,7 +367,7 @@ class TestEdgeCases:
 
     def test_negation(self):
         """Unary negation."""
-        m = jm.Model("neg")
+        m = dm.Model("neg")
         x = m.continuous("x", lb=0, ub=10)
         m.minimize(-x)
         repr = model_to_repr(m)
@@ -376,7 +376,7 @@ class TestEdgeCases:
 
     def test_division(self):
         """Division by constant."""
-        m = jm.Model("div")
+        m = dm.Model("div")
         x = m.continuous("x", lb=1, ub=10)
         m.minimize(x / 2)
         repr = model_to_repr(m)
@@ -385,9 +385,9 @@ class TestEdgeCases:
 
     def test_power(self):
         """Power expression x^3."""
-        m = jm.Model("pow")
+        m = dm.Model("pow")
         x = m.continuous("x", lb=0, ub=10)
-        m.minimize(x ** 3)
+        m.minimize(x**3)
         repr = model_to_repr(m)
         val = repr.evaluate_objective(np.array([2.0]))
         assert abs(val - 8.0) < 1e-14
@@ -397,19 +397,19 @@ class TestEdgeCases:
 
     def test_sqrt_function(self):
         """Sqrt function."""
-        m = jm.Model("sqrt")
+        m = dm.Model("sqrt")
         x = m.continuous("x", lb=0, ub=100)
-        m.minimize(jm.sqrt(x))
+        m.minimize(dm.sqrt(x))
         repr = model_to_repr(m)
         val = repr.evaluate_objective(np.array([9.0]))
         assert abs(val - 3.0) < 1e-14
 
     def test_sin_cos(self):
         """Trig functions."""
-        m = jm.Model("trig")
+        m = dm.Model("trig")
         x = m.continuous("x", lb=0, ub=10)
         y = m.continuous("y", lb=0, ub=10)
-        m.minimize(jm.sin(x) + jm.cos(y))
+        m.minimize(dm.sin(x) + dm.cos(y))
         repr = model_to_repr(m)
         val = repr.evaluate_objective(np.array([np.pi / 2, 0.0]))
         expected = np.sin(np.pi / 2) + np.cos(0.0)
@@ -417,9 +417,9 @@ class TestEdgeCases:
 
     def test_multiple_math_functions(self):
         """Combined transcendental functions."""
-        m = jm.Model("multi_func")
+        m = dm.Model("multi_func")
         x = m.continuous("x", lb=0.1, ub=10)
-        m.minimize(jm.exp(x) + jm.log(x) + jm.sqrt(x))
+        m.minimize(dm.exp(x) + dm.log(x) + dm.sqrt(x))
         repr = model_to_repr(m)
         val = repr.evaluate_objective(np.array([2.0]))
         expected = np.exp(2.0) + np.log(2.0) + np.sqrt(2.0)
