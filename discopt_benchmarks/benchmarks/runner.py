@@ -7,17 +7,11 @@ collects results, computes metrics, and generates reports.
 
 from __future__ import annotations
 
-import json
 import subprocess
 import time
-import signal
-import os
-import tempfile
-from concurrent.futures import ProcessPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from benchmarks.metrics import (
     BenchmarkResults,
@@ -49,7 +43,7 @@ class BenchmarkConfig:
     memory_limit_mb: int = 32768
     num_runs: int = 3
     solvers: list[SolverConfig] = None
-    instance_filter: Optional[dict] = None
+    instance_filter: dict | None = None
     output_dir: Path = Path("reports")
 
     def __post_init__(self):
@@ -132,9 +126,7 @@ class BenchmarkRunner:
                     # Keep the result from the median-time run
                     if best_result is None or (
                         result.is_solved and not best_result.is_solved
-                    ):
-                        best_result = result
-                    elif (
+                    ) or (
                         result.is_solved and best_result.is_solved
                         and result.wall_time < best_result.wall_time
                     ):
@@ -198,30 +190,103 @@ class BenchmarkRunner:
         run_idx: int,
     ) -> SolveResult:
         """
-        Run discopt solver.
+        Run discopt solver on a .nl instance.
 
         Uses the Python API directly, capturing layer profiling data.
-        This is a stub — actual implementation depends on discopt API.
         """
         try:
-            # Placeholder: actual discopt call would go here
-            # from discopt import solve, load_problem
-            # problem = load_problem(instance_path)
-            # result = solve(problem, time_limit=self.config.time_limit, **solver.options)
+            import discopt.modeling as dm
+
+            # Resolve .nl file path
+            nl_path = self._find_nl_file(instance)
+            if nl_path is None:
+                return SolveResult(
+                    instance=instance,
+                    solver=solver.name,
+                    status=SolveStatus.ERROR,
+                    wall_time=float("inf"),
+                )
+
+            model = dm.from_nl(nl_path)
+
+            # Map solver options
+            opts = dict(solver.options)
+            time_limit = opts.pop("time_limit", self.config.time_limit)
+            gap_tol = opts.pop("gap_tolerance", 1e-4)
+            max_nodes = opts.pop("max_nodes", 100_000)
+            gpu = opts.pop("gpu", False)
+
+            result = model.solve(
+                time_limit=time_limit,
+                gap_tolerance=gap_tol,
+                max_nodes=max_nodes,
+                gpu=gpu,
+            )
+
+            # Map discopt status to benchmark status
+            status_map = {
+                "optimal": SolveStatus.OPTIMAL,
+                "feasible": SolveStatus.FEASIBLE,
+                "infeasible": SolveStatus.INFEASIBLE,
+                "time_limit": SolveStatus.TIME_LIMIT,
+                "node_limit": SolveStatus.TIME_LIMIT,
+            }
+            bench_status = status_map.get(result.status, SolveStatus.UNKNOWN)
+
+            # Compute layer profiling fractions
+            wt = result.wall_time if result.wall_time > 0 else 1e-10
+            rust_frac = result.rust_time / wt if result.rust_time else None
+            jax_frac = result.jax_time / wt if result.jax_time else None
+            py_frac = result.python_time / wt if result.python_time else None
 
             return SolveResult(
                 instance=instance,
                 solver=solver.name,
-                status=SolveStatus.UNKNOWN,
-                wall_time=float("inf"),
+                status=bench_status,
+                objective=result.objective,
+                bound=result.bound,
+                wall_time=result.wall_time,
+                node_count=result.node_count or 0,
+                rust_time_fraction=rust_frac,
+                jax_time_fraction=jax_frac,
+                python_time_fraction=py_frac,
             )
-        except Exception as e:
+        except Exception:
             return SolveResult(
                 instance=instance,
                 solver=solver.name,
                 status=SolveStatus.ERROR,
                 wall_time=float("inf"),
             )
+
+    def _find_nl_file(self, instance: str) -> str | None:
+        """Resolve instance name to .nl file path.
+
+        Searches in order:
+          1. Instance name as-is (if it's an absolute/relative path)
+          2. data_dir / instance.nl
+          3. python/tests/data/minlplib / instance.nl (development fallback)
+        """
+        # Direct path
+        p = Path(instance)
+        if p.suffix == ".nl" and p.exists():
+            return str(p)
+
+        # Data directory (set via config or default)
+        data_dir = getattr(self.config, "data_dir", None)
+        if data_dir:
+            candidate = Path(data_dir) / f"{instance}.nl"
+            if candidate.exists():
+                return str(candidate)
+
+        # Development fallback: test data directory
+        project_root = Path(__file__).parent.parent.parent
+        for subdir in ["python/tests/data/minlplib", "python/tests/data/minlplib_nl"]:
+            candidate = project_root / subdir / f"{instance}.nl"
+            if candidate.exists():
+                return str(candidate)
+
+        return None
 
     def _run_external(
         self,
@@ -258,7 +323,7 @@ class BenchmarkRunner:
                 status=SolveStatus.TIME_LIMIT,
                 wall_time=self.config.time_limit,
             )
-        except Exception as e:
+        except Exception:
             return SolveResult(
                 instance=instance,
                 solver=solver.name,
@@ -290,7 +355,7 @@ class BenchmarkRunner:
             wall_time=elapsed,
         )
 
-    def save_results(self, path: Optional[Path] = None):
+    def save_results(self, path: Path | None = None):
         """Save results to JSON."""
         if path is None:
             path = (

@@ -313,6 +313,12 @@ def solve_model(
 
     if incumbent is not None:
         sol_array, obj_val = incumbent
+        # Filter out bogus incumbents from infeasible NLP relaxations
+        # (1e30 is the sentinel value set in _solve_node_nlp for infeasible nodes)
+        if obj_val >= 1e20:
+            incumbent = None
+
+    if incumbent is not None:
         sol_flat = np.array(sol_array)
         x_dict = _unpack_solution(model, sol_flat)
 

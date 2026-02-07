@@ -22,7 +22,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -152,21 +151,76 @@ def _run_gate_check(args):
 
 def _run_benchmark(args):
     """Run a benchmark suite."""
-    print(f"\ndiscopt Benchmark Runner")
+    from benchmarks.runner import BenchmarkConfig, BenchmarkRunner, SolverConfig
+
+    print("\ndiscopt Benchmark Runner")
     print(f"Suite: {args.suite}")
     print(f"Solvers: {args.solvers}")
     print(f"Time: {datetime.now().isoformat()}")
     print()
 
-    # Placeholder: actual benchmark execution
-    print("NOTE: Benchmark execution requires discopt to be installed.")
-    print("This framework is ready to use once the solver is available.")
-    print()
-    print("To run tests against the framework itself:")
-    print("  pytest tests/ -v -m 'not slow'")
-    print()
-    print("To check CI readiness:")
-    print("  pytest tests/ -v -m smoke")
+    # Load suite config
+    suite_config = _load_suite_config(args.suite)
+    time_limit = suite_config.get("time_limit_seconds", 3600) if suite_config else 3600
+
+    # Build solver configs
+    solver_names = [s.strip() for s in args.solvers.split(",")]
+    solver_configs = []
+    for name in solver_names:
+        solver_toml = _load_solver_config(name)
+        if solver_toml:
+            solver_configs.append(SolverConfig(
+                name=name,
+                command=solver_toml.get("command", name),
+                solver_type=solver_toml.get("type", "internal"),
+                nl_interface=solver_toml.get("nl_interface", False),
+                options=solver_toml.get("options", {}),
+            ))
+        else:
+            solver_configs.append(SolverConfig(
+                name=name, command=name, solver_type="internal",
+            ))
+
+    config = BenchmarkConfig(
+        suite_name=args.suite,
+        time_limit=time_limit,
+        num_runs=1,
+        solvers=solver_configs,
+    )
+
+    runner = BenchmarkRunner(config)
+
+    # Load instances from available .nl files
+    instances, known_optima = _load_minlplib_instances(suite_config)
+    runner.load_instances(instances)
+    runner.load_known_optima(known_optima)
+
+    # Run
+    runner.run_all()
+
+    # Save results
+    output_path = Path(args.output) if args.output else None
+    runner.save_results(output_path)
+
+    # Print summary
+    results = runner.results
+    for solver_name in results.get_solvers():
+        solver_results = results.get_results(solver_name)
+        from benchmarks.metrics import incorrect_count, solved_count
+        n_solved = solved_count(solver_results)
+        n_incorrect = incorrect_count(solver_results, known_optima)
+        print(f"\n{solver_name}: {n_solved}/{len(solver_results)} solved, "
+              f"{n_incorrect} incorrect")
+
+    # Generate report if requested
+    if args.report:
+        try:
+            from utils.reporting import generate_markdown_report
+            report_path = Path("reports") / f"{args.suite}_report.md"
+            generate_markdown_report(results, report_path)
+            print(f"\nReport: {report_path}")
+        except ImportError:
+            print("\nReport generation requires utils.reporting module")
 
 
 def _find_latest_results(suite: str) -> Path | None:
@@ -178,19 +232,132 @@ def _find_latest_results(suite: str) -> Path | None:
     return candidates[0] if candidates else None
 
 
-def _load_gate_config(gate_name: str) -> dict | None:
-    """Load gate configuration from TOML config."""
+def _load_toml_config() -> dict:
+    """Load the benchmarks.toml configuration."""
     try:
         import tomllib
     except ImportError:
         import tomli as tomllib
 
-    config_path = Path("config/benchmarks.toml")
+    config_path = Path(__file__).parent / "config" / "benchmarks.toml"
     if not config_path.exists():
-        return None
+        return {}
     with open(config_path, "rb") as f:
-        config = tomllib.load(f)
+        return tomllib.load(f)
+
+
+def _load_gate_config(gate_name: str) -> dict | None:
+    """Load gate configuration from TOML config."""
+    config = _load_toml_config()
     return config.get("gates", {}).get(gate_name)
+
+
+def _load_suite_config(suite_name: str) -> dict | None:
+    """Load suite configuration from TOML config."""
+    config = _load_toml_config()
+    return config.get("suites", {}).get(suite_name)
+
+
+def _load_solver_config(solver_name: str) -> dict | None:
+    """Load solver configuration from TOML config."""
+    config = _load_toml_config()
+    return config.get("solvers", {}).get(solver_name)
+
+
+def _load_minlplib_instances(
+    suite_config: dict | None,
+) -> tuple[list, dict[str, float]]:
+    """Load MINLPLib instances from the test data directory.
+
+    Returns (instances, known_optima) where instances is a list of InstanceInfo
+    and known_optima maps instance name to expected objective.
+    """
+    from benchmarks.metrics import InstanceInfo
+
+    # Known optima from MINLPLib (verified by BARON/ANTIGONE/SCIP)
+    known_optima_map = {
+        "ex1221": 7.66718007,
+        "ex1225": 31.0,
+        "ex1226": -17.0,
+        "st_e13": 2.0,
+        "st_e15": 7.66718007,
+        "st_e27": 2.0,
+        "st_e38": 7197.72714900,
+        "st_e40": 30.41421350,
+        "nvs01": 12.46966882,
+        "nvs02": 5.96418452,
+        "nvs03": 16.0,
+        "nvs04": 0.72,
+        "nvs05": 5.47093411,
+        "nvs06": 1.77031250,
+        "nvs07": 4.0,
+        "nvs08": 23.44972735,
+        "nvs10": -310.80,
+        "nvs11": -431.0,
+        "nvs12": -481.20,
+        "nvs14": -40358.15477,
+        "nvs15": 1.0,
+        "nvs16": 0.70312500,
+        "nvs21": -5.68478250,
+        "prob03": 10.0,
+        "prob06": 1.17712434,
+        "prob10": 3.44550379,
+        "gear": 0.0,
+        "gear3": 0.0,
+        "gear4": 1.64342847,
+        "chance": 29.89437816,
+        "dispatch": 3155.28792700,
+        "meanvar": 5.24339907,
+        "alan": 2.9250,
+    }
+
+    # Find .nl files
+    project_root = Path(__file__).parent.parent
+    nl_dirs = [
+        project_root / "python" / "tests" / "data" / "minlplib",
+        project_root / "python" / "tests" / "data" / "minlplib_nl",
+    ]
+
+    found_instances = {}
+    for nl_dir in nl_dirs:
+        if not nl_dir.exists():
+            continue
+        for nl_file in sorted(nl_dir.glob("*.nl")):
+            name = nl_file.stem
+            if name not in found_instances:
+                found_instances[name] = nl_file
+
+    # Apply suite filters
+    max_vars = suite_config.get("max_variables", 10000) if suite_config else 10000
+    max_instances = suite_config.get("max_instances", 10000) if suite_config else 10000
+
+    instances = []
+    for name, nl_path in sorted(found_instances.items()):
+        # Try to get variable count from parsing
+        try:
+            from discopt._rust import parse_nl_file
+            parsed = parse_nl_file(str(nl_path))
+            n_vars = parsed.n_vars
+            n_cons = parsed.n_constraints
+        except Exception:
+            n_vars = 0
+            n_cons = 0
+
+        if n_vars > max_vars:
+            continue
+
+        instances.append(InstanceInfo(
+            name=name,
+            num_variables=n_vars,
+            num_constraints=n_cons,
+            best_known_objective=known_optima_map.get(name),
+            source="minlplib",
+        ))
+
+        if len(instances) >= max_instances:
+            break
+
+    return instances, known_optima_map
 
 
 if __name__ == "__main__":
