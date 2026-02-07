@@ -44,15 +44,22 @@ jobs:
           fi
       - name: Install Python dependencies
         run: |
+          python -m venv .venv
+          source .venv/bin/activate
           pip install maturin
           pip install jax jaxlib numpy scipy highspy cyipopt pytest ruff mypy
-          maturin develop
+          cd crates/discopt-python && maturin develop && cd ../..
       - name: Lint
-        run: ruff check python/
+        run: |
+          source .venv/bin/activate
+          ruff check python/
       - name: Type check
-        run: mypy python/discopt/ --ignore-missing-imports
+        run: |
+          source .venv/bin/activate
+          mypy python/discopt/ --ignore-missing-imports
       - name: Test
         run: |
+          source .venv/bin/activate
           JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 pytest python/tests/ -v --timeout=300
         env:
           JAX_PLATFORMS: cpu
