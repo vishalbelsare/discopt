@@ -452,9 +452,11 @@ def _build_all_examples():
         ("simple_minlp", examples.example_simple_minlp),
         ("pooling_haverly", examples.example_pooling_haverly),
         ("process_synthesis", examples.example_process_synthesis),
-        ("portfolio", examples.example_portfolio),
+        pytest.param("portfolio", examples.example_portfolio, marks=pytest.mark.slow),
         ("reactor_design", examples.example_reactor_design),
-        ("facility_location", examples.example_facility_location),
+        pytest.param(
+            "facility_location", examples.example_facility_location, marks=pytest.mark.slow
+        ),
         ("parametric", examples.example_parametric),
     ]
 

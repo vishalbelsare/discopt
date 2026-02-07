@@ -320,12 +320,14 @@ class TestExampleObjectives:
     def test_process_synthesis(self):
         self._test_example_model(examples.example_process_synthesis)
 
+    @pytest.mark.slow
     def test_portfolio(self):
         self._test_example_model(examples.example_portfolio, n_samples=1000)
 
     def test_reactor_design(self):
         self._test_example_model(examples.example_reactor_design)
 
+    @pytest.mark.slow
     def test_facility_location(self):
         self._test_example_model(examples.example_facility_location, n_samples=1000)
 

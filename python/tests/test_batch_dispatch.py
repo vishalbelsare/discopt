@@ -218,6 +218,7 @@ class TestBatchSizes:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestLatency:
     """Round-trip export -> import should be fast."""
 

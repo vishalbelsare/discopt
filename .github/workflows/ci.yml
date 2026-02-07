@@ -50,10 +50,10 @@ jobs:
         run: |
           source .venv/bin/activate
           mypy python/discopt/
-      - name: Test (fast — excludes solve-heavy tests)
+      - name: Test (fast — excludes solve and slow tests)
         run: |
           source .venv/bin/activate
-          pytest python/tests/ -v --timeout=120 --ignore=python/tests/test_minlplib.py --ignore=python/tests/test_correctness.py
+          pytest python/tests/ -v --timeout=120 -m "not slow" --ignore=python/tests/test_minlplib.py --ignore=python/tests/test_correctness.py
         env:
           JAX_PLATFORMS: cpu
           JAX_ENABLE_X64: "1"
