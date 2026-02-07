@@ -56,7 +56,7 @@ jobs:
       - name: Type check
         run: |
           source .venv/bin/activate
-          mypy python/discopt/ --ignore-missing-imports
+          mypy python/discopt/
       - name: Test
         run: |
           source .venv/bin/activate
