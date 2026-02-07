@@ -4,9 +4,9 @@ repos:
     hooks:
       - id: ruff
         args: [--fix]
-        exclude: ^jaxminlp_benchmarks/
+        exclude: ^discopt_benchmarks/
       - id: ruff-format
-        exclude: ^jaxminlp_benchmarks/
+        exclude: ^discopt_benchmarks/
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.13.0
     hooks:

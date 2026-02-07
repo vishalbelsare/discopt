@@ -1,5 +1,5 @@
 """
-JaxMINLP API Examples
+discopt API Examples
 
 Demonstrates the modeling syntax across real problem types,
 from textbook examples to industrial-scale formulations.
@@ -403,7 +403,7 @@ def example_parametric():
 # ═══════════════════════════════════════════════════════════════
 # EXAMPLE 8: Import from Pyomo
 #
-# Shows the bridge from existing Pyomo models to JaxMINLP.
+# Shows the bridge from existing Pyomo models to discopt.
 # ═══════════════════════════════════════════════════════════════
 
 
@@ -412,7 +412,7 @@ def example_pyomo_import():
     # Assuming you have an existing Pyomo model:
 
     import pyomo.environ as pyo
-    import jaxminlp as jm
+    import discopt
 
     # Build Pyomo model (existing workflow)
     pyo_model = pyo.ConcreteModel()
@@ -425,14 +425,14 @@ def example_pyomo_import():
     pyo_model.c1 = pyo.Constraint(expr=pyo_model.x[1] + pyo_model.x[2] >= 5)
     pyo_model.c2 = pyo.Constraint(expr=pyo_model.x[3] * pyo_model.y[1] <= 8)
 
-    # One-line import to JaxMINLP
-    jm_model = dm.from_pyomo(pyo_model)
+    # One-line import to discopt
+    dm_model = dm.from_pyomo(pyo_model)
 
     # Now solve with GPU acceleration
-    result = jm_model.solve(gpu=True)
+    result = dm_model.solve(gpu=True)
 
-    # Or use as JaxMINLP solver plugin directly in Pyomo:
-    solver = pyo.SolverFactory('jaxminlp')
+    # Or use as discopt solver plugin directly in Pyomo:
+    solver = pyo.SolverFactory('discopt')
     results = solver.solve(pyo_model, options={'gpu': True})
     """
     print("Pyomo import example (requires pyomo and solver backend)")
@@ -447,7 +447,7 @@ def example_pyomo_import():
 
 def example_nl_import():
     """
-    import jaxminlp as jm
+    import discopt
 
     # Load from AMPL .nl format (parsed by Rust for speed)
     model = dm.from_nl("benchmarks/minlplib/ex1221.nl")
@@ -468,7 +468,7 @@ def example_nl_import():
 
 def example_llm_formulation():
     """
-    import jaxminlp as jm
+    import discopt
     import pandas as pd
 
     # Your data
@@ -522,7 +522,7 @@ def example_llm_formulation():
 
 def example_streaming():
     """
-    import jaxminlp as jm
+    import discopt
 
     m = dm.Model("large_problem")
     # ... build model ...
@@ -561,7 +561,7 @@ def example_streaming():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("JaxMINLP API Examples")
+    print("discopt API Examples")
     print("=" * 60)
 
     examples = [

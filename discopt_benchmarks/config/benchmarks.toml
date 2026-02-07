@@ -1,0 +1,189 @@
+# discopt Benchmark Configuration
+# All performance targets and phase gate criteria are defined here.
+# This is the single source of truth for "are we on track?"
+
+[general]
+time_limit_seconds = 3600
+memory_limit_mb = 32768
+num_runs = 3                    # Independent runs for determinism check
+float_tolerance = 1e-6          # Absolute tolerance for solution comparison
+relative_gap_tolerance = 1e-4   # Relative optimality gap tolerance
+results_dir = "reports"
+
+# ─────────────────────────────────────────────────────────────
+# BENCHMARK SUITES
+# ─────────────────────────────────────────────────────────────
+
+[suites.smoke]
+description = "Quick sanity check (10 small instances)"
+sources = ["minlplib"]
+max_variables = 5
+max_constraints = 5
+max_instances = 10
+time_limit_seconds = 60
+
+[suites.phase1]
+description = "Phase 1 milestone: small instances, ≤10 vars"
+sources = ["minlplib"]
+max_variables = 10
+max_constraints = 10
+time_limit_seconds = 3600
+
+[suites.phase2]
+description = "Phase 2 milestone: medium instances, ≤50 vars"
+sources = ["minlplib"]
+max_variables = 50
+max_constraints = 100
+time_limit_seconds = 3600
+
+[suites.phase3]
+description = "Phase 3 milestone: large instances, ≤100 vars"
+sources = ["minlplib"]
+max_variables = 100
+max_constraints = 500
+time_limit_seconds = 3600
+
+[suites.full]
+description = "Complete MINLPLib benchmark"
+sources = ["minlplib"]
+time_limit_seconds = 3600
+
+[suites.comparison]
+description = "Head-to-head comparison on curated set"
+sources = ["minlplib"]
+instance_list = "config/comparison_instances.txt"
+time_limit_seconds = 3600
+
+[suites.nightly]
+description = "Nightly CI regression suite"
+sources = ["minlplib"]
+max_variables = 30
+max_instances = 100
+time_limit_seconds = 1800
+
+# Subsolver-specific suites
+[suites.lp_netlib]
+description = "Rust LP solver validation against Netlib"
+sources = ["netlib"]
+time_limit_seconds = 300
+
+[suites.lp_kennington]
+description = "Rust LP solver on Kennington large-scale set"
+sources = ["kennington"]
+time_limit_seconds = 600
+
+[suites.nlp_cutest]
+description = "Hybrid NLP solver validation against CUTEst"
+sources = ["cutest"]
+filter_convex = true
+time_limit_seconds = 300
+
+[suites.sparse_matrices]
+description = "Sparse factorization validation against SuiteSparse"
+sources = ["suitesparse"]
+time_limit_seconds = 60
+
+[suites.pooling]
+description = "Pooling problems (GPU-amenable target class)"
+sources = ["minlplib"]
+problem_class = "pooling"
+time_limit_seconds = 3600
+
+[suites.gpu_scaling]
+description = "GPU batching scalability measurement"
+sources = ["minlplib"]
+min_nodes_expected = 1000
+max_variables = 50
+time_limit_seconds = 3600
+
+# ─────────────────────────────────────────────────────────────
+# PHASE GATE CRITERIA
+# These are the automated go/no-go checks at each phase boundary.
+# ─────────────────────────────────────────────────────────────
+
+[gates.phase1]
+description = "Phase 1 → Phase 2 gate (Month 14)"
+
+  [gates.phase1.criteria]
+  minlplib_solved_count = { min = 25, suite = "phase1", metric = "solved_count" }
+  nlp_convergence_rate = { min = 0.80, suite = "nlp_cutest", metric = "convergence_rate" }
+  lp_netlib_pass_rate = { min = 0.95, suite = "lp_netlib", metric = "pass_rate" }
+  lp_vs_highs_geomean = { max = 3.0, suite = "lp_netlib", metric = "geomean_ratio_vs_highs" }
+  sparse_accuracy = { max = 1e-12, suite = "sparse_matrices", metric = "max_residual_vs_suitesparse" }
+  relaxation_valid = { min = 1.0, suite = "phase1", metric = "relaxation_validity_rate" }
+  interop_overhead = { max = 0.05, suite = "phase1", metric = "python_orchestration_fraction" }
+  zero_incorrect = { max = 0, suite = "phase1", metric = "incorrect_count" }
+
+[gates.phase2]
+description = "Phase 2 → Phase 3 gate (Month 26)"
+
+  [gates.phase2.criteria]
+  minlplib_30var_solved = { min = 55, suite = "phase2", metric = "solved_count_le30var" }
+  minlplib_50var_solved = { min = 25, suite = "phase2", metric = "solved_count_le50var" }
+  geomean_vs_couenne = { max = 3.0, suite = "comparison", metric = "geomean_ratio_vs_couenne" }
+  gpu_speedup = { min = 15.0, suite = "gpu_scaling", metric = "gpu_vs_cpu_speedup" }
+  root_gap_vs_baron = { max = 1.3, suite = "comparison", metric = "root_gap_ratio_vs_baron" }
+  node_throughput = { min = 200, suite = "phase2", metric = "median_nodes_per_second" }
+  rust_overhead = { max = 0.05, suite = "phase2", metric = "rust_tree_overhead_fraction" }
+  zero_incorrect = { max = 0, suite = "phase2", metric = "incorrect_count" }
+
+[gates.phase3]
+description = "Phase 3 → Phase 4 gate (Month 38)"
+
+  [gates.phase3.criteria]
+  minlplib_30var_solved = { min = 75, suite = "phase3", metric = "solved_count_le30var" }
+  minlplib_50var_solved = { min = 45, suite = "phase3", metric = "solved_count_le50var" }
+  minlplib_100var_solved = { min = 20, suite = "phase3", metric = "solved_count_le100var" }
+  geomean_vs_baron = { max = 2.5, suite = "comparison", metric = "geomean_ratio_vs_baron" }
+  gpu_class_vs_baron = { max = 1.0, suite = "pooling", metric = "geomean_ratio_vs_baron" }
+  learned_branching_improvement = { min = 0.20, suite = "phase3", metric = "node_reduction_vs_classical" }
+  zero_incorrect = { max = 0, suite = "full", metric = "incorrect_count" }
+
+[gates.phase4]
+description = "Release gate (Month 48)"
+
+  [gates.phase4.criteria]
+  minlplib_30var_solved = { min = 85, suite = "full", metric = "solved_count_le30var" }
+  minlplib_100var_solved = { min = 30, suite = "full", metric = "solved_count_le100var" }
+  geomean_vs_baron = { max = 1.5, suite = "comparison", metric = "geomean_ratio_vs_baron" }
+  classes_faster_than_baron = { min = 2, suite = "full", metric = "problem_classes_beating_baron" }
+  beats_couenne = { min = 1.0, suite = "comparison", metric = "solve_count_ratio_vs_couenne" }
+  beats_bonmin = { min = 1.0, suite = "comparison", metric = "solve_count_ratio_vs_bonmin" }
+  zero_incorrect = { max = 0, suite = "full", metric = "incorrect_count" }
+
+# ─────────────────────────────────────────────────────────────
+# SOLVER CONFIGURATIONS
+# ─────────────────────────────────────────────────────────────
+
+[solvers.discopt]
+command = "discopt"
+type = "internal"
+options = { threads = 1, gpu = true }
+
+[solvers.discopt_cpu]
+command = "discopt"
+type = "internal"
+options = { threads = 1, gpu = false }
+
+[solvers.baron]
+command = "baron"
+type = "external"
+nl_interface = true
+options = { threads = 1, epsa = 1e-6, epsr = 1e-4 }
+
+[solvers.couenne]
+command = "couenne"
+type = "external"
+nl_interface = true
+options = { threads = 1 }
+
+[solvers.scip]
+command = "scip"
+type = "external"
+options = { threads = 1 }
+
+[solvers.highs]
+command = "highs"
+type = "external"
+options = { threads = 1 }
+note = "LP/MILP only — used for LP subsolver comparison"

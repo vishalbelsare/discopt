@@ -26,6 +26,48 @@ from discopt.solvers import SolveStatus
 from discopt.solvers.nlp_ipopt import solve_nlp
 
 
+def _has_nl_repr(model: Model) -> bool:
+    """Check if model was loaded from a .nl file."""
+    return hasattr(model, "_nl_repr") and model._nl_repr is not None
+
+
+def _make_evaluator(model: Model):
+    """Create the appropriate evaluator for the model."""
+    if _has_nl_repr(model):
+        from discopt._jax.nl_evaluator import NLPEvaluatorFromNl
+
+        return NLPEvaluatorFromNl(model)
+    return NLPEvaluator(model)
+
+
+def _infer_nl_constraint_bounds(model: Model):
+    """Infer (cl, cu) from .nl constraint senses and rhs values.
+
+    For .nl files, constraint body is evaluated by Rust, and the sense/rhs
+    are stored separately. We need:
+      - '<=' constraints: body <= rhs => cl = -inf, cu = rhs
+      - '==' constraints: body == rhs => cl = rhs, cu = rhs
+      - '>=' constraints: body >= rhs => cl = rhs, cu = inf
+    """
+    cl_list = []
+    cu_list = []
+    for i in range(model._nl_n_constraints):
+        sense = model._nl_constraint_senses[i]
+        rhs = model._nl_constraint_rhs[i]
+        if sense == "<=":
+            cl_list.append(-1e20)
+            cu_list.append(rhs)
+        elif sense == "==":
+            cl_list.append(rhs)
+            cu_list.append(rhs)
+        elif sense == ">=":
+            cl_list.append(rhs)
+            cu_list.append(1e20)
+        else:
+            raise ValueError(f"Unknown constraint sense: {sense}")
+    return cl_list, cu_list
+
+
 def _extract_variable_info(model: Model):
     """Extract flat variable bounds and integer variable group info from a model.
 
@@ -165,13 +207,16 @@ def solve_model(
     tree.initialize()
     rust_time += time.perf_counter() - t_rust_start
 
-    # --- Compile NLP evaluator (JAX) ---
+    # --- Compile NLP evaluator ---
     t_jax_start = time.perf_counter()
-    evaluator = NLPEvaluator(model)
+    evaluator = _make_evaluator(model)
     jax_time += time.perf_counter() - t_jax_start
 
     # --- Infer constraint bounds ---
-    cl_list, cu_list = _infer_constraint_bounds(model)
+    if _has_nl_repr(model):
+        cl_list, cu_list = _infer_nl_constraint_bounds(model)
+    else:
+        cl_list, cu_list = _infer_constraint_bounds(model)
     constraint_bounds = list(zip(cl_list, cu_list)) if cl_list else None
 
     # --- Default Ipopt options ---
@@ -307,7 +352,7 @@ def _solve_continuous(
 ) -> SolveResult:
     """Solve a purely continuous model directly with Ipopt (no B&B)."""
     t_jax_start = time.perf_counter()
-    evaluator = NLPEvaluator(model)
+    evaluator = _make_evaluator(model)
     jax_time = time.perf_counter() - t_jax_start
 
     lb, ub = evaluator.variable_bounds
@@ -318,8 +363,15 @@ def _solve_continuous(
     opts = dict(ipopt_options) if ipopt_options else {}
     opts.setdefault("print_level", 0)
 
+    # For .nl models, pass explicit constraint bounds
+    constraint_bounds = None
+    if _has_nl_repr(model):
+        cl_list, cu_list = _infer_nl_constraint_bounds(model)
+        if cl_list:
+            constraint_bounds = list(zip(cl_list, cu_list))
+
     t_jax_start = time.perf_counter()
-    nlp_result = solve_nlp(evaluator, x0, options=opts)
+    nlp_result = solve_nlp(evaluator, x0, constraint_bounds=constraint_bounds, options=opts)
     jax_time += time.perf_counter() - t_jax_start
 
     wall_time = time.perf_counter() - t_start

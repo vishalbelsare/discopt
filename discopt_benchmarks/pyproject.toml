@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "discopt-benchmarks"
+version = "0.1.0"
+description = "Testing and benchmarking framework for discopt"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "pytest>=7.4",
+    "pytest-timeout>=2.1",
+    "pytest-xdist>=3.3",       # Parallel test execution
+    "hypothesis>=6.82",         # Property-based testing
+    "scipy>=1.11",              # Statistical tests (Wilcoxon)
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.5",
+    "ruff>=0.1",
+    "coverage>=7.3",
+    "pytest-cov>=4.1",
+    "mutmut>=2.4",              # Mutation testing
+]
+
+[project.scripts]
+discopt-bench = "run_benchmarks:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "smoke: Quick CI smoke tests",
+    "unit: Unit tests",
+    "integration: Cross-layer tests",
+    "correctness: Known-optimum validation",
+    "regression: Performance regression",
+    "property: Property-based tests",
+    "adversarial: Edge cases",
+    "slow: Tests >60s",
+    "gpu: Requires GPU",
+]
+addopts = [
+    "--strict-markers",
+    "--tb=short",
+    "-q",
+]
+timeout = 300  # Default 5-minute timeout per test
+
+[tool.mypy]
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "SIM", "TCH"]
+
+[tool.coverage.run]
+source = ["benchmarks", "utils"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "pytest.skip",
+]

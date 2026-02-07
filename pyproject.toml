@@ -29,7 +29,7 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "discopt.modeling.core"
-disable_error_code = ["arg-type", "union-attr"]
+disable_error_code = ["arg-type", "union-attr", "attr-defined"]
 
 [[tool.mypy.overrides]]
 module = "discopt._jax.dag_compiler"
@@ -47,6 +47,14 @@ disable_error_code = ["misc", "no-any-return", "assignment"]
 module = "discopt.solvers.nlp_ipopt"
 disable_error_code = "no-any-return"
 
+[[tool.mypy.overrides]]
+module = "discopt._jax.nl_evaluator"
+disable_error_code = "no-any-return"
+
+[[tool.mypy.overrides]]
+module = "discopt.solver"
+disable_error_code = "attr-defined"
+
 [tool.pytest.ini_options]
 testpaths = ["python/tests"]
 timeout = 300
@@ -54,4 +62,5 @@ markers = [
     "smoke: quick sanity tests",
     "slow: long-running tests",
     "gpu: requires GPU",
+    "correctness: correctness validation tests",
 ]

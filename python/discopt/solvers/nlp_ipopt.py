@@ -42,7 +42,7 @@ _IPOPT_STATUS_MAP: dict[int, SolveStatus] = {
 class _IpoptCallbacks:
     """Adapter mapping NLPEvaluator methods to cyipopt.Problem callbacks."""
 
-    def __init__(self, evaluator: NLPEvaluator) -> None:
+    def __init__(self, evaluator) -> None:
         self._ev = evaluator
         self._n = evaluator.n_variables
         self._m = evaluator.n_constraints

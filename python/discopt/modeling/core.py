@@ -1,5 +1,5 @@
 """
-JaxMINLP Modeling API
+discopt Modeling API
 
 A clean, expressive Python API for formulating Mixed-Integer Nonlinear Programs.
 Designed for:
@@ -9,9 +9,9 @@ Designed for:
   - LLM integration: the API doubles as the tool-calling schema for the formulation agent
 
 Example:
-    import jaxminlp as jm
+    import discopt.modeling as dm
 
-    m = jm.Model("blending")
+    m = dm.Model("blending")
     x = m.continuous("flow", shape=(3,), lb=0, ub=100)
     y = m.binary("active", shape=(2,))
 
@@ -66,7 +66,7 @@ class Expression:
 
     Supports standard arithmetic (+, -, *, /, **), comparison operators
     (<=, >=, ==) that produce Constraint objects, and mathematical
-    functions via the jm namespace (jm.exp, jm.log, jm.sin, etc.).
+    functions via the jm namespace (dm.exp, dm.log, dm.sin, etc.).
 
     Expressions are lazy — they build a DAG, not compute values.
     """
@@ -274,7 +274,7 @@ def _wrap(x) -> Expression:
 
 
 # ─────────────────────────────────────────────────────────────
-# Mathematical Functions (jm.exp, jm.log, jm.sin, etc.)
+# Mathematical Functions (dm.exp, dm.log, dm.sin, etc.)
 # ─────────────────────────────────────────────────────────────
 
 
@@ -319,7 +319,7 @@ def tan(x: Union[Expression, float]) -> Expression:
 
 
 def abs_(x: Union[Expression, float]) -> Expression:
-    """Absolute value (use jm.abs_ to avoid shadowing builtins)."""
+    """Absolute value (use dm.abs_ to avoid shadowing builtins)."""
     return FunctionCall("abs", _wrap(x))
 
 
@@ -353,12 +353,12 @@ def sum(
     Summation.
 
     Three calling patterns:
-        jm.sum(x)                      # sum all elements of array variable x
-        jm.sum(x, axis=0)              # sum along axis
-        jm.sum(lambda i: cost[i]*x[i], over=range(n))  # indexed sum
+        dm.sum(x)                      # sum all elements of array variable x
+        dm.sum(x, axis=0)              # sum along axis
+        dm.sum(lambda i: cost[i]*x[i], over=range(n))  # indexed sum
     """
     if over is not None and callable(x):
-        # Indexed summation: jm.sum(lambda i: expr(i), over=index_set)
+        # Indexed summation: dm.sum(lambda i: expr(i), over=index_set)
         terms = [_wrap(x(i)) for i in over]
         return SumOverExpression(terms)
     if isinstance(x, list):
@@ -404,7 +404,7 @@ class Constraint:
 
     Created via comparison operators on Expressions:
         x[0] + x[1] <= 10
-        jm.exp(x[2]) == 1.0
+        dm.exp(x[2]) == 1.0
         A @ x >= b
     """
 
@@ -551,7 +551,7 @@ class Model:
     A Mixed-Integer Nonlinear Program.
 
     Usage:
-        m = jm.Model("my_problem")
+        m = dm.Model("my_problem")
 
         # Variables
         x = m.continuous("x", shape=(3,), lb=0, ub=10)
@@ -562,12 +562,12 @@ class Model:
         price = m.parameter("price", value=50.0)
 
         # Objective
-        m.minimize(price * jm.sum(x) + jm.sum(fixed_cost * y))
+        m.minimize(price * dm.sum(x) + dm.sum(fixed_cost * y))
 
         # Constraints
         m.subject_to(A @ x <= b, name="capacity")
         m.subject_to(x[0] * x[1] <= 50 * y[0], name="bilinear")
-        m.subject_to(jm.exp(x[2]) + x[0] == 5.0, name="nonlinear_eq")
+        m.subject_to(dm.exp(x[2]) + x[0] == 5.0, name="nonlinear_eq")
 
         # Solve
         result = m.solve()
@@ -686,7 +686,7 @@ class Model:
 
         Examples:
             m.minimize(cost @ x)
-            m.minimize(jm.sum(lambda i: c[i] * x[i], over=range(n)))
+            m.minimize(dm.sum(lambda i: c[i] * x[i], over=range(n)))
         """
         self._objective = Objective(_wrap(expr), ObjectiveSense.MINIMIZE)
 
@@ -695,7 +695,7 @@ class Model:
         Set the objective to maximize.
 
         Examples:
-            m.maximize(profit @ x - jm.sum(penalty * y))
+            m.maximize(profit @ x - dm.sum(penalty * y))
         """
         self._objective = Objective(_wrap(expr), ObjectiveSense.MAXIMIZE)
 
@@ -711,7 +711,7 @@ class Model:
 
         Constraints are created by comparison operators on expressions:
             m.subject_to(x[0] + x[1] <= 10)           # inequality
-            m.subject_to(jm.exp(x[0]) == 1.0)          # equality
+            m.subject_to(dm.exp(x[0]) == 1.0)          # equality
             m.subject_to(A @ x <= b)                    # vectorized
             m.subject_to(A @ x <= b, name="capacity")   # named
 
@@ -975,16 +975,16 @@ def from_pyomo(pyomo_model) -> Model:
     Import a Pyomo ConcreteModel as a JaxMINLP model.
 
     Supports: Var, Constraint, Objective, Param, Set.
-    GDP (Disjunct/Disjunction) is mapped to jm.either_or.
+    GDP (Disjunct/Disjunction) is mapped to dm.either_or.
 
     Example:
         import pyomo.environ as pyo
-        import jaxminlp as jm
+        import discopt
 
         pyo_model = pyo.ConcreteModel()
         # ... build Pyomo model ...
 
-        jm_model = jm.from_pyomo(pyo_model)
+        jm_model = dm.from_pyomo(pyo_model)
         result = jm_model.solve(gpu=True)
     """
     raise NotImplementedError("Pyomo import requires pyomo bridge (Phase 4)")
@@ -997,10 +997,53 @@ def from_nl(path: str) -> Model:
     Uses the Rust .nl parser for speed.
 
     Example:
-        model = jm.from_nl("problem.nl")
+        model = dm.from_nl("problem.nl")
         result = model.solve()
     """
-    raise NotImplementedError("NL import requires Rust parser (Phase 1)")
+    from discopt._rust import parse_nl_file
+
+    nl_repr = parse_nl_file(path)
+
+    # Build a Python Model from the parsed representation
+    import os
+
+    model_name = os.path.splitext(os.path.basename(path))[0]
+    m = Model(model_name)
+
+    # Create variables matching the .nl file
+    var_types = nl_repr.var_types()
+    var_names = nl_repr.var_names()
+    var_shapes = nl_repr.var_shapes()
+    for i in range(len(var_names)):
+        vt = var_types[i]
+        name = var_names[i]
+        lb_vals = nl_repr.var_lb(i)
+        ub_vals = nl_repr.var_ub(i)
+        shape_list = var_shapes[i]
+        shape = tuple(shape_list) if shape_list else ()
+        lb = np.array(lb_vals).reshape(shape) if shape else float(lb_vals[0])
+        ub = np.array(ub_vals).reshape(shape) if shape else float(ub_vals[0])
+
+        if vt == "continuous":
+            m.continuous(name, shape=shape, lb=lb, ub=ub)
+        elif vt == "binary":
+            m.binary(name, shape=shape)
+        elif vt == "integer":
+            m.integer(name, shape=shape, lb=lb, ub=ub)
+
+    # Set a dummy objective (the real evaluation comes from _nl_repr)
+    if nl_repr.objective_sense == "minimize":
+        m.minimize(Constant(0.0))
+    else:
+        m.maximize(Constant(0.0))
+
+    # Store constraint info for the solver
+    m._nl_repr = nl_repr
+    m._nl_n_constraints = nl_repr.n_constraints
+    m._nl_constraint_senses = [nl_repr.constraint_sense(i) for i in range(nl_repr.n_constraints)]
+    m._nl_constraint_rhs = [nl_repr.constraint_rhs(i) for i in range(nl_repr.n_constraints)]
+
+    return m
 
 
 def from_gams(path: str) -> Model:
@@ -1008,7 +1051,7 @@ def from_gams(path: str) -> Model:
     Import a model from GAMS .gms format.
 
     Example:
-        model = jm.from_gams("problem.gms")
+        model = dm.from_gams("problem.gms")
     """
     raise NotImplementedError("GAMS import requires Rust parser (Phase 1)")
 
@@ -1034,7 +1077,7 @@ def from_description(
         explain: Print LLM's explanation of the formulation
 
     Example:
-        model = jm.from_description(
+        model = dm.from_description(
             "Minimize total shipping cost from 3 warehouses to 5 customers. "
             "Each warehouse has limited supply. Each customer's demand must be met. "
             "We must decide which warehouses to open (fixed cost) and how much "

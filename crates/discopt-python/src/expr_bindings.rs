@@ -131,6 +131,20 @@ impl PyModelRepr {
         self.inner.constraints[i].name.clone()
     }
 
+    /// Constraint sense as string ("<=", "==", or ">=").
+    fn constraint_sense(&self, i: usize) -> &str {
+        match self.inner.constraints[i].sense {
+            ConstraintSense::Le => "<=",
+            ConstraintSense::Eq => "==",
+            ConstraintSense::Ge => ">=",
+        }
+    }
+
+    /// Constraint right-hand side.
+    fn constraint_rhs(&self, i: usize) -> f64 {
+        self.inner.constraints[i].rhs
+    }
+
     /// Evaluate the objective at a given point x.
     fn evaluate_objective(&self, x: numpy::PyReadonlyArray1<f64>) -> f64 {
         let x_arr = x.as_array();
