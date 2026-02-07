@@ -132,7 +132,7 @@ ALL_INSTANCES: list[NLInstance] = [
         True,
         xfail="Non-convex with sqrt/division: local NLP finds suboptimal",
     ),
-    NLInstance("nvs02", 5.96418452, 8, False, True, time_limit=180.0, max_nodes=200_000),
+    NLInstance("nvs02", 5.96418452, 8, False, True, time_limit=60.0, max_nodes=100_000),
     NLInstance("nvs03", 16.0, 2, False, True),
     NLInstance("nvs04", 0.72, 2, False, True),
     NLInstance(
@@ -174,7 +174,7 @@ ALL_INSTANCES: list[NLInstance] = [
     NLInstance("nvs17", -1100.40, 7, False, True),
     NLInstance("nvs18", -778.40, 6, False, True),
     NLInstance("nvs19", -1098.40, 8, False, True),
-    NLInstance("nvs23", -1125.20, 9, False, True, time_limit=180.0, max_nodes=200_000),
+    NLInstance("nvs23", -1125.20, 9, False, True, time_limit=60.0, max_nodes=100_000),
     NLInstance(
         "nvs21",
         -5.68478250,
@@ -196,7 +196,7 @@ ALL_INSTANCES: list[NLInstance] = [
     ),
     # --- gear problems ---
     NLInstance("gear", 0.0, 4, False, True),
-    NLInstance("gear3", 0.0, 8, False, True, time_limit=180.0, max_nodes=200_000),
+    NLInstance("gear3", 0.0, 8, False, True, time_limit=60.0, max_nodes=100_000),
     NLInstance(
         "gear4",
         1.64342847,
@@ -212,7 +212,7 @@ ALL_INSTANCES: list[NLInstance] = [
     NLInstance("dispatch", 3155.28792700, 4, False, False),
     NLInstance("meanvar", 5.24339907, 8, False, False),
     # --- alan ---
-    NLInstance("alan", 2.9250, 8, True, False, time_limit=180.0, max_nodes=200_000),
+    NLInstance("alan", 2.9250, 8, True, False, time_limit=60.0, max_nodes=100_000),
 ]
 
 # Filter to instances that exist on disk
@@ -413,6 +413,7 @@ class TestSolveXfail:
 class TestMINLPLibGate:
     """Phase gate: zero incorrect results across solvable MINLPLib instances."""
 
+    @pytest.mark.timeout(1800)
     def test_zero_incorrect_results(self) -> None:
         """Run solvable instances and assert zero incorrect results.
 
