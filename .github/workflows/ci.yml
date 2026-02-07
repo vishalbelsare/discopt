@@ -56,11 +56,13 @@ jobs:
       - name: Type check
         run: |
           source .venv/bin/activate
-          mypy python/discopt/
+          PYTHONPATH="${GITHUB_WORKSPACE}/python:${GITHUB_WORKSPACE}/jaxminlp_benchmarks:${PYTHONPATH}" \
+            mypy python/discopt/
       - name: Test
         run: |
           source .venv/bin/activate
-          JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 pytest python/tests/ -v --timeout=300
+          PYTHONPATH="${GITHUB_WORKSPACE}/python:${GITHUB_WORKSPACE}/jaxminlp_benchmarks:${PYTHONPATH}" \
+            JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 pytest python/tests/ -v --timeout=300
         env:
           JAX_PLATFORMS: cpu
           JAX_ENABLE_X64: "1"
