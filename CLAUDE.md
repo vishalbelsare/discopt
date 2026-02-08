@@ -68,6 +68,26 @@ The `docs/` directory contains a Jupyter Book site built with `jupyter-book buil
 4. Add the notebook to `docs/_toc.yml` under the appropriate `parts` section
 5. Rebuild with `jupyter-book build docs/` and verify zero warnings
 
+## LLM Integration (`python/discopt/llm/`)
+
+Optional LLM-powered features using litellm as a universal adapter (100+ providers). Install with `pip install discopt[llm]`.
+
+- **`llm/__init__.py`** — `is_available()`, `get_completion()` convenience wrapper
+- **`llm/provider.py`** — Thin litellm wrapper; model resolution: explicit `model=` > `DISCOPT_LLM_MODEL` env var > default `anthropic/claude-sonnet-4-20250514`
+- **`llm/serializer.py`** — Serialize Model/SolveResult to structured text for LLM context
+- **`llm/prompts.py`** — All prompt templates (explain, formulate, diagnose, teach, debug)
+- **`llm/safety.py`** — Output validation, bounds clamping, name sanitization
+- **`llm/tools.py`** — OpenAI-format tool definitions + `ModelBuilder` for structured `from_description()`
+- **`llm/advisor.py`** — Rule-based + LLM-augmented solver parameter suggestions, pre-solve analysis
+- **`llm/commentary.py`** — `SolveCommentator` for streaming B&B commentary
+- **`llm/diagnosis.py`** — Infeasibility diagnosis, convergence analysis, limit diagnosis
+- **`llm/chat.py`** — `ChatSession` for conversational model building (`discopt.chat()`)
+- **`llm/reformulation.py`** — Auto-reformulation detection (big-M, weak bounds, symmetry, bilinear)
+
+**Safety invariant**: LLM outputs never affect solver math. Formulations pass `validate()`. Explanations are sanitized. Graceful degradation when litellm is unavailable.
+
+**Claude Code skill files** in `.claude/commands/`: `/formulate`, `/diagnose`, `/reformulate`, `/explain-model`, `/convert`, `/benchmark-report`.
+
 ## Key Constraints
 
 - **Correctness is non-negotiable**: Every phase gate enforces `incorrect_count ≤ 0`. Never weaken this check.

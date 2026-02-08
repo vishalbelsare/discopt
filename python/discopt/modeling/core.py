@@ -797,8 +797,22 @@ class SolveResult:
             raise ValueError("No solution available")
         return self.x[var.name]
 
-    def explain(self) -> str:
-        """Get a human-readable explanation of the solve result."""
+    def explain(self, llm: bool = False, model: str | None = None) -> str:
+        """Get a human-readable explanation of the solve result.
+
+        Parameters
+        ----------
+        llm : bool, default False
+            Use LLM for a rich, context-aware explanation. Falls back
+            to a template string if litellm is unavailable.
+        model : str, optional
+            LLM model string (e.g. ``"anthropic/claude-sonnet-4-20250514"``).
+        """
+        if llm:
+            try:
+                return self._explain_with_llm(model)
+            except Exception:
+                pass
         if self._explanation:
             return self._explanation
         return (
@@ -806,6 +820,34 @@ class SolveResult:
             f"Objective: {self.objective}, Gap: {self.gap}, "
             f"Nodes: {self.node_count}"
         )
+
+    def _explain_with_llm(self, llm_model: str | None = None) -> str:
+        """Generate LLM-powered explanation (internal)."""
+        from discopt.llm.prompts import EXPLAIN_SYSTEM, get_explain_prompt
+        from discopt.llm.provider import complete
+        from discopt.llm.safety import validate_explanation
+        from discopt.llm.serializer import serialize_model, serialize_solve_result
+
+        model_text = ""
+        if hasattr(self, "_model") and self._model is not None:
+            model_text = serialize_model(self._model) + "\n\n"
+
+        result_text = serialize_solve_result(self, getattr(self, "_model", None))
+        status_prompt = get_explain_prompt(self.status)
+
+        text = complete(
+            messages=[
+                {"role": "system", "content": EXPLAIN_SYSTEM},
+                {
+                    "role": "user",
+                    "content": (f"{model_text}{result_text}\n\n{status_prompt}"),
+                },
+            ],
+            model=llm_model,
+            max_tokens=1024,
+            timeout=5.0,
+        )
+        return validate_explanation(text)
 
     def gradient(self, param: Parameter) -> np.ndarray:
         """
@@ -1254,6 +1296,19 @@ class Model:
         """
         self.validate()
 
+        # Pre-solve LLM analysis (advisory only, never blocks solving)
+        if llm:
+            try:
+                from discopt.llm.advisor import presolve_analysis
+
+                warnings = presolve_analysis(self)
+                for w in warnings:
+                    import logging
+
+                    logging.getLogger("discopt.llm").info("Pre-solve: %s", w)
+            except Exception:
+                pass
+
         if stream:
             return self._solve_streaming(
                 time_limit=time_limit, gap_tolerance=gap_tolerance, **kwargs
@@ -1261,7 +1316,7 @@ class Model:
 
         from discopt.solver import solve_model
 
-        return solve_model(
+        result = solve_model(
             self,
             time_limit=time_limit,
             gap_tolerance=gap_tolerance,
@@ -1272,6 +1327,16 @@ class Model:
             branching_policy=branching_policy,
             **kwargs,
         )
+
+        # Attach model reference and auto-generate LLM explanation
+        result._model = self
+        if llm:
+            try:
+                result._explanation = result._explain_with_llm()
+            except Exception:
+                pass
+
+        return result
 
     def _solve_streaming(self, **kwargs) -> Iterator["SolveUpdate"]:
         """Streaming solve that yields updates during B&B."""
@@ -1573,4 +1638,65 @@ def from_description(
     ...     data={"supply": [100, 150, 200], "demand": [80, 60, 70, 40, 50]},
     ... )
     """
-    raise NotImplementedError("LLM formulation requires LLM integration (Phase 2)")
+    from discopt.llm import is_available
+
+    if not is_available():
+        raise ImportError(
+            "LLM formulation requires litellm. Install with: pip install discopt[llm]"
+        )
+
+    from discopt.llm.prompts import FORMULATE_SYSTEM, FORMULATE_USER
+    from discopt.llm.provider import complete_with_tools
+    from discopt.llm.serializer import serialize_data_schema
+    from discopt.llm.tools import (
+        TOOL_DEFINITIONS,
+        ModelBuilder,
+        execute_tool_calls,
+    )
+
+    data_text = serialize_data_schema(data) if data else ""
+    user_msg = FORMULATE_USER.format(description=description, data_schema=data_text)
+    messages: list[dict] = [
+        {"role": "system", "content": FORMULATE_SYSTEM},
+        {"role": "user", "content": user_msg},
+    ]
+
+    builder = ModelBuilder()
+    if data:
+        builder._namespace.update(data)
+
+    max_turns = 10
+    for _ in range(max_turns):
+        response = complete_with_tools(
+            messages=messages,
+            tools=TOOL_DEFINITIONS,
+            model=llm_model,
+            max_tokens=4096,
+            timeout=30.0,
+        )
+
+        # complete_with_tools returns the message directly
+        msg = response
+        msg_dict = msg.model_dump(exclude_none=True) if hasattr(msg, "model_dump") else msg
+        messages.append(msg_dict)
+
+        tool_calls = getattr(msg, "tool_calls", None)
+        if not tool_calls:
+            break
+
+        tool_results = execute_tool_calls(tool_calls, builder)
+        messages.extend(tool_results)
+
+    if builder.model is None:
+        raise ValueError("LLM did not create a model")
+
+    if validate:
+        builder.model.validate()
+
+    if explain and messages:
+        last = messages[-1]
+        content = last.get("content", "") if isinstance(last, dict) else ""
+        if content:
+            print(f"LLM explanation: {content}")
+
+    return builder.model

@@ -8,6 +8,8 @@ parts:
   - caption: Advanced Features
     chapters:
       - file: notebooks/advanced_features
+      - file: notebooks/llm_integration
+      - file: llm_features
   - caption: Solver Backends
     chapters:
       - file: notebooks/ipm_vs_ipopt

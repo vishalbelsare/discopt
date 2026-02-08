@@ -69,3 +69,24 @@ from discopt.modeling import (
 from discopt.modeling.examples import (
     example_simple_minlp as example_simple_minlp,
 )
+
+
+def chat(llm_model: str | None = None, verbose: bool = True):
+    """Start an interactive LLM-powered model building session.
+
+    Requires ``pip install discopt[llm]``.
+
+    Parameters
+    ----------
+    llm_model : str, optional
+        LLM model string (e.g. ``"anthropic/claude-sonnet-4-20250514"``).
+    verbose : bool, default True
+        Print LLM responses to stdout.
+
+    Returns
+    -------
+    ChatSession
+    """
+    from discopt.llm.chat import chat as _chat
+
+    return _chat(llm_model=llm_model, verbose=verbose)
