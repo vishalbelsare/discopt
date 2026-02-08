@@ -187,6 +187,79 @@ def _solve_root_node_multistart(
     return nlp_result
 
 
+def _solve_root_node_multistart_ipm(
+    evaluator,
+    node_lb,
+    node_ub,
+    constraint_bounds,
+    g_l_jax,
+    g_u_jax,
+    options,
+    n_random=2,
+):
+    """Solve root NLP relaxation from multiple starting points via vmap'd IPM.
+
+    Uses jax.vmap to solve all starting points in parallel, giving ~Nx speedup
+    over the serial loop when using the pure-JAX IPM backend.
+    """
+    import jax.numpy as jnp
+
+    from discopt._jax.ipm import IPMOptions, solve_nlp_batch
+    from discopt.solvers import NLPResult
+
+    starting_points = _generate_starting_points(node_lb, node_ub, n_random=n_random)
+    n_starts = len(starting_points)
+
+    obj_fn = evaluator._obj_fn
+    m = evaluator.n_constraints
+    con_fn = evaluator._cons_fn if m > 0 else None
+
+    # Stack starting points into (n_starts, n_vars) batch
+    x0_batch = jnp.array(np.stack(starting_points), dtype=jnp.float64)
+    # Broadcast node bounds to (n_starts, n_vars)
+    xl_batch = jnp.broadcast_to(jnp.array(node_lb, dtype=jnp.float64), (n_starts, len(node_lb)))
+    xu_batch = jnp.broadcast_to(jnp.array(node_ub, dtype=jnp.float64), (n_starts, len(node_ub)))
+
+    ipm_opts = IPMOptions(max_iter=int(options.get("max_iter", 200)))
+
+    try:
+        state = solve_nlp_batch(
+            obj_fn, con_fn, x0_batch, xl_batch, xu_batch, g_l_jax, g_u_jax, ipm_opts
+        )
+    except Exception:
+        # Fall back: return infeasible sentinel
+        return NLPResult(
+            status=SolveStatus.ERROR,
+            x=np.asarray(starting_points[0]),
+            objective=1e30,
+        )
+
+    # Unpack batched results: pick best converged solution
+    converged = np.asarray(state.converged)  # (n_starts,)
+    obj_vals = np.asarray(state.obj)  # (n_starts,)
+    x_vals = np.asarray(state.x)  # (n_starts, n_vars)
+
+    # Mask: converged == 1 (optimal), 2 (acceptable), or 3 (iter limit)
+    feasible_mask = (converged == 1) | (converged == 2) | (converged == 3)
+
+    if np.any(feasible_mask):
+        # Among feasible, pick the one with lowest objective
+        masked_obj = np.where(feasible_mask, obj_vals, np.inf)
+        best_idx = int(np.argmin(masked_obj))
+        return NLPResult(
+            status=SolveStatus.OPTIMAL,
+            x=x_vals[best_idx],
+            objective=float(obj_vals[best_idx]),
+        )
+    else:
+        # All failed
+        return NLPResult(
+            status=SolveStatus.ERROR,
+            x=x_vals[0],
+            objective=1e30,
+        )
+
+
 def _unpack_solution(model: Model, x_flat: np.ndarray):
     """Convert flat solution vector to {var_name: array} dict."""
     result = {}
@@ -406,7 +479,8 @@ def solve_model(
 
         # Solve NLP relaxation for each node in the batch
         t_jax_start = time.perf_counter()
-        if nlp_solver == "ipm" and n_batch > 1 and hasattr(evaluator, "_obj_fn"):
+        _use_ipm_batch = nlp_solver == "ipm" and hasattr(evaluator, "_obj_fn")
+        if _use_ipm_batch and n_batch > 1:
             result_ids, result_lbs, result_sols, result_feas = _solve_batch_ipm(
                 evaluator,
                 batch_lb,
@@ -429,14 +503,25 @@ def solve_model(
                 node_ub = np.array(batch_ub[i])
 
                 if iteration == 0:
-                    nlp_result = _solve_root_node_multistart(
-                        evaluator,
-                        node_lb,
-                        node_ub,
-                        constraint_bounds,
-                        opts,
-                        nlp_solver,
-                    )
+                    if _use_ipm_batch:
+                        nlp_result = _solve_root_node_multistart_ipm(
+                            evaluator,
+                            node_lb,
+                            node_ub,
+                            constraint_bounds,
+                            g_l_jax,
+                            g_u_jax,
+                            opts,
+                        )
+                    else:
+                        nlp_result = _solve_root_node_multistart(
+                            evaluator,
+                            node_lb,
+                            node_ub,
+                            constraint_bounds,
+                            opts,
+                            nlp_solver,
+                        )
                 else:
                     lb_clipped = np.clip(node_lb, -100.0, 100.0)
                     ub_clipped = np.clip(node_ub, -100.0, 100.0)
@@ -997,37 +1082,74 @@ def _solve_milp_bb(
 
         t_jax_start = time.perf_counter()
         result_ids = np.array(batch_ids, dtype=np.int64)
-        result_lbs = np.empty(n_batch, dtype=np.float64)
-        result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
-        result_feas = np.zeros(n_batch, dtype=bool)
+        n_slack = lp_data.x_l.shape[0] - n_orig
 
-        for i in range(n_batch):
-            node_lb = np.array(batch_lb[i])
-            node_ub = np.array(batch_ub[i])
+        if n_batch > 1:
+            # Batch LP solve via vmap
+            from discopt._jax.lp_ipm import lp_ipm_solve_batch
 
-            x_l_node = jnp.array(node_lb, dtype=jnp.float64)
-            x_u_node = jnp.array(node_ub, dtype=jnp.float64)
-
-            n_slack = lp_data.x_l.shape[0] - n_orig
-            x_l_full = jnp.concatenate([x_l_node, jnp.zeros(n_slack)])
-            x_u_full = jnp.concatenate([x_u_node, jnp.full(n_slack, 1e20)])
+            xl_arr = jnp.array(batch_lb, dtype=jnp.float64)
+            xu_arr = jnp.array(batch_ub, dtype=jnp.float64)
+            slack_l = jnp.zeros((n_batch, n_slack), dtype=jnp.float64)
+            slack_u = jnp.full((n_batch, n_slack), 1e20, dtype=jnp.float64)
+            xl_full = jnp.concatenate([xl_arr, slack_l], axis=1)
+            xu_full = jnp.concatenate([xu_arr, slack_u], axis=1)
 
             try:
-                state = lp_ipm_solve(lp_data.c, lp_data.A_eq, lp_data.b_eq, x_l_full, x_u_full)
-                conv = int(state.converged)
-                if conv in (1, 2, 3):
-                    result_lbs[i] = float(state.obj) + lp_data.obj_const
-                    result_sols[i] = np.asarray(state.x[:n_vars])
-                else:
+                state = lp_ipm_solve_batch(lp_data.c, lp_data.A_eq, lp_data.b_eq, xl_full, xu_full)
+                converged = np.asarray(state.converged)
+                obj_vals = np.asarray(state.obj)
+                x_vals = np.asarray(state.x)
+
+                ok = (converged == 1) | (converged == 2) | (converged == 3)
+                result_lbs = np.where(ok, obj_vals + lp_data.obj_const, 1e30)
+                result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
+                for i in range(n_batch):
+                    if ok[i]:
+                        result_sols[i] = x_vals[i, :n_vars]
+                    else:
+                        lb_c = np.clip(np.array(batch_lb[i]), -100, 100)
+                        ub_c = np.clip(np.array(batch_ub[i]), -100, 100)
+                        result_sols[i] = 0.5 * (lb_c + ub_c)
+            except Exception:
+                result_lbs = np.full(n_batch, 1e30, dtype=np.float64)
+                result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
+                for i in range(n_batch):
+                    lb_c = np.clip(np.array(batch_lb[i]), -100, 100)
+                    ub_c = np.clip(np.array(batch_ub[i]), -100, 100)
+                    result_sols[i] = 0.5 * (lb_c + ub_c)
+            result_feas = np.zeros(n_batch, dtype=bool)
+        else:
+            result_lbs = np.empty(n_batch, dtype=np.float64)
+            result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
+            result_feas = np.zeros(n_batch, dtype=bool)
+
+            for i in range(n_batch):
+                node_lb = np.array(batch_lb[i])
+                node_ub = np.array(batch_ub[i])
+
+                x_l_node = jnp.array(node_lb, dtype=jnp.float64)
+                x_u_node = jnp.array(node_ub, dtype=jnp.float64)
+
+                x_l_full = jnp.concatenate([x_l_node, jnp.zeros(n_slack)])
+                x_u_full = jnp.concatenate([x_u_node, jnp.full(n_slack, 1e20)])
+
+                try:
+                    state = lp_ipm_solve(lp_data.c, lp_data.A_eq, lp_data.b_eq, x_l_full, x_u_full)
+                    conv = int(state.converged)
+                    if conv in (1, 2, 3):
+                        result_lbs[i] = float(state.obj) + lp_data.obj_const
+                        result_sols[i] = np.asarray(state.x[:n_vars])
+                    else:
+                        result_lbs[i] = 1e30
+                        lb_c = np.clip(node_lb, -100, 100)
+                        ub_c = np.clip(node_ub, -100, 100)
+                        result_sols[i] = 0.5 * (lb_c + ub_c)
+                except Exception:
                     result_lbs[i] = 1e30
                     lb_c = np.clip(node_lb, -100, 100)
                     ub_c = np.clip(node_ub, -100, 100)
                     result_sols[i] = 0.5 * (lb_c + ub_c)
-            except Exception:
-                result_lbs[i] = 1e30
-                lb_c = np.clip(node_lb, -100, 100)
-                ub_c = np.clip(node_ub, -100, 100)
-                result_sols[i] = 0.5 * (lb_c + ub_c)
 
         jax_time += time.perf_counter() - t_jax_start
 
@@ -1132,44 +1254,88 @@ def _solve_miqp_bb(
 
         t_jax_start = time.perf_counter()
         result_ids = np.array(batch_ids, dtype=np.int64)
-        result_lbs = np.empty(n_batch, dtype=np.float64)
-        result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
-        result_feas = np.zeros(n_batch, dtype=bool)
+        n_slack = qp_data.x_l.shape[0] - n_orig
 
-        for i in range(n_batch):
-            node_lb = np.array(batch_lb[i])
-            node_ub = np.array(batch_ub[i])
+        if n_batch > 1:
+            # Batch QP solve via vmap
+            from discopt._jax.qp_ipm import qp_ipm_solve_batch
 
-            x_l_node = jnp.array(node_lb, dtype=jnp.float64)
-            x_u_node = jnp.array(node_ub, dtype=jnp.float64)
-
-            n_slack = qp_data.x_l.shape[0] - n_orig
-            x_l_full = jnp.concatenate([x_l_node, jnp.zeros(n_slack)])
-            x_u_full = jnp.concatenate([x_u_node, jnp.full(n_slack, 1e20)])
+            xl_arr = jnp.array(batch_lb, dtype=jnp.float64)
+            xu_arr = jnp.array(batch_ub, dtype=jnp.float64)
+            slack_l = jnp.zeros((n_batch, n_slack), dtype=jnp.float64)
+            slack_u = jnp.full((n_batch, n_slack), 1e20, dtype=jnp.float64)
+            xl_full = jnp.concatenate([xl_arr, slack_l], axis=1)
+            xu_full = jnp.concatenate([xu_arr, slack_u], axis=1)
 
             try:
-                state = qp_ipm_solve(
+                state = qp_ipm_solve_batch(
                     qp_data.Q,
                     qp_data.c,
                     qp_data.A_eq,
                     qp_data.b_eq,
-                    x_l_full,
-                    x_u_full,
+                    xl_full,
+                    xu_full,
                 )
-                conv = int(state.converged)
-                if conv in (1, 2, 3):
-                    result_lbs[i] = float(state.obj) + qp_data.obj_const
-                    result_sols[i] = np.asarray(state.x[:n_vars])
-                else:
+                converged = np.asarray(state.converged)
+                obj_vals = np.asarray(state.obj)
+                x_vals = np.asarray(state.x)
+
+                ok = (converged == 1) | (converged == 2) | (converged == 3)
+                result_lbs = np.where(ok, obj_vals + qp_data.obj_const, 1e30)
+                result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
+                for i in range(n_batch):
+                    if ok[i]:
+                        result_sols[i] = x_vals[i, :n_vars]
+                    else:
+                        lb_c = np.clip(np.array(batch_lb[i]), -100, 100)
+                        ub_c = np.clip(np.array(batch_ub[i]), -100, 100)
+                        result_sols[i] = 0.5 * (lb_c + ub_c)
+            except Exception:
+                result_lbs = np.full(n_batch, 1e30, dtype=np.float64)
+                result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
+                for i in range(n_batch):
+                    lb_c = np.clip(np.array(batch_lb[i]), -100, 100)
+                    ub_c = np.clip(np.array(batch_ub[i]), -100, 100)
+                    result_sols[i] = 0.5 * (lb_c + ub_c)
+            result_feas = np.zeros(n_batch, dtype=bool)
+        else:
+            result_lbs = np.empty(n_batch, dtype=np.float64)
+            result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
+            result_feas = np.zeros(n_batch, dtype=bool)
+
+            for i in range(n_batch):
+                node_lb = np.array(batch_lb[i])
+                node_ub = np.array(batch_ub[i])
+
+                x_l_node = jnp.array(node_lb, dtype=jnp.float64)
+                x_u_node = jnp.array(node_ub, dtype=jnp.float64)
+
+                x_l_full = jnp.concatenate([x_l_node, jnp.zeros(n_slack)])
+                x_u_full = jnp.concatenate([x_u_node, jnp.full(n_slack, 1e20)])
+
+                try:
+                    state = qp_ipm_solve(
+                        qp_data.Q,
+                        qp_data.c,
+                        qp_data.A_eq,
+                        qp_data.b_eq,
+                        x_l_full,
+                        x_u_full,
+                    )
+                    conv = int(state.converged)
+                    if conv in (1, 2, 3):
+                        result_lbs[i] = float(state.obj) + qp_data.obj_const
+                        result_sols[i] = np.asarray(state.x[:n_vars])
+                    else:
+                        result_lbs[i] = 1e30
+                        lb_c = np.clip(node_lb, -100, 100)
+                        ub_c = np.clip(node_ub, -100, 100)
+                        result_sols[i] = 0.5 * (lb_c + ub_c)
+                except Exception:
                     result_lbs[i] = 1e30
                     lb_c = np.clip(node_lb, -100, 100)
                     ub_c = np.clip(node_ub, -100, 100)
                     result_sols[i] = 0.5 * (lb_c + ub_c)
-            except Exception:
-                result_lbs[i] = 1e30
-                lb_c = np.clip(node_lb, -100, 100)
-                ub_c = np.clip(node_ub, -100, 100)
-                result_sols[i] = 0.5 * (lb_c + ub_c)
 
         jax_time += time.perf_counter() - t_jax_start
 
