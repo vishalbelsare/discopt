@@ -68,11 +68,10 @@ class _IpoptCallbacks:
 
     def hessian(self, x: np.ndarray, lagrange: np.ndarray, obj_factor: float) -> np.ndarray:
         # Hessian of the Lagrangian = obj_factor * H_obj + sum(lagrange[i] * H_c[i])
-        # For now we only provide the objective Hessian (constraint Hessians
-        # would require second derivatives of each constraint, which NLPEvaluator
-        # doesn't currently expose individually). Ipopt can handle this with
-        # limited-memory quasi-Newton approximation for constraint Hessians.
-        h = obj_factor * self._ev.evaluate_hessian(x)
+        if hasattr(self._ev, "evaluate_lagrangian_hessian"):
+            h = self._ev.evaluate_lagrangian_hessian(x, obj_factor, lagrange)
+        else:
+            h = obj_factor * self._ev.evaluate_hessian(x)
 
         # Extract lower triangle in row-major order matching hessianstructure
         rows, cols = self.hessianstructure()

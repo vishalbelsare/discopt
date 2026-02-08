@@ -316,17 +316,17 @@ class TestCallbacksUsed:
         ev = NLPEvaluator(m)
 
         hess_count = [0]
-        original_hess = ev.evaluate_hessian
+        original_hess = ev.evaluate_lagrangian_hessian
 
-        def counting_hess(x):
+        def counting_hess(x, obj_factor, lambda_):
             hess_count[0] += 1
-            return original_hess(x)
+            return original_hess(x, obj_factor, lambda_)
 
-        ev.evaluate_hessian = counting_hess
+        ev.evaluate_lagrangian_hessian = counting_hess
 
         result = solve_nlp(ev, np.array([5.0, 5.0]))
         assert result.status == SolveStatus.OPTIMAL
-        assert hess_count[0] > 0, "Hessian callback was never called"
+        assert hess_count[0] > 0, "Lagrangian Hessian callback was never called"
 
 
 # ─────────────────────────────────────────────────────────────

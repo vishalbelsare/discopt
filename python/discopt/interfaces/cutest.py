@@ -279,14 +279,28 @@ class NLPEvaluatorFromCUTEst:
             H = self._p.hess(x)
         return np.asarray(H, dtype=np.float64)
 
-    def evaluate_lagrangian_hessian(self, x: np.ndarray, v: np.ndarray) -> np.ndarray:
-        """Evaluate Hessian of the Lagrangian at (x, v). Returns (n, n) dense array.
+    def evaluate_lagrangian_hessian(
+        self, x: np.ndarray, obj_factor: float, lambda_: np.ndarray
+    ) -> np.ndarray:
+        """Evaluate Hessian of the Lagrangian at (x, lambda). Returns (n, n) dense array.
 
-        L(x, v) = f(x) + v^T c(x)
+        H = obj_factor * nabla^2 f(x) + sum_i lambda_i * nabla^2 c_i(x)
         """
         x = np.asarray(x, dtype=np.float64)
-        v = np.asarray(v, dtype=np.float64)
-        H = self._p.hess(x, v=v)
+        lambda_ = np.asarray(lambda_, dtype=np.float64)
+        # pycutest hess(x, v=v) computes nabla^2 f(x) + sum_i v_i * nabla^2 c_i(x)
+        # Scale lambda by 1/obj_factor would lose the obj_factor on f, so compute
+        # the two parts separately when obj_factor != 1.
+        if abs(obj_factor - 1.0) < 1e-15 or self._n_constraints == 0:
+            H = self._p.hess(x, v=lambda_) if self._n_constraints > 0 else self._p.hess(x)
+            H = obj_factor * H if self._n_constraints == 0 else H
+        else:
+            # H_obj via ihess (objective-only Hessian for constrained problems)
+            H_obj = self._p.ihess(x)
+            # H_lag with obj_factor=1: nabla^2 f + sum lambda_i nabla^2 c_i
+            H_full = self._p.hess(x, v=lambda_)
+            # H_constraints = H_full - H_obj
+            H = obj_factor * H_obj + (H_full - H_obj)
         return np.asarray(H, dtype=np.float64)
 
     def evaluate_constraints(self, x: np.ndarray) -> np.ndarray:
