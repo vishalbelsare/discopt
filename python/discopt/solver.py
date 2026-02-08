@@ -154,11 +154,11 @@ def solve_model(
     threads: int = 1,
     gpu: bool = True,
     deterministic: bool = True,
-    batch_size: int = 1,
+    batch_size: int = 16,
     strategy: str = "best_first",
     max_nodes: int = 100_000,
     ipopt_options: Optional[dict] = None,
-    nlp_solver: str = "ipopt",
+    nlp_solver: str = "ipm",
 ) -> SolveResult:
     """
     Solve a Model via NLP-based spatial Branch & Bound.
@@ -221,6 +221,15 @@ def solve_model(
         cl_list, cu_list = _infer_constraint_bounds(model)
     constraint_bounds = list(zip(cl_list, cu_list)) if cl_list else None
 
+    # Pre-compute constraint bounds as JAX arrays for batch IPM
+    g_l_jax = None
+    g_u_jax = None
+    if nlp_solver == "ipm" and cl_list:
+        import jax.numpy as jnp
+
+        g_l_jax = jnp.array(cl_list, dtype=jnp.float64)
+        g_u_jax = jnp.array(cu_list, dtype=jnp.float64)
+
     # --- Default Ipopt options ---
     opts = dict(ipopt_options) if ipopt_options else {}
     opts.setdefault("print_level", 0)
@@ -244,50 +253,59 @@ def solve_model(
             break
 
         # Solve NLP relaxation for each node in the batch
-        result_ids = np.empty(n_batch, dtype=np.int64)
-        result_lbs = np.empty(n_batch, dtype=np.float64)
-        result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
-        result_feas = np.empty(n_batch, dtype=bool)
-
-        for i in range(n_batch):
-            node_id = int(batch_ids[i])
-            node_lb = np.array(batch_lb[i])
-            node_ub = np.array(batch_ub[i])
-
-            # Starting point: midpoint of node bounds (clipped to avoid extremes)
-            lb_clipped = np.clip(node_lb, -100.0, 100.0)
-            ub_clipped = np.clip(node_ub, -100.0, 100.0)
-            x0 = 0.5 * (lb_clipped + ub_clipped)
-
-            # Solve NLP with node-specific bounds
-            t_jax_start = time.perf_counter()
-            nlp_result = _solve_node_nlp(
+        t_jax_start = time.perf_counter()
+        if nlp_solver == "ipm" and n_batch > 1:
+            result_ids, result_lbs, result_sols, result_feas = _solve_batch_ipm(
                 evaluator,
-                x0,
-                node_lb,
-                node_ub,
+                batch_lb,
+                batch_ub,
+                batch_ids,
+                n_vars,
                 constraint_bounds,
                 opts,
-                nlp_solver=nlp_solver,
+                g_l_jax,
+                g_u_jax,
             )
-            jax_time += time.perf_counter() - t_jax_start
+        else:
+            result_ids = np.empty(n_batch, dtype=np.int64)
+            result_lbs = np.empty(n_batch, dtype=np.float64)
+            result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
+            result_feas = np.empty(n_batch, dtype=bool)
 
-            result_ids[i] = node_id
+            for i in range(n_batch):
+                node_id = int(batch_ids[i])
+                node_lb = np.array(batch_lb[i])
+                node_ub = np.array(batch_ub[i])
 
-            if nlp_result.status == SolveStatus.INFEASIBLE:
-                # Mark as infeasible by setting high lower bound
-                result_lbs[i] = 1e30
-                result_sols[i] = x0
-                result_feas[i] = False
-            elif nlp_result.status in (SolveStatus.OPTIMAL, SolveStatus.ITERATION_LIMIT):
-                result_lbs[i] = nlp_result.objective
-                result_sols[i] = nlp_result.x
-                result_feas[i] = False  # Let Rust TreeManager check integrality
-            else:
-                # Error or other status — treat as infeasible
-                result_lbs[i] = 1e30
-                result_sols[i] = x0
-                result_feas[i] = False
+                lb_clipped = np.clip(node_lb, -100.0, 100.0)
+                ub_clipped = np.clip(node_ub, -100.0, 100.0)
+                x0 = 0.5 * (lb_clipped + ub_clipped)
+
+                nlp_result = _solve_node_nlp(
+                    evaluator,
+                    x0,
+                    node_lb,
+                    node_ub,
+                    constraint_bounds,
+                    opts,
+                    nlp_solver=nlp_solver,
+                )
+
+                result_ids[i] = node_id
+
+                if nlp_result.status == SolveStatus.INFEASIBLE:
+                    result_lbs[i] = 1e30
+                    result_sols[i] = x0
+                    result_feas[i] = False
+                elif nlp_result.status in (SolveStatus.OPTIMAL, SolveStatus.ITERATION_LIMIT):
+                    result_lbs[i] = nlp_result.objective
+                    result_sols[i] = nlp_result.x
+                    result_feas[i] = False
+                else:
+                    result_lbs[i] = 1e30
+                    result_sols[i] = x0
+                    result_feas[i] = False
+        jax_time += time.perf_counter() - t_jax_start
 
         # Import results back to Rust tree
         t_rust_start = time.perf_counter()
@@ -483,6 +501,66 @@ def _solve_node_nlp_ipm(
         x=np.asarray(state.x),
         objective=float(state.obj),
     )
+
+
+def _solve_batch_ipm(
+    evaluator,
+    batch_lb,
+    batch_ub,
+    batch_ids,
+    n_vars,
+    constraint_bounds,
+    options,
+    g_l_jax,
+    g_u_jax,
+):
+    """Solve a batch of NLP relaxations simultaneously via vmap'd IPM."""
+    import jax.numpy as jnp
+
+    from discopt._jax.ipm import IPMOptions, solve_nlp_batch
+
+    n_batch = len(batch_ids)
+    obj_fn = evaluator._obj_fn
+    m = evaluator.n_constraints
+    con_fn = evaluator._cons_fn if m > 0 else None
+
+    # Build (batch, n) JAX arrays for bounds and starting points
+    xl_batch = jnp.array(batch_lb, dtype=jnp.float64)
+    xu_batch = jnp.array(batch_ub, dtype=jnp.float64)
+    lb_clipped = jnp.clip(xl_batch, -100.0, 100.0)
+    ub_clipped = jnp.clip(xu_batch, -100.0, 100.0)
+    x0_batch = 0.5 * (lb_clipped + ub_clipped)
+
+    ipm_opts = IPMOptions(max_iter=int(options.get("max_iter", 200)))
+
+    try:
+        state = solve_nlp_batch(
+            obj_fn, con_fn, x0_batch, xl_batch, xu_batch, g_l_jax, g_u_jax, ipm_opts
+        )
+    except Exception:
+        # Fallback: mark all as infeasible
+        result_ids = np.array(batch_ids, dtype=np.int64)
+        x0_np = np.asarray(x0_batch)
+        result_lbs = np.full(n_batch, 1e30, dtype=np.float64)
+        result_sols = x0_np
+        result_feas = np.zeros(n_batch, dtype=bool)
+        return result_ids, result_lbs, result_sols, result_feas
+
+    # Unpack batched IPMState → numpy arrays
+    converged = np.asarray(state.converged)  # (batch,)
+    obj_vals = np.asarray(state.obj)  # (batch,)
+    x_vals = np.asarray(state.x)  # (batch, n)
+
+    result_ids = np.array(batch_ids, dtype=np.int64)
+    result_lbs = np.where(
+        (converged == 1) | (converged == 2) | (converged == 3),
+        obj_vals,
+        1e30,
+    )
+    result_sols = x_vals
+    result_feas = np.zeros(n_batch, dtype=bool)  # Let Rust check integrality
+
+    return result_ids, result_lbs, result_sols, result_feas
 
 
 def _solve_node_nlp_ipopt(

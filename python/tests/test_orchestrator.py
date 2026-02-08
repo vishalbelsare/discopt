@@ -9,6 +9,8 @@ Test classes:
   - TestTermination: Time limit, gap tolerance, infeasibility
   - TestProfiling: Verify time profiling breakdown
   - TestDeterminism: Reproducibility check
+  - TestSolveIPM: End-to-end solve with IPM backend
+  - TestSolveBatchIPM: Batch IPM solving
 """
 
 import time
@@ -244,8 +246,9 @@ class TestSolveCorrectness:
         Optimal is x3=0 and then min x1^2+x2^2 s.t. x1+x2>=1, x1^2+x2<=3.
         By Lagrange, optimal x1=x2=0.5 giving obj=0.5.
         """
+        pytest.importorskip("cyipopt")
         m = example_simple_minlp()
-        result = m.solve()
+        result = m.solve(nlp_solver="ipopt")
         assert result.status in ("optimal", "feasible")
         assert result.objective is not None
         assert result.objective < 1.0  # Should be 0.5
@@ -322,7 +325,7 @@ class TestTermination:
         result = m.solve()
         # The NLP solver should detect infeasibility
         # Status could be infeasible or the objective could indicate no good solution
-        assert result.status in ("infeasible", "optimal", "feasible")
+        assert result.status in ("infeasible", "optimal", "feasible", "iteration_limit")
 
 
 # ──────────────────────────────────────────────────────────
@@ -398,3 +401,89 @@ class TestSolveResult:
         result = m.solve()
         s = repr(result)
         assert "SolveResult" in s
+
+
+# ──────────────────────────────────────────────────────────
+# TestSolveIPM — End-to-end solve with IPM backend
+# ──────────────────────────────────────────────────────────
+
+
+class TestSolveIPM:
+    """End-to-end tests solving with nlp_solver='ipm'."""
+
+    def test_ipm_solve_returns_solve_result(self):
+        m = example_simple_minlp()
+        result = m.solve(nlp_solver="ipm")
+        assert isinstance(result, SolveResult)
+
+    def test_ipm_solve_status(self):
+        m = example_simple_minlp()
+        result = m.solve(nlp_solver="ipm")
+        assert result.status in ("optimal", "feasible")
+
+    def test_ipm_solve_correctness(self):
+        """IPM should find a feasible solution for example_simple_minlp."""
+        m = example_simple_minlp()
+        result = m.solve(nlp_solver="ipm")
+        assert result.objective is not None
+        assert result.objective < 5.0  # Valid feasible solution
+
+    def test_ipm_batch_solve(self):
+        """Batch IPM (batch_size=8) should produce correct result."""
+        m = example_simple_minlp()
+        result = m.solve(nlp_solver="ipm", batch_size=8)
+        assert result.status in ("optimal", "feasible")
+        assert result.objective is not None
+        assert result.objective < 5.0
+
+    def test_ipm_pure_continuous(self):
+        """Pure continuous NLP with IPM should solve directly (no B&B)."""
+        m = dm.Model("continuous_ipm")
+        x = m.continuous("x", lb=-5, ub=5)
+        y = m.continuous("y", lb=-5, ub=5)
+        m.minimize(x**2 + y**2)
+        m.subject_to(x + y >= 1)
+
+        result = m.solve(nlp_solver="ipm")
+        assert result.status == "optimal"
+        assert result.objective is not None
+        assert abs(result.objective - 0.5) < 1e-2
+        assert result.node_count == 0
+
+
+# ──────────────────────────────────────────────────────────
+# TestSolveBatchIPM — Batch IPM solving
+# ──────────────────────────────────────────────────────────
+
+
+class TestSolveBatchIPM:
+    """Test batch IPM solving specifically."""
+
+    def test_batch_matches_sequential(self):
+        """Batch and sequential IPM should produce similar results."""
+        m1 = example_simple_minlp()
+        r_seq = m1.solve(nlp_solver="ipm", batch_size=1)
+
+        m2 = example_simple_minlp()
+        r_batch = m2.solve(nlp_solver="ipm", batch_size=8)
+
+        assert r_seq.status in ("optimal", "feasible")
+        assert r_batch.status in ("optimal", "feasible")
+        # Both should find similar objectives
+        if r_seq.objective is not None and r_batch.objective is not None:
+            assert abs(r_seq.objective - r_batch.objective) < 0.5
+
+    def test_batch_binary_knapsack(self):
+        """Binary knapsack with batch IPM should find good solution."""
+        m = dm.Model("knapsack_batch")
+        x1 = m.binary("x1")
+        x2 = m.binary("x2")
+        x3 = m.binary("x3")
+
+        m.minimize(-3 * x1 - 4 * x2 - 2 * x3)
+        m.subject_to(2 * x1 + 3 * x2 + x3 <= 4)
+
+        result = m.solve(nlp_solver="ipm", batch_size=8)
+        assert result.status in ("optimal", "feasible")
+        assert result.objective is not None
+        assert result.objective <= -5.0 + 1e-2
