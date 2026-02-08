@@ -8,13 +8,13 @@ version = "0.1.0"
 description = "Hybrid MINLP solver combining Rust and JAX"
 requires-python = ">=3.10"
 authors = [{name = "John Kitchin"}]
-license = {text = "MIT"}
+license = {text = "EPL-2.0"}
 readme = "README.md"
 keywords = ["optimization", "MINLP", "branch-and-bound", "nonlinear", "solver", "JAX"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Eclipse Public License 2.0 (EPL-2.0)",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
