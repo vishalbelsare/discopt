@@ -14,11 +14,8 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: jkitchin/ripopt
-          path: ../ripopt
-          token: ${{ secrets.RIPOPT_TOKEN }}
+      - name: Clone ripopt (sibling path dependency)
+        run: git clone https://${{ secrets.RIPOPT_TOKEN }}@github.com/jkitchin/ripopt.git ../ripopt
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -35,11 +32,8 @@ jobs:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: jkitchin/ripopt
-          path: ../ripopt
-          token: ${{ secrets.RIPOPT_TOKEN }}
+      - name: Clone ripopt (sibling path dependency)
+        run: git clone https://${{ secrets.RIPOPT_TOKEN }}@github.com/jkitchin/ripopt.git ../ripopt
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
