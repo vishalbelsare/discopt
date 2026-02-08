@@ -460,8 +460,8 @@ def detect_bilinear_terms(model) -> list[BilinearTerm]:
                 return offset + idx[0]
         return None
 
-    found = []
-    seen = set()
+    found: list[BilinearTerm] = []
+    seen: set[tuple[int, int]] = set()
 
     def _walk(expr: Expression):
         if isinstance(expr, BinaryOp) and expr.op == "*":

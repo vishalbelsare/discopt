@@ -160,6 +160,8 @@ def solve_model(
     ipopt_options: Optional[dict] = None,
     nlp_solver: str = "ipm",
     cutting_planes: bool = False,
+    partitions: int = 0,
+    branching_policy: str = "fractional",
 ) -> SolveResult:
     """
     Solve a Model via NLP-based spatial Branch & Bound.
@@ -184,6 +186,11 @@ def solve_model(
         ipopt_options: Options dict passed to cyipopt.
         nlp_solver: NLP solver backend ("ipopt" or "ipm").
         cutting_planes: Enable OA cut generation after NLP relaxation solves.
+        partitions: Number of piecewise McCormick partitions (0=standard,
+            k>0=k partitions for tighter relaxations).
+        branching_policy: Variable selection policy ("fractional" or "gnn").
+            "fractional" uses most-fractional branching (default, handled by Rust).
+            "gnn" runs GNN scoring as a future hook; actual branching still done by Rust.
 
     Returns:
         SolveResult with solution, statistics, and profiling times.
@@ -329,6 +336,18 @@ def solve_model(
                     result_sols[i] = x0
                     result_feas[i] = False
         jax_time += time.perf_counter() - t_jax_start
+
+        # --- Optional GNN branching suggestion (future hook) ---
+        if branching_policy == "gnn" and not _has_nl_repr(model):
+            from discopt._jax.gnn_policy import select_branch_variable_gnn
+            from discopt._jax.problem_graph import build_graph
+
+            for i in range(n_batch):
+                if result_lbs[i] < 1e20:
+                    node_lb_i = np.array(batch_lb[i])
+                    node_ub_i = np.array(batch_ub[i])
+                    graph = build_graph(model, result_sols[i], node_lb_i, node_ub_i)
+                    select_branch_variable_gnn(graph, params=None)
 
         # --- Optional cut generation (OA for violated constraints + RLT) ---
         if cutting_planes and _generate_cuts is not None:

@@ -816,6 +816,8 @@ class Model:
         sensitivity: bool = False,
         stream: bool = False,
         deterministic: bool = True,
+        partitions: int = 0,
+        branching_policy: str = "fractional",
         **kwargs,
     ) -> Union[SolveResult, Iterator["SolveUpdate"]]:
         """
@@ -830,6 +832,11 @@ class Model:
             sensitivity: Compute sensitivities w.r.t. Parameters
             stream: Return iterator of SolveUpdate instead of final result
             deterministic: Ensure reproducible results across runs
+            partitions: Number of piecewise McCormick partitions (0=standard,
+                k>0=k partitions for tighter relaxations)
+            branching_policy: Variable selection policy ("fractional" or "gnn").
+                "fractional" uses most-fractional branching (default).
+                "gnn" runs GNN scoring as a future hook; Rust handles actual branching.
 
         Returns:
             SolveResult (or Iterator[SolveUpdate] if stream=True)
@@ -850,6 +857,8 @@ class Model:
             threads=threads,
             gpu=gpu,
             deterministic=deterministic,
+            partitions=partitions,
+            branching_policy=branching_policy,
             **kwargs,
         )
 

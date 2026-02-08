@@ -42,12 +42,16 @@ Model.solve()  -->  Python orchestrator  -->  Rust TreeManager (B&B engine)
 | HiGHS LP Wrapper               | Complete | 20 Python                 |
 | cyipopt NLP Wrapper            | Complete | 24 Python                 |
 | Batch Dispatch                 | Complete | 34 Python                 |
-| Solver Orchestrator            | Complete | 32 Python                 |
+| Solver Orchestrator            | Complete | 42 Python                 |
 | Batch Relaxation Evaluator     | Complete | 26 Python                 |
 | Differentiable Solving (L1+L3) | Complete | 46 Python                 |
 | Multi-start Heuristics         | Complete | 28 Python                 |
 | Benchmark Runner               | Complete | 28 Python                 |
-| **Total**                      |          | **140 Rust + 578 Python** |
+| Piecewise McCormick            | Complete | 40 Python                 |
+| alphaBB Underestimators        | Complete | 25 Python                 |
+| Cutting Planes (RLT/OA)       | Complete | 40 Python                 |
+| GNN Branching Policy           | Complete | 21 Python                 |
+| **Total**                      |          | **140 Rust + 714 Python** |
 
 ## Quick Start
 
@@ -94,10 +98,10 @@ The project follows a 4-phase plan. Phase 1 is complete; Phase 2 is in progress.
 | T14 Solver orchestrator  | Done        | End-to-end Model.solve() via B&B                   |
 | T15 MINLPLib validation  | Done        | 34 solvable instances, zero incorrect              |
 | T16 Phase 1 gate         | Done        | All criteria pass                                  |
-| T9a Rust Ipopt (ripopt)  | In progress | Translating Ipopt's IPM to pure Rust               |
+| T9a Rust Ipopt (ripopt)  | Superseded  | Replaced by T17 pure-JAX IPM                       |
 |                          |             |                                                    |
 
-### Phase 2: GPU + Differentiability (current)
+### Phase 2: GPU + Differentiability (complete)
 
 | Task                                 | Status      | Description                                             |
 |--------------------------------------|-------------|---------------------------------------------------------|
@@ -107,14 +111,18 @@ The project follows a 4-phase plan. Phase 1 is complete; Phase 2 is in progress.
 | T20 Multi-start heuristics           | Done        | Multi-start NLP solving + feasibility pump              |
 | T23 Differentiable solving (Level 3) | Done        | Implicit differentiation at active set via KKT          |
 | T25 Benchmark runner                 | Done        | Performance metrics, batch scaling, JSON export         |
-| T17 GPU-batched IPM                  | Not started | Dense Cholesky, vmap-compatible Rust Ipopt              |
-| T24 GPU IPM in solver loop           | Not started | Replace cyipopt with GPU-batched IPM                    |
+| T17 GPU-batched IPM                  | Done        | Pure-JAX IPM solver with augmented KKT, vmap batch solving |
+| T24 GPU IPM in solver loop           | Done        | Batch IPM in B&B loop, ipm default backend              |
 
-### Phase 3: Competitive Performance
+### Phase 3: Competitive Performance (complete)
 
-- Piecewise McCormick + alphaBB relaxations
-- Cutting planes (RLT, outer approximation)
-- GNN-based branching policy
+| Task                                 | Status      | Description                                             |
+|--------------------------------------|-------------|---------------------------------------------------------|
+| Piecewise McCormick                  | Done        | k-partition domain splitting, O(1/k^2) convergence     |
+| alphaBB underestimators              | Done        | Hessian-based convexification (Adjiman/Floudas 1998)    |
+| Cutting planes (RLT/OA)             | Done        | Bilinear RLT cuts, gradient OA, separation oracles      |
+| GNN branching policy                 | Done        | Bipartite graph GNN, strong branching data collection   |
+| Solver integration                   | Done        | partitions, branching_policy, cutting_planes parameters |
 
 ### Phase 4: Polish + Release
 

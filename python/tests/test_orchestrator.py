@@ -231,6 +231,13 @@ class TestSolveSimple:
         result = m.solve()
         assert result.wall_time > 0
 
+    def test_piecewise_partitions_parameter(self):
+        """solve(partitions=4) should produce a valid result."""
+        m = example_simple_minlp()
+        result = m.solve(partitions=4)
+        assert isinstance(result, SolveResult)
+        assert result.status in ("optimal", "feasible")
+
 
 # ──────────────────────────────────────────────────────────
 # TestSolveCorrectness — Verify against known optima
@@ -484,6 +491,48 @@ class TestSolveBatchIPM:
         m.subject_to(2 * x1 + 3 * x2 + x3 <= 4)
 
         result = m.solve(nlp_solver="ipm", batch_size=8)
+        assert result.status in ("optimal", "feasible")
+        assert result.objective is not None
+        assert result.objective <= -5.0 + 1e-2
+
+
+# ──────────────────────────────────────────────────────────
+# TestBranchingPolicy — GNN branching policy parameter
+# ──────────────────────────────────────────────────────────
+
+
+class TestBranchingPolicy:
+    """Test branching_policy parameter plumbing."""
+
+    def test_branching_policy_fractional(self):
+        """Default fractional branching should produce valid results."""
+        m = example_simple_minlp()
+        result = m.solve(branching_policy="fractional")
+        assert isinstance(result, SolveResult)
+        assert result.status in ("optimal", "feasible")
+        assert result.objective is not None
+        assert np.isfinite(result.objective)
+
+    def test_branching_policy_gnn(self):
+        """GNN branching policy should run without error and produce valid results."""
+        m = example_simple_minlp()
+        result = m.solve(branching_policy="gnn")
+        assert isinstance(result, SolveResult)
+        assert result.status in ("optimal", "feasible")
+        assert result.objective is not None
+        assert np.isfinite(result.objective)
+
+    def test_branching_policy_gnn_knapsack(self):
+        """GNN branching on binary knapsack should produce valid results."""
+        m = dm.Model("knapsack_gnn")
+        x1 = m.binary("x1")
+        x2 = m.binary("x2")
+        x3 = m.binary("x3")
+
+        m.minimize(-3 * x1 - 4 * x2 - 2 * x3)
+        m.subject_to(2 * x1 + 3 * x2 + x3 <= 4)
+
+        result = m.solve(branching_policy="gnn")
         assert result.status in ("optimal", "feasible")
         assert result.objective is not None
         assert result.objective <= -5.0 + 1e-2
