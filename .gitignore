@@ -26,3 +26,6 @@ build/
 # Environments
 .env
 .venv/
+
+# Jupyter Book
+docs/_build/

@@ -1,0 +1,15 @@
+title: discopt
+author: John Kitchin
+logo: discopt-logo.png
+execute:
+  execute_notebooks: "off"
+repository:
+  url: https://github.com/jkitchin/discopt
+  branch: main
+sphinx:
+  extra_extensions:
+    - sphinxcontrib.bibtex
+  config:
+    bibtex_bibfiles: ["references.bib"]
+    bibtex_reference_style: author_year
+    bibtex_default_style: plain

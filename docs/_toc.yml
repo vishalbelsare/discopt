@@ -1,0 +1,17 @@
+format: jb-book
+root: intro
+parts:
+  - caption: Tutorials
+    chapters:
+      - file: notebooks/quickstart
+      - file: notebooks/minlp_examples
+  - caption: Advanced Features
+    chapters:
+      - file: notebooks/advanced_features
+  - caption: Solver Backends
+    chapters:
+      - file: notebooks/ipm_vs_ipopt
+      - file: notebooks/batch_ipm_vs_ipopt
+  - caption: Appendix
+    chapters:
+      - file: references

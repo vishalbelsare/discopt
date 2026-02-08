@@ -1,0 +1,70 @@
+# discopt
+
+```{image} discopt-logo.png
+:alt: discopt logo
+:width: 300px
+:align: center
+```
+
+A hybrid Mixed-Integer Nonlinear Programming (MINLP) solver combining a Rust backend, JAX automatic differentiation, and Python orchestration. Solves MINLP problems via NLP-based spatial Branch & Bound {cite:p}`Land1960,Belotti2013` with JIT-compiled objective/gradient/Hessian evaluation.
+
+## Architecture
+
+```
+Model.solve()  -->  Python orchestrator  -->  Rust TreeManager (B&B engine)
+                        |                          |
+                  JAX NLPEvaluator           Node pool / branching / pruning
+                  NLP backends:              Zero-copy numpy arrays (PyO3)
+                    ripopt  (Rust IPM, PyO3)
+                    ipm     (pure-JAX, vmap batch)  [default]
+                    cyipopt (Ipopt)
+```
+
+**Rust backend** (`crates/discopt-core`): Expression IR, Branch & Bound tree (node pool, branching, pruning), .nl file parser, FBBT/presolve (interval arithmetic, probing, Big-M simplification).
+
+**JAX layer** (`python/discopt/_jax`): DAG compiler mapping modeling expressions to JAX primitives, JIT-compiled NLP evaluator (objective, gradient, Hessian, constraint Jacobian), McCormick convex/concave relaxations {cite:p}`McCormick1976` (19 functions), and a relaxation compiler with vmap support.
+
+**Solver wrappers** (`python/discopt/solvers`): ripopt (Rust IPM via PyO3), cyipopt NLP wrapper for Ipopt {cite:p}`Wachter2006`, HiGHS LP wrapper with warm-start support.
+
+**Orchestrator** (`python/discopt/solver.py`): End-to-end `Model.solve()` connecting all components. At each B&B node: solve continuous NLP relaxation with the interior-point method {cite:p}`Nocedal2006`, prune infeasible nodes, fathom integer-feasible solutions, branch on most fractional variable.
+
+## Quick Start
+
+```python
+from discopt import Model
+
+m = Model("example")
+x = m.continuous("x", lb=0, ub=5)
+y = m.continuous("y", lb=0, ub=5)
+z = m.binary("z")
+
+m.minimize(x**2 + y**2 + z)
+m.subject_to(x + y >= 1)
+m.subject_to(x**2 + y <= 3)
+
+result = m.solve()
+print(result.status)     # "optimal"
+print(result.objective)  # 0.5
+print(result.x)          # {"x": 0.5, "y": 0.5, "z": 0.0}
+```
+
+## NLP Backend Comparison
+
+discopt supports three NLP solver backends, each with different strengths:
+
+| Backend         | Implementation    | Use Case                                   |
+|-----------------|-------------------|--------------------------------------------|
+| `ipm` (default) | Pure-JAX IPM      | B&B inner loop; GPU-batched via `jax.vmap` |
+| `ripopt`        | Rust IPM via PyO3 | Single-problem NLP; fastest wall-clock     |
+| `cyipopt`       | Ipopt via cyipopt | Single-problem NLP; most robust            |
+
+```python
+result = model.solve(nlp_solver="ripopt")   # Rust IPM
+result = model.solve(nlp_solver="ipm")      # Pure-JAX (default)
+result = model.solve(nlp_solver="cyipopt")  # Ipopt
+```
+
+## Contents
+
+```{tableofcontents}
+```

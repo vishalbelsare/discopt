@@ -52,6 +52,22 @@ mypy python/discopt/
   - **`config/benchmarks.toml`** — Single source of truth for suites, gates, solver configs.
   - **`utils/`** — Statistical utilities, profiles, report generation.
 
+## Documentation (Jupyter Book)
+
+The `docs/` directory contains a Jupyter Book site built with `jupyter-book build docs/`.
+
+- **Config**: `docs/_config.yml`, `docs/_toc.yml`
+- **Notebooks**: `docs/notebooks/` (copies from `notebooks/` with added citations)
+- **Bibliography**: `docs/references.bib` (BibTeX entries), `docs/references.md` (rendered bibliography page)
+- **Landing page**: `docs/intro.md`
+
+**When adding a new notebook**, you must:
+1. Copy the notebook into `docs/notebooks/`
+2. Add `{cite:p}` / `{cite:t}` MyST citations to relevant markdown cells (keys from `docs/references.bib`)
+3. Add any new BibTeX entries to `docs/references.bib`
+4. Add the notebook to `docs/_toc.yml` under the appropriate `parts` section
+5. Rebuild with `jupyter-book build docs/` and verify zero warnings
+
 ## Key Constraints
 
 - **Correctness is non-negotiable**: Every phase gate enforces `incorrect_count ≤ 0`. Never weaken this check.
