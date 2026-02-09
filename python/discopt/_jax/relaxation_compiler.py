@@ -9,10 +9,13 @@ jax.vmap.
 
 from __future__ import annotations
 
-from typing import Callable
+from typing import TYPE_CHECKING, Callable, Optional
 
 import jax.numpy as jnp
 import numpy as np
+
+if TYPE_CHECKING:
+    from discopt._jax.learned_relaxations import LearnedRelaxationRegistry
 
 from discopt._jax.mccormick import (
     relax_abs,
@@ -76,7 +79,13 @@ def _get_constant_value(expr: Expression):
     return jnp.array(expr.value)
 
 
-def _compile_relax_node(expr: Expression, model: Model, partitions: int = 0) -> Callable:
+def _compile_relax_node(
+    expr: Expression,
+    model: Model,
+    partitions: int = 0,
+    mode: str = "standard",
+    learned_registry: Optional["LearnedRelaxationRegistry"] = None,
+) -> Callable:
     """
     Recursively compile an Expression node into a relaxation function.
 
@@ -89,6 +98,11 @@ def _compile_relax_node(expr: Expression, model: Model, partitions: int = 0) -> 
         partitions: If > 0, use piecewise McCormick relaxations with this
             many partitions for supported operations (bilinear, exp, log,
             sqrt, sin, cos). If 0, use standard McCormick.
+        mode: Relaxation mode — ``"standard"`` (default McCormick),
+            ``"piecewise"`` (piecewise McCormick), or ``"learned"``
+            (ICNN-based learned relaxations with McCormick fallback).
+        learned_registry: Registry of trained learned relaxations.
+            Required when ``mode="learned"``.
     """
 
     if isinstance(expr, Constant):
@@ -128,8 +142,8 @@ def _compile_relax_node(expr: Expression, model: Model, partitions: int = 0) -> 
         return fn
 
     if isinstance(expr, BinaryOp):
-        left_fn = _compile_relax_node(expr.left, model, partitions)
-        right_fn = _compile_relax_node(expr.right, model, partitions)
+        left_fn = _compile_relax_node(expr.left, model, partitions, mode, learned_registry)
+        right_fn = _compile_relax_node(expr.right, model, partitions, mode, learned_registry)
         op = expr.op
 
         if op == "+":
@@ -178,6 +192,25 @@ def _compile_relax_node(expr: Expression, model: Model, partitions: int = 0) -> 
 
             # General bilinear: use cv/cc as bounds for McCormick envelopes,
             # but also try to propagate tighter variable-level bounds.
+
+            # Learned relaxation for bilinear
+            if mode == "learned" and learned_registry is not None:
+                lr_bilinear = learned_registry.get("bilinear")
+                if lr_bilinear is not None:
+
+                    def fn(x_cv, x_cc, lb, ub, _lr=lr_bilinear):
+                        cv_l, cc_l = left_fn(x_cv, x_cc, lb, ub)
+                        cv_r, cc_r = right_fn(x_cv, x_cc, lb, ub)
+                        mid_l = 0.5 * (cv_l + cc_l)
+                        mid_r = 0.5 * (cv_r + cc_r)
+                        true_val = mid_l * mid_r
+                        xy = jnp.stack([mid_l, mid_r])
+                        xy_lb = jnp.stack([cv_l, cv_r])
+                        xy_ub = jnp.stack([cc_l, cc_r])
+                        return _lr(xy, xy_lb, xy_ub, true_val)
+
+                    return fn
+
             if partitions > 0:
                 _k = partitions
 
@@ -260,7 +293,7 @@ def _compile_relax_node(expr: Expression, model: Model, partitions: int = 0) -> 
         raise ValueError(f"Unknown binary operator: {op!r}")
 
     if isinstance(expr, UnaryOp):
-        operand_fn = _compile_relax_node(expr.operand, model, partitions)
+        operand_fn = _compile_relax_node(expr.operand, model, partitions, mode, learned_registry)
         op = expr.op
 
         if op == "neg":
@@ -283,8 +316,32 @@ def _compile_relax_node(expr: Expression, model: Model, partitions: int = 0) -> 
         raise ValueError(f"Unknown unary operator: {op!r}")
 
     if isinstance(expr, FunctionCall):
-        arg_fns = [_compile_relax_node(a, model, partitions) for a in expr.args]
+        arg_fns = [
+            _compile_relax_node(a, model, partitions, mode, learned_registry) for a in expr.args
+        ]
         name = expr.func_name
+
+        # Learned relaxation dispatch: use ICNN-based relaxations when available
+        _learned_univariate_ops = {"exp", "log", "sqrt", "sin"}
+        if mode == "learned" and learned_registry is not None and name in _learned_univariate_ops:
+            lr_model = learned_registry.get(name)
+            if lr_model is not None:
+                a_fn = arg_fns[0]
+                _true_fns = {
+                    "exp": jnp.exp,
+                    "log": jnp.log,
+                    "sqrt": jnp.sqrt,
+                    "sin": jnp.sin,
+                }
+                _tfn = _true_fns[name]
+
+                def fn(x_cv, x_cc, lb, ub, _lr=lr_model, _af=a_fn, _tf=_tfn):
+                    cv_child, cc_child = _af(x_cv, x_cc, lb, ub)
+                    mid = 0.5 * (cv_child + cc_child)
+                    true_val = _tf(mid)
+                    return _lr(mid, cv_child, cc_child, true_val)
+
+                return fn
 
         # Piecewise-capable univariate operations
         _piecewise_relax = {
@@ -371,7 +428,7 @@ def _compile_relax_node(expr: Expression, model: Model, partitions: int = 0) -> 
         raise ValueError(f"Unknown function: {name!r}")
 
     if isinstance(expr, IndexExpression):
-        base_fn = _compile_relax_node(expr.base, model, partitions)
+        base_fn = _compile_relax_node(expr.base, model, partitions, mode, learned_registry)
         idx = expr.index
 
         def fn(x_cv, x_cc, lb, ub, _idx=idx):
@@ -381,7 +438,7 @@ def _compile_relax_node(expr: Expression, model: Model, partitions: int = 0) -> 
         return fn
 
     if isinstance(expr, SumExpression):
-        operand_fn = _compile_relax_node(expr.operand, model, partitions)
+        operand_fn = _compile_relax_node(expr.operand, model, partitions, mode, learned_registry)
         axis = expr.axis
 
         def fn(x_cv, x_cc, lb, ub, _axis=axis):
@@ -391,7 +448,9 @@ def _compile_relax_node(expr: Expression, model: Model, partitions: int = 0) -> 
         return fn
 
     if isinstance(expr, SumOverExpression):
-        term_fns = [_compile_relax_node(t, model, partitions) for t in expr.terms]
+        term_fns = [
+            _compile_relax_node(t, model, partitions, mode, learned_registry) for t in expr.terms
+        ]
 
         def fn(x_cv, x_cc, lb, ub):
             cv_acc, cc_acc = term_fns[0](x_cv, x_cc, lb, ub)
@@ -406,7 +465,13 @@ def _compile_relax_node(expr: Expression, model: Model, partitions: int = 0) -> 
     raise TypeError(f"Unhandled expression type: {type(expr).__name__}")
 
 
-def compile_relaxation(expr: Expression, model: Model, partitions: int = 0) -> Callable:
+def compile_relaxation(
+    expr: Expression,
+    model: Model,
+    partitions: int = 0,
+    mode: str = "standard",
+    learned_registry: Optional["LearnedRelaxationRegistry"] = None,
+) -> Callable:
     """
     Compile an Expression into a McCormick relaxation function.
 
@@ -416,6 +481,10 @@ def compile_relaxation(expr: Expression, model: Model, partitions: int = 0) -> C
         partitions: If > 0, use piecewise McCormick relaxations with this
             many partitions for supported operations (bilinear, exp, log,
             sqrt, sin, cos). If 0 (default), use standard McCormick.
+        mode: Relaxation mode — ``"standard"`` (default), ``"piecewise"``,
+            or ``"learned"`` (ICNN-based with McCormick fallback).
+        learned_registry: Registry of trained learned relaxations.
+            Required when ``mode="learned"``.
 
     Returns:
         A function f(x_cv, x_cc, lb, ub) -> (cv, cc) where:
@@ -428,18 +497,29 @@ def compile_relaxation(expr: Expression, model: Model, partitions: int = 0) -> C
 
         The function is compatible with jax.jit and jax.vmap.
     """
-    return _compile_relax_node(expr, model, partitions)
+    return _compile_relax_node(expr, model, partitions, mode, learned_registry)
 
 
-def compile_objective_relaxation(model: Model, partitions: int = 0) -> Callable:
+def compile_objective_relaxation(
+    model: Model,
+    partitions: int = 0,
+    mode: str = "standard",
+    learned_registry: Optional["LearnedRelaxationRegistry"] = None,
+) -> Callable:
     """Compile relaxation of the model's objective."""
     if model._objective is None:
         raise ValueError("Model has no objective set.")
-    return compile_relaxation(model._objective.expression, model, partitions)
+    return compile_relaxation(
+        model._objective.expression, model, partitions, mode, learned_registry
+    )
 
 
 def compile_constraint_relaxation(
-    constraint: Constraint, model: Model, partitions: int = 0
+    constraint: Constraint,
+    model: Model,
+    partitions: int = 0,
+    mode: str = "standard",
+    learned_registry: Optional["LearnedRelaxationRegistry"] = None,
 ) -> Callable:
     """Compile relaxation of a constraint body."""
-    return compile_relaxation(constraint.body, model, partitions)
+    return compile_relaxation(constraint.body, model, partitions, mode, learned_registry)

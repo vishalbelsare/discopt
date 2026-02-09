@@ -117,33 +117,44 @@ def detect_inertia_sparse(
 ) -> tuple[bool, float]:
     """Check if the (1,1) block has correct inertia for the IPM.
 
-    For the IPM to converge, the (1,1) block should be positive definite
-    (or at least positive semidefinite). We check the smallest eigenvalue.
+    For the IPM to converge, the (1,1) block should be positive definite.
+    Uses sparse LU factorization and checks diagonal pivot signs, which is
+    faster than computing eigenvalues for large sparse matrices.
+
+    Falls back to dense Cholesky for small matrices (n <= 10).
 
     Args:
         H_block: (n, n) sparse matrix (H + sigma + delta_w*I).
         n: Dimension.
-        threshold: Minimum acceptable eigenvalue.
+        threshold: Minimum acceptable eigenvalue (used only in dense fallback).
 
     Returns:
-        Tuple of (is_ok, min_eigenvalue).
+        Tuple of (is_ok, min_eigenvalue). min_eigenvalue is estimated from
+        the LU diagonal for large matrices or exact for small ones.
     """
     if n <= 0:
         return True, 0.0
 
     if n <= 10:
-        # Small enough for dense eigenvalue computation
+        # Small enough for dense Cholesky check
         H_dense = H_block.toarray()
-        eigvals = np.linalg.eigvalsh(H_dense)
-        min_eig = float(eigvals[0])
-    else:
         try:
-            from scipy.sparse.linalg import eigsh
-
-            eigvals = eigsh(sp.csc_matrix(H_block), k=1, which="SA", return_eigenvectors=False)
-            min_eig = float(eigvals[0])
+            np.linalg.cholesky(H_dense)
+            # Positive definite; estimate min eigenvalue from diagonal
+            eigvals = np.linalg.eigvalsh(H_dense)
+            return True, float(eigvals[0])
+        except np.linalg.LinAlgError:
+            # Not positive definite
+            eigvals = np.linalg.eigvalsh(H_dense)
+            return False, float(eigvals[0])
+    else:
+        # For large sparse matrices, use LU and check diagonal pivot signs.
+        # A symmetric matrix is positive definite iff all LU pivots > 0.
+        try:
+            lu = spla.splu(sp.csc_matrix(H_block))
+            diag_u = lu.U.diagonal()
+            min_pivot = float(np.min(diag_u))
+            is_ok = bool(np.all(diag_u > 0))
+            return is_ok, min_pivot
         except Exception:
-            # Fallback: assume inertia is bad if we can't compute it
             return False, -1.0
-
-    return min_eig >= threshold, min_eig

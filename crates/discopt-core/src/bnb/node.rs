@@ -36,6 +36,8 @@ pub struct Node {
     pub local_lower_bound: f64,
     /// Current status.
     pub status: NodeStatus,
+    /// Parent node's NLP solution, used as warm-start for child solves.
+    pub parent_solution: Option<Vec<f64>>,
 }
 
 impl Node {
@@ -55,6 +57,7 @@ impl Node {
             ub,
             local_lower_bound: f64::NEG_INFINITY,
             status: NodeStatus::Pending,
+            parent_solution: None,
         }
     }
 }
@@ -79,6 +82,15 @@ mod tests {
         assert_eq!(node.ub, vec![1.0, 1.0]);
         assert_eq!(node.local_lower_bound, f64::NEG_INFINITY);
         assert_eq!(node.status, NodeStatus::Pending);
+        assert!(node.parent_solution.is_none());
+    }
+
+    #[test]
+    fn test_node_parent_solution() {
+        let mut node = Node::new(NodeId(0), None, 0, vec![0.0], vec![1.0]);
+        assert!(node.parent_solution.is_none());
+        node.parent_solution = Some(vec![0.5]);
+        assert_eq!(node.parent_solution.as_ref().unwrap(), &vec![0.5]);
     }
 
     #[test]

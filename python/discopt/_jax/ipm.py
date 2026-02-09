@@ -50,6 +50,7 @@ class IPMOptions(NamedTuple):
     nu_init: float = 10.0
     least_squares_mult_init: bool = False
     constr_mult_init_max: float = 1000.0
+    predictor_corrector: bool = True  # Mehrotra predictor-corrector steps
     linear_solver: str = "dense"  # "dense", "pcg", "lineax_cg", "lineax_gmres"
     pcg_tol: float = 1e-10
     pcg_max_iter: int = 1000
@@ -338,11 +339,13 @@ def _make_iteration_body(obj_fn, con_fn, pd, opts):
         Sig_l = pd.has_lb * state.z_l / jnp.maximum(sx_l, _SLACK_FLOOR)
         Sig_u = pd.has_ub * state.z_u / jnp.maximum(sx_u, _SLACK_FLOOR)
 
-        # RHS for x: -(grad_f + J^T y - z_l + z_u)
-        #            + barrier corrections: mu/sx_l - mu/sx_u
-        rhs_x = -(grad_f - state.z_l + state.z_u)
-        rhs_x = rhs_x + pd.has_lb * mu / jnp.maximum(sx_l, _SLACK_FLOOR)
-        rhs_x = rhs_x - pd.has_ub * mu / jnp.maximum(sx_u, _SLACK_FLOOR)
+        # RHS for x: split into base (Newton) and barrier centering parts
+        # Base: -(grad_f - z_l + z_u)
+        # Centering: mu/sx_l - mu/sx_u (barrier correction)
+        rhs_x_base = -(grad_f - state.z_l + state.z_u)
+        inv_sx_l = pd.has_lb / jnp.maximum(sx_l, _SLACK_FLOOR)
+        inv_sx_u = pd.has_ub / jnp.maximum(sx_u, _SLACK_FLOOR)
+        rhs_x = rhs_x_base + mu * inv_sx_l - mu * inv_sx_u
 
         if m > 0:
             g = con_fn(x)
@@ -402,24 +405,33 @@ def _make_iteration_body(obj_fn, con_fn, pd, opts):
             #   -(g + s_ub - g_u) - D_ub*(y + z_s_ub)
             # After condensation: -(g - g_u) + s_ub*(1 - y/z_s_ub)
             # Actually the standard is simpler:
-            rhs_ub_ineq = (
-                pd.has_g_ub * ineq * (pd.g_u - g - s_from_ub + mu / jnp.maximum(z_s_ub, _EPS))
-            )
-            rhs_lb_ineq = (
-                pd.has_g_lb * ineq * (g - pd.g_l - s_from_lb + mu / jnp.maximum(z_s_lb, _EPS))
-            )
+            # Base (no centering) parts of inequality RHS
+            rhs_ub_ineq_base = pd.has_g_ub * ineq * (pd.g_u - g - s_from_ub)
+            rhs_lb_ineq_base = pd.has_g_lb * ineq * (g - pd.g_l - s_from_lb)
+            # Centering contributions (proportional to mu)
+            inv_z_s_ub = pd.has_g_ub * ineq / jnp.maximum(z_s_ub, _EPS)
+            inv_z_s_lb = pd.has_g_lb * ineq / jnp.maximum(z_s_lb, _EPS)
+            rhs_ub_ineq = rhs_ub_ineq_base + mu * inv_z_s_ub
+            rhs_lb_ineq = rhs_lb_ineq_base + mu * inv_z_s_lb
             # Net: for >= constraints, sign is negated
             rhs_ineq = rhs_ub_ineq - rhs_lb_ineq
 
             rhs_y = rhs_eq + rhs_ineq
+            # Store base for predictor-corrector
+            rhs_y_base = rhs_eq + rhs_ub_ineq_base - rhs_lb_ineq_base
         else:
             g = jnp.zeros(0, dtype=jnp.float64)
             J = jnp.zeros((0, n), dtype=jnp.float64)
             D_diag = jnp.zeros(0, dtype=jnp.float64)
+            rhs_y_base = jnp.zeros(0, dtype=jnp.float64)
             rhs_y = jnp.zeros(0, dtype=jnp.float64)
 
         # --- Solve KKT system ---
-        def _solve_kkt_dense(delta_w):
+        def _solve_kkt_dense(delta_w, rx=None, ry=None):
+            if rx is None:
+                rx = rhs_x
+            if ry is None:
+                ry = rhs_y
             W = H + jnp.diag(Sig_l + Sig_u) + delta_w * jnp.eye(n)
             if m > 0:
                 D_reg = jnp.diag(D_diag + opts.delta_c)
@@ -429,36 +441,45 @@ def _make_iteration_body(obj_fn, con_fn, pd, opts):
                         [J, -D_reg],
                     ]
                 )
-                rhs = jnp.concatenate([rhs_x, rhs_y])
+                rhs = jnp.concatenate([rx, ry])
                 sol = jnp.linalg.solve(KKT_mat, rhs)
                 return sol[:n], sol[n:], W
             else:
-                return jnp.linalg.solve(W, rhs_x), jnp.zeros(0), W
+                return jnp.linalg.solve(W, rx), jnp.zeros(0), W
 
-        def _solve_kkt_pcg(delta_w):
+        def _solve_kkt_pcg(delta_w, rx=None, ry=None):
             from discopt._jax.pcg import PCGOptions, solve_kkt_condensed_pcg
 
+            if rx is None:
+                rx = rhs_x
+            if ry is None:
+                ry = rhs_y
             W = H + jnp.diag(Sig_l + Sig_u) + delta_w * jnp.eye(n)
             pcg_opts = PCGOptions(tol=opts.pcg_tol, max_iter=opts.pcg_max_iter)
             if m > 0:
                 D_reg_vec = D_diag + opts.delta_c
-                dx, dy, _ = solve_kkt_condensed_pcg(W, J, D_reg_vec, rhs_x, rhs_y, pcg_opts)
+                dx, dy, _ = solve_kkt_condensed_pcg(W, J, D_reg_vec, rx, ry, pcg_opts)
                 return dx, dy, W
             else:
                 from discopt._jax.pcg import diagonal_preconditioner, pcg_solve
 
                 precond = diagonal_preconditioner(W)
-                result = pcg_solve(W, rhs_x, preconditioner=precond, options=pcg_opts)
+                result = pcg_solve(W, rx, preconditioner=precond, options=pcg_opts)
                 return result.x, jnp.zeros(0), W
 
-        def _solve_kkt_lineax(delta_w, solver_type="cg"):
+        def _solve_kkt_lineax(delta_w, solver_type="cg", rx=None, ry=None):
             from discopt._jax.ipm_iterative import (
                 HAS_LINEAX,
                 IterativeKKTSolver,
             )
 
+            if rx is None:
+                rx = rhs_x
+            if ry is None:
+                ry = rhs_y
+
             if not HAS_LINEAX:
-                return _solve_kkt_pcg(delta_w)
+                return _solve_kkt_pcg(delta_w, rx=rx, ry=ry)
 
             W = H + jnp.diag(Sig_l + Sig_u) + delta_w * jnp.eye(n)
             Sig_diag = Sig_l + Sig_u
@@ -479,8 +500,8 @@ def _make_iteration_body(obj_fn, con_fn, pd, opts):
                 D_reg_vec,
                 delta_w,
                 opts.delta_c,
-                rhs_x,
-                rhs_y,
+                rx,
+                ry,
             )
             return dx, dy, W
 
@@ -488,23 +509,22 @@ def _make_iteration_body(obj_fn, con_fn, pd, opts):
         use_lineax_cg = opts.linear_solver == "lineax_cg"
         use_lineax_gmres = opts.linear_solver == "lineax_gmres"
 
-        def _solve_kkt(delta_w):
+        def _solve_kkt(delta_w, rx=None, ry=None):
             if use_lineax_cg:
-                return _solve_kkt_lineax(delta_w, solver_type="cg")
+                return _solve_kkt_lineax(delta_w, solver_type="cg", rx=rx, ry=ry)
             if use_lineax_gmres:
-                return _solve_kkt_lineax(delta_w, solver_type="gmres")
+                return _solve_kkt_lineax(delta_w, solver_type="gmres", rx=rx, ry=ry)
             if use_pcg:
-                return _solve_kkt_pcg(delta_w)
-            return _solve_kkt_dense(delta_w)
+                return _solve_kkt_pcg(delta_w, rx=rx, ry=ry)
+            return _solve_kkt_dense(delta_w, rx=rx, ry=ry)
 
         # Inertia correction: W must be positive definite.
-        # Check via minimum eigenvalue (fine for small B&B problems).
+        # Check via Cholesky: returns NaN when not positive definite (~3x faster).
         def _needs_more_reg(carry):
             dw, attempt = carry
             _, _, W = _solve_kkt(dw)
-            # Check for NaN or non-positive-definite W
-            eig_min = jnp.min(jnp.linalg.eigvalsh(W))
-            bad = jnp.any(jnp.isnan(eig_min)) | (eig_min < 1e-8)
+            chol = jnp.linalg.cholesky(W)
+            bad = jnp.any(jnp.isnan(chol))
             return bad & (attempt < 10)
 
         def _increase_reg(carry):
@@ -523,13 +543,98 @@ def _make_iteration_body(obj_fn, con_fn, pd, opts):
             _increase_reg,
             (init_dw, jnp.array(0, dtype=jnp.int32)),
         )
-        dx, dy, _ = _solve_kkt(final_dw)
+
+        # --- Mehrotra predictor-corrector or standard step ---
+        if opts.predictor_corrector and n > 0:
+            # Step 1: Affine predictor (mu=0) — RHS without centering
+            rhs_x_aff = rhs_x_base
+            if m > 0:
+                rhs_x_aff = rhs_x_aff - J.T @ y
+            rhs_y_aff = rhs_y_base
+
+            dx_aff, dy_aff, _ = _solve_kkt(final_dw, rx=rhs_x_aff, ry=rhs_y_aff)
+
+            # Affine bound dual steps (mu=0 → target complementarity = 0)
+            dz_l_aff = pd.has_lb * (-state.z_l * (sx_l + dx_aff) / jnp.maximum(sx_l, _SLACK_FLOOR))
+            dz_u_aff = pd.has_ub * (-state.z_u * (sx_u - dx_aff) / jnp.maximum(sx_u, _SLACK_FLOOR))
+
+            # Step 2: Compute adaptive centering parameter sigma
+            n_bounds = jnp.maximum(jnp.sum(pd.has_lb) + jnp.sum(pd.has_ub), 1.0)
+            comp_curr = (
+                jnp.sum(pd.has_lb * state.z_l * sx_l) + jnp.sum(pd.has_ub * state.z_u * sx_u)
+            ) / n_bounds
+
+            # Affine step sizes (fraction-to-boundary with tau=1)
+            alpha_aff_p = _fraction_to_boundary(
+                jnp.where(pd.has_lb > 0.5, sx_l, 1.0),
+                jnp.where(pd.has_lb > 0.5, dx_aff, 0.0),
+                jnp.array(1.0),
+            )
+            alpha_aff_p = jnp.minimum(
+                alpha_aff_p,
+                _fraction_to_boundary(
+                    jnp.where(pd.has_ub > 0.5, sx_u, 1.0),
+                    jnp.where(pd.has_ub > 0.5, -dx_aff, 0.0),
+                    jnp.array(1.0),
+                ),
+            )
+            alpha_aff_d = _fraction_to_boundary(
+                jnp.where(pd.has_lb > 0.5, state.z_l, 1.0),
+                jnp.where(pd.has_lb > 0.5, dz_l_aff, 0.0),
+                jnp.array(1.0),
+            )
+            alpha_aff_d = jnp.minimum(
+                alpha_aff_d,
+                _fraction_to_boundary(
+                    jnp.where(pd.has_ub > 0.5, state.z_u, 1.0),
+                    jnp.where(pd.has_ub > 0.5, dz_u_aff, 0.0),
+                    jnp.array(1.0),
+                ),
+            )
+
+            # Complementarity after affine step
+            sx_l_aff = sx_l + alpha_aff_p * dx_aff
+            sx_u_aff = sx_u - alpha_aff_p * dx_aff
+            z_l_aff = state.z_l + alpha_aff_d * dz_l_aff
+            z_u_aff = state.z_u + alpha_aff_d * dz_u_aff
+            comp_aff = (
+                jnp.sum(pd.has_lb * z_l_aff * sx_l_aff) + jnp.sum(pd.has_ub * z_u_aff * sx_u_aff)
+            ) / n_bounds
+
+            # Mehrotra centering: sigma = (mu_aff / mu_curr)^3
+            sigma = jnp.where(comp_curr > _EPS, (comp_aff / comp_curr) ** 3, jnp.array(0.1))
+            sigma = jnp.clip(sigma, 0.0, 1.0)
+
+            # Step 3: Corrector with centering + cross-product correction
+            sigma_mu = sigma * mu
+
+            # Cross-product correction: dSx * dZ / sx (second-order term)
+            cross_x = pd.has_lb * dx_aff * dz_l_aff / jnp.maximum(sx_l, _SLACK_FLOOR)
+            cross_x = cross_x - pd.has_ub * (-dx_aff) * dz_u_aff / jnp.maximum(sx_u, _SLACK_FLOOR)
+
+            rhs_x_corr = rhs_x_base + sigma_mu * inv_sx_l - sigma_mu * inv_sx_u
+            rhs_x_corr = rhs_x_corr - cross_x
+            if m > 0:
+                rhs_x_corr = rhs_x_corr - J.T @ y
+                rhs_y_corr = rhs_y_base + sigma_mu * inv_z_s_ub - sigma_mu * inv_z_s_lb
+            else:
+                rhs_y_corr = jnp.zeros(0, dtype=jnp.float64)
+
+            dx, dy, _ = _solve_kkt(final_dw, rx=rhs_x_corr, ry=rhs_y_corr)
+        else:
+            # Standard step (single Newton direction with centering)
+            dx, dy, _ = _solve_kkt(final_dw)
 
         # --- Recover bound dual steps ---
-        # dz_l = (mu - z_l*(sx_l + dx)) / sx_l
-        dz_l = pd.has_lb * ((mu - state.z_l * (sx_l + dx)) / jnp.maximum(sx_l, _SLACK_FLOOR))
-        # dz_u = (mu - z_u*(sx_u - dx)) / sx_u
-        dz_u = pd.has_ub * ((mu - state.z_u * (sx_u - dx)) / jnp.maximum(sx_u, _SLACK_FLOOR))
+        # Target complementarity: sigma*mu for PC, mu for standard
+        if opts.predictor_corrector and n > 0:
+            mu_target = sigma_mu
+        else:
+            mu_target = mu
+        # dz_l = (mu_target - z_l*(sx_l + dx)) / sx_l
+        dz_l = pd.has_lb * ((mu_target - state.z_l * (sx_l + dx)) / jnp.maximum(sx_l, _SLACK_FLOOR))
+        # dz_u = (mu_target - z_u*(sx_u - dx)) / sx_u
+        dz_u = pd.has_ub * ((mu_target - state.z_u * (sx_u - dx)) / jnp.maximum(sx_u, _SLACK_FLOOR))
 
         # --- Fraction-to-boundary step sizes ---
         # Primal: x stays within bounds

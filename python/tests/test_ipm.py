@@ -881,3 +881,116 @@ class TestIPMWrapper:
         x0 = 0.5 * (lb + ub)
         result = solve_nlp_ipm(evaluator, x0)
         assert result.multipliers is None
+
+
+# ---------------------------------------------------------------
+# 8. Mehrotra predictor-corrector tests
+# ---------------------------------------------------------------
+
+
+class TestPredictorCorrector:
+    """Test that Mehrotra predictor-corrector produces correct results."""
+
+    def test_pc_unconstrained_matches_standard(self):
+        """PC and standard steps should converge to same optimum."""
+        n = 3
+        x0 = jnp.array([3.0, -2.0, 1.0])
+        xl = jnp.full(n, -5.0)
+        xu = jnp.full(n, 5.0)
+
+        def obj(x):
+            return jnp.sum((x - 1.0) ** 2)
+
+        def con(x):
+            return jnp.array([])
+
+        gl, gu = jnp.array([]), jnp.array([])
+        opts_pc = IPMOptions(predictor_corrector=True)
+        opts_std = IPMOptions(predictor_corrector=False)
+        state_pc = ipm_solve(obj, con, x0, xl, xu, gl, gu, opts_pc)
+        state_std = ipm_solve(obj, con, x0, xl, xu, gl, gu, opts_std)
+
+        np.testing.assert_allclose(np.array(state_pc.x), np.array(state_std.x), atol=1e-5)
+        np.testing.assert_allclose(float(state_pc.obj), float(state_std.obj), atol=1e-6)
+
+    def test_pc_constrained_matches_standard(self):
+        """PC constrained solve should match standard step optimum."""
+        x0 = jnp.array([1.0, 1.0])
+        xl = jnp.array([0.0, 0.0])
+        xu = jnp.array([5.0, 5.0])
+
+        def obj(x):
+            return x[0] ** 2 + x[1] ** 2
+
+        def con(x):
+            return jnp.array([x[0] + x[1]])
+
+        g_l = jnp.array([2.0])
+        g_u = jnp.array([1e20])
+
+        opts_pc = IPMOptions(predictor_corrector=True)
+        opts_std = IPMOptions(predictor_corrector=False)
+        state_pc = ipm_solve(obj, con, x0, xl, xu, g_l, g_u, opts_pc)
+        state_std = ipm_solve(obj, con, x0, xl, xu, g_l, g_u, opts_std)
+
+        # Both should converge (obj = 2.0)
+        assert float(state_pc.obj) < 3.0
+        assert float(state_std.obj) < 3.0
+        np.testing.assert_allclose(np.array(state_pc.x), np.array(state_std.x), atol=1e-4)
+        np.testing.assert_allclose(float(state_pc.obj), float(state_std.obj), atol=1e-5)
+
+    def test_pc_fewer_iterations(self):
+        """PC should typically converge in fewer or similar iterations."""
+        n = 3
+        x0 = jnp.array([2.0, 2.0, 2.0])
+        xl = jnp.full(n, 0.1)
+        xu = jnp.full(n, 5.0)
+
+        def obj(x):
+            return x[0] ** 2 + x[1] ** 2 + x[2] ** 2
+
+        def con(x):
+            return jnp.array([x[0] + x[1] + x[2]])
+
+        g_l = jnp.array([3.0])
+        g_u = jnp.array([1e20])
+
+        opts_pc = IPMOptions(predictor_corrector=True)
+        opts_std = IPMOptions(predictor_corrector=False)
+        state_pc = ipm_solve(obj, con, x0, xl, xu, g_l, g_u, opts_pc)
+        state_std = ipm_solve(obj, con, x0, xl, xu, g_l, g_u, opts_std)
+
+        # Both should converge to same optimum (x=1,1,1, obj=3)
+        assert float(state_pc.obj) < 5.0
+        assert float(state_std.obj) < 5.0
+        np.testing.assert_allclose(float(state_pc.obj), float(state_std.obj), atol=1e-3)
+        # PC typically uses fewer iterations (allow some slack)
+        assert int(state_pc.iteration) <= int(state_std.iteration) + 5
+
+    def test_pc_option_default_true(self):
+        """predictor_corrector should default to True."""
+        opts = IPMOptions()
+        assert opts.predictor_corrector is True
+
+    def test_pc_hs071(self):
+        """PC should solve HS071 correctly."""
+
+        def obj_fn(x):
+            return x[0] * x[3] * (x[0] + x[1] + x[2]) + x[2]
+
+        def con_fn(x):
+            return jnp.array(
+                [
+                    x[0] * x[1] * x[2] * x[3],
+                    x[0] ** 2 + x[1] ** 2 + x[2] ** 2 + x[3] ** 2,
+                ]
+            )
+
+        x0 = jnp.array([1.0, 5.0, 5.0, 1.0])
+        x_l = jnp.ones(4)
+        x_u = 5.0 * jnp.ones(4)
+        g_l = jnp.array([25.0, 40.0])
+        g_u = jnp.array([1e20, 40.0])
+        opts = IPMOptions(predictor_corrector=True)
+        state = ipm_solve(obj_fn, con_fn, x0, x_l, x_u, g_l, g_u, opts)
+        np.testing.assert_allclose(float(state.obj), 17.014, atol=0.1)

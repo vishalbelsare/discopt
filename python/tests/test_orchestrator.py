@@ -45,7 +45,7 @@ class TestPyTreeManager:
 
     def test_export_empty(self):
         tm = PyTreeManager(2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first")
-        lb, ub, ids = tm.export_batch(10)
+        lb, ub, ids, _psols = tm.export_batch(10)
         assert lb.shape == (0, 2)
         assert ub.shape == (0, 2)
         assert ids.shape == (0,)
@@ -53,7 +53,7 @@ class TestPyTreeManager:
     def test_export_root(self):
         tm = PyTreeManager(2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first")
         tm.initialize()
-        lb, ub, ids = tm.export_batch(10)
+        lb, ub, ids, _psols = tm.export_batch(10)
         assert lb.shape == (1, 2)
         assert ub.shape == (1, 2)
         assert ids.shape == (1,)
@@ -64,7 +64,7 @@ class TestPyTreeManager:
     def test_import_and_process(self):
         tm = PyTreeManager(2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first")
         tm.initialize()
-        lb, ub, ids = tm.export_batch(1)
+        lb, ub, ids, _psols = tm.export_batch(1)
 
         # Simulate fractional solution -> should branch
         node_ids = np.array([ids[0]], dtype=np.int64)
@@ -86,7 +86,7 @@ class TestPyTreeManager:
     def test_fathom_integer_feasible(self):
         tm = PyTreeManager(2, [0.0, 0.0], [1.0, 1.0], [0], [2], "best_first")
         tm.initialize()
-        lb, ub, ids = tm.export_batch(1)
+        lb, ub, ids, _psols = tm.export_batch(1)
 
         # Integer-feasible solution
         node_ids = np.array([ids[0]], dtype=np.int64)
@@ -125,13 +125,38 @@ class TestPyTreeManager:
         with pytest.raises(ValueError, match="lb length"):
             PyTreeManager(2, [0.0], [1.0, 1.0], [], [], "best_first")
 
+    def test_parent_solution_warm_start(self):
+        """Parent solutions propagate to children for warm-starting."""
+        tm = PyTreeManager(2, [0.0, 0.0], [10.0, 10.0], [0], [2], "best_first")
+        tm.initialize()
+
+        # Root: no parent solution (NaN)
+        lb, ub, ids, psols = tm.export_batch(1)
+        assert np.all(np.isnan(psols[0]))  # root has no parent
+
+        # Import root result with solution [3.5, 4.7]
+        tm.import_results(
+            np.array([ids[0]], dtype=np.int64),
+            np.array([1.0], dtype=np.float64),
+            np.array([[3.5, 4.7]], dtype=np.float64),
+            np.array([False], dtype=bool),
+        )
+        tm.process_evaluated()
+
+        # Children should have parent solution [3.5, 4.7]
+        lb, ub, ids, psols = tm.export_batch(2)
+        assert len(ids) == 2
+        for i in range(2):
+            assert not np.any(np.isnan(psols[i]))
+            np.testing.assert_array_almost_equal(psols[i], [3.5, 4.7])
+
     def test_full_lifecycle(self):
         """Test a complete B&B lifecycle with branching and pruning."""
         tm = PyTreeManager(1, [0.0], [10.0], [0], [1], "best_first")
         tm.initialize()
 
         # Root: fractional
-        lb, ub, ids = tm.export_batch(1)
+        lb, ub, ids, _psols = tm.export_batch(1)
         tm.import_results(
             np.array([ids[0]], dtype=np.int64),
             np.array([1.0], dtype=np.float64),
@@ -144,7 +169,7 @@ class TestPyTreeManager:
         assert tm.stats()["open_nodes"] == 2
 
         # Solve both children
-        lb, ub, ids = tm.export_batch(2)
+        lb, ub, ids, _psols = tm.export_batch(2)
         assert len(ids) == 2
 
         # One feasible, one infeasible

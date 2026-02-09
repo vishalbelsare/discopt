@@ -92,7 +92,10 @@ impl PyTreeManager {
 
     /// Export a batch of up to `batch_size` pending nodes as numpy arrays.
     ///
-    /// Returns (lb_array[N, n_vars], ub_array[N, n_vars], node_ids[N]).
+    /// Returns (lb_array[N, n_vars], ub_array[N, n_vars], node_ids[N],
+    ///          parent_solutions[N, n_vars]).
+    /// Parent solutions are filled with NaN where no parent solution exists
+    /// (root node).
     #[allow(clippy::type_complexity)]
     fn export_batch<'py>(
         &mut self,
@@ -102,6 +105,7 @@ impl PyTreeManager {
         Bound<'py, PyArray2<f64>>,
         Bound<'py, PyArray2<f64>>,
         Bound<'py, PyArray1<i64>>,
+        Bound<'py, PyArray2<f64>>,
     )> {
         let batch = self.inner.export_batch(batch_size);
         let n = batch.node_ids.len();
@@ -110,17 +114,25 @@ impl PyTreeManager {
             let lb = numpy::PyArray2::zeros(py, [0, self.n_vars], false);
             let ub = numpy::PyArray2::zeros(py, [0, self.n_vars], false);
             let ids = numpy::PyArray1::zeros(py, [0], false);
-            return Ok((lb, ub, ids));
+            let psols = numpy::PyArray2::zeros(py, [0, self.n_vars], false);
+            return Ok((lb, ub, ids, psols));
         }
 
         let n_vars = self.n_vars;
         let mut flat_lb: Vec<f64> = Vec::with_capacity(n * n_vars);
         let mut flat_ub: Vec<f64> = Vec::with_capacity(n * n_vars);
+        let mut flat_psols: Vec<f64> = Vec::with_capacity(n * n_vars);
         for row in &batch.lb {
             flat_lb.extend_from_slice(row);
         }
         for row in &batch.ub {
             flat_ub.extend_from_slice(row);
+        }
+        for psol in &batch.parent_solutions {
+            match psol {
+                Some(sol) => flat_psols.extend_from_slice(sol),
+                None => flat_psols.extend(std::iter::repeat(f64::NAN).take(n_vars)),
+            }
         }
 
         let ids_i64: Vec<i64> = batch.node_ids.iter().map(|nid| nid.0 as i64).collect();
@@ -128,8 +140,9 @@ impl PyTreeManager {
         let lb_array = PyArray1::from_vec(py, flat_lb).reshape([n, n_vars])?;
         let ub_array = PyArray1::from_vec(py, flat_ub).reshape([n, n_vars])?;
         let ids_array = PyArray1::from_vec(py, ids_i64);
+        let psols_array = PyArray1::from_vec(py, flat_psols).reshape([n, n_vars])?;
 
-        Ok((lb_array, ub_array, ids_array))
+        Ok((lb_array, ub_array, ids_array, psols_array))
     }
 
     /// Import relaxation results for a batch of solved nodes.

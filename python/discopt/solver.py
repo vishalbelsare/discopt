@@ -15,6 +15,7 @@ from typing import Optional
 import numpy as np
 from scipy.optimize import minimize as scipy_minimize
 
+from discopt._jax.alphabb import estimate_alpha as _estimate_alpha_jax
 from discopt._jax.nlp_evaluator import NLPEvaluator
 from discopt._rust import PyTreeManager
 from discopt.modeling.core import (
@@ -499,6 +500,7 @@ def solve_model(
     cutting_planes: bool = False,
     partitions: int = 0,
     branching_policy: str = "fractional",
+    use_learned_relaxations: bool = False,
 ) -> SolveResult:
     """
     Solve a Model via NLP-based spatial Branch & Bound.
@@ -548,6 +550,10 @@ def solve_model(
     branching_policy : str, default "fractional"
         Variable selection: ``"fractional"`` (most-fractional, default)
         or ``"gnn"`` (GNN scoring hook; Rust handles actual branching).
+    use_learned_relaxations : bool, default False
+        Use ICNN-based learned convex relaxations instead of standard
+        McCormick. Requires ``pip install discopt[gnn]`` (equinox + optax).
+        Falls back to standard McCormick for unsupported operations.
 
     Returns
     -------
@@ -555,6 +561,36 @@ def solve_model(
         Contains solution values, objective, gap, node count, and
         per-layer profiling times (Rust, JAX, Python).
     """
+    # --- GDP reformulation: convert indicator/disjunctive/SOS to standard MINLP ---
+    from discopt._jax.gdp_reformulate import reformulate_gdp
+
+    model = reformulate_gdp(model)
+
+    # --- Learned relaxation registry (opt-in) ---
+    import warnings
+
+    _learned_registry = None
+    _relax_mode = "standard"
+    if use_learned_relaxations:
+        try:
+            from discopt._jax.learned_relaxations import load_pretrained_registry
+
+            _learned_registry = load_pretrained_registry()
+            if len(_learned_registry) > 0:
+                _relax_mode = "learned"
+            else:
+                warnings.warn(
+                    "No pretrained learned relaxation models found. "
+                    "Falling back to standard McCormick.",
+                    stacklevel=2,
+                )
+        except ImportError:
+            warnings.warn(
+                "Learned relaxations require pip install discopt[gnn] "
+                "(equinox + optax). Falling back to standard McCormick.",
+                stacklevel=2,
+            )
+
     t_start = time.perf_counter()
     rust_time = 0.0
     jax_time = 0.0
@@ -674,15 +710,27 @@ def solve_model(
     # --- Augmented constraint function with cuts (updated each iteration) ---
     _augmented_evaluator = None
 
-    # --- AlphaBB convexification for nonconvex .nl models ---
+    # --- AlphaBB convexification for nonconvex models ---
     _alphabb_alpha = None
     _use_alphabb = False
-    if _has_nl_repr(model) and n_vars <= 50:
-        try:
-            _alphabb_alpha = _estimate_alpha_fd(evaluator, lb, ub, n_samples=30)
-            _use_alphabb = bool(np.any(_alphabb_alpha > 1e-8))
-        except Exception:
-            pass
+    if n_vars <= 50:
+        if hasattr(evaluator, "_obj_fn"):
+            # JAX-native path: uses jax.hessian + jax.vmap (10-100x faster)
+            try:
+                _alphabb_alpha = np.asarray(
+                    _estimate_alpha_jax(evaluator._obj_fn, lb, ub, n_samples=100)
+                )
+                _use_alphabb = bool(np.any(_alphabb_alpha > 1e-8))
+            except Exception:
+                pass
+        elif _has_nl_repr(model):
+            # FD fallback for .nl models without JAX objective
+            try:
+                _alphabb_alpha = _estimate_alpha_fd(evaluator, lb, ub, n_samples=30)
+                if _alphabb_alpha is not None:
+                    _use_alphabb = bool(np.any(_alphabb_alpha > 1e-8))
+            except Exception:
+                pass
 
     # --- B&B loop ---
     iteration = 0
@@ -693,7 +741,7 @@ def solve_model(
 
         # Export batch from Rust tree
         t_rust_start = time.perf_counter()
-        batch_lb, batch_ub, batch_ids = tree.export_batch(batch_size)
+        batch_lb, batch_ub, batch_ids, batch_psols = tree.export_batch(batch_size)
         rust_time += time.perf_counter() - t_rust_start
 
         n_batch = len(batch_ids)
@@ -729,6 +777,7 @@ def solve_model(
                 opts,
                 _active_gl,
                 _active_gu,
+                batch_psols=batch_psols,
             )
             # Tighten lower bounds with alphaBB underestimator
             if _use_alphabb:
@@ -774,9 +823,15 @@ def solve_model(
                             nlp_solver,
                         )
                 else:
-                    lb_clipped = np.clip(node_lb, -100.0, 100.0)
-                    ub_clipped = np.clip(node_ub, -100.0, 100.0)
-                    x0 = 0.5 * (lb_clipped + ub_clipped)
+                    # Warm-start from parent solution if available
+                    psol_i = np.array(batch_psols[i])
+                    if not np.any(np.isnan(psol_i)):
+                        # Clip parent solution into child's bounds
+                        x0 = np.clip(psol_i, node_lb, node_ub)
+                    else:
+                        lb_clipped = np.clip(node_lb, -100.0, 100.0)
+                        ub_clipped = np.clip(node_ub, -100.0, 100.0)
+                        x0 = 0.5 * (lb_clipped + ub_clipped)
                     nlp_result = _solve_node_nlp(
                         _active_evaluator,
                         x0,
@@ -1128,6 +1183,7 @@ def _solve_batch_ipm(
     options,
     g_l_jax,
     g_u_jax,
+    batch_psols=None,
 ):
     """Solve a batch of NLP relaxations simultaneously via vmap'd IPM."""
     import jax.numpy as jnp
@@ -1142,9 +1198,20 @@ def _solve_batch_ipm(
     # Build (batch, n) JAX arrays for bounds and starting points
     xl_batch = jnp.array(batch_lb, dtype=jnp.float64)
     xu_batch = jnp.array(batch_ub, dtype=jnp.float64)
-    lb_clipped = jnp.clip(xl_batch, -100.0, 100.0)
-    ub_clipped = jnp.clip(xu_batch, -100.0, 100.0)
-    x0_batch = 0.5 * (lb_clipped + ub_clipped)
+
+    # Warm-start: use parent solutions clipped to child bounds, fall back to midpoint
+    if batch_psols is not None:
+        psols_jax = jnp.array(batch_psols, dtype=jnp.float64)
+        has_parent = ~jnp.any(jnp.isnan(psols_jax), axis=1, keepdims=True)
+        warm_x0 = jnp.clip(psols_jax, xl_batch, xu_batch)
+        lb_clipped = jnp.clip(xl_batch, -100.0, 100.0)
+        ub_clipped = jnp.clip(xu_batch, -100.0, 100.0)
+        midpoint_x0 = 0.5 * (lb_clipped + ub_clipped)
+        x0_batch = jnp.where(has_parent, warm_x0, midpoint_x0)
+    else:
+        lb_clipped = jnp.clip(xl_batch, -100.0, 100.0)
+        ub_clipped = jnp.clip(xu_batch, -100.0, 100.0)
+        x0_batch = 0.5 * (lb_clipped + ub_clipped)
 
     ipm_opts = IPMOptions(max_iter=int(options.get("max_iter", 200)))
 
@@ -1364,7 +1431,7 @@ def _solve_milp_bb(
             break
 
         t_rust_start = time.perf_counter()
-        batch_lb, batch_ub, batch_ids = tree.export_batch(batch_size)
+        batch_lb, batch_ub, batch_ids, _batch_psols = tree.export_batch(batch_size)
         rust_time += time.perf_counter() - t_rust_start
 
         n_batch = len(batch_ids)
@@ -1536,7 +1603,7 @@ def _solve_miqp_bb(
             break
 
         t_rust_start = time.perf_counter()
-        batch_lb, batch_ub, batch_ids = tree.export_batch(batch_size)
+        batch_lb, batch_ub, batch_ids, _batch_psols = tree.export_batch(batch_size)
         rust_time += time.perf_counter() - t_rust_start
 
         n_batch = len(batch_ids)

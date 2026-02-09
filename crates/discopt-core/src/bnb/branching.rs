@@ -111,6 +111,9 @@ pub fn create_children(
     let idx = decision.var_index;
     let bp = decision.branch_point;
 
+    // Warm-start: pass parent's stored solution to children.
+    let parent_sol = parent.parent_solution.clone();
+
     // Left child: x_i <= floor(val)
     let mut left_ub = parent.ub.clone();
     left_ub[idx] = bp; // bp is already floor(val)
@@ -122,6 +125,7 @@ pub fn create_children(
         ub: left_ub,
         local_lower_bound: f64::NEG_INFINITY,
         status: NodeStatus::Pending,
+        parent_solution: parent_sol.clone(),
     };
 
     // Right child: x_i >= ceil(val)
@@ -135,6 +139,7 @@ pub fn create_children(
         ub: parent.ub.clone(),
         local_lower_bound: f64::NEG_INFINITY,
         status: NodeStatus::Pending,
+        parent_solution: parent_sol,
     };
 
     (left, right)

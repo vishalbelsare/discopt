@@ -220,7 +220,7 @@ def collect_strong_branching_data(
     nodes_processed = 0
 
     while nodes_processed < max_nodes:
-        batch_lb, batch_ub, batch_ids = tree.export_batch(1)
+        batch_lb, batch_ub, batch_ids, _batch_psols = tree.export_batch(1)
         if len(batch_ids) == 0:
             break
 

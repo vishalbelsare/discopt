@@ -15,6 +15,8 @@ pub struct ExportBatch {
     pub ub: Vec<Vec<f64>>,
     /// Node IDs corresponding to each row.
     pub node_ids: Vec<NodeId>,
+    /// Parent NLP solutions for warm-starting: `[N][n_vars]` (None if root).
+    pub parent_solutions: Vec<Option<Vec<f64>>>,
 }
 
 /// Result of evaluating a single node's relaxation.
@@ -130,6 +132,7 @@ impl TreeManager {
         let mut lb = Vec::with_capacity(batch_size);
         let mut ub = Vec::with_capacity(batch_size);
         let mut node_ids = Vec::with_capacity(batch_size);
+        let mut parent_solutions = Vec::with_capacity(batch_size);
 
         for _ in 0..batch_size {
             match self.pool.select_next() {
@@ -137,6 +140,7 @@ impl TreeManager {
                     let node = self.pool.get(nid);
                     lb.push(node.lb.clone());
                     ub.push(node.ub.clone());
+                    parent_solutions.push(node.parent_solution.clone());
                     node_ids.push(nid);
                     // Mark as evaluated so it won't be selected again.
                     self.pool.get_mut(nid).status = NodeStatus::Evaluated;
@@ -145,7 +149,12 @@ impl TreeManager {
             }
         }
 
-        ExportBatch { lb, ub, node_ids }
+        ExportBatch {
+            lb,
+            ub,
+            node_ids,
+            parent_solutions,
+        }
     }
 
     /// Import relaxation results for a batch of nodes.
@@ -161,6 +170,8 @@ impl TreeManager {
                 result.node_id
             );
             node.local_lower_bound = result.lower_bound;
+            // Store solution for warm-starting children.
+            node.parent_solution = Some(result.solution.clone());
         }
         self.pending_results
             .extend(results.iter().map(|r| PendingResult {

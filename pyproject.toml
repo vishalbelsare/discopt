@@ -42,6 +42,7 @@ highs = ["highspy"]
 cutest = ["pycutest>=1.8.0"]
 llm = ["litellm>=1.0"]
 gnn = ["equinox>=0.10", "optax>=0.1"]
+learned = ["equinox>=0.10", "optax>=0.1"]
 dev = ["pytest", "pytest-timeout", "pytest-cov", "ruff", "mypy"]
 all = ["discopt[ipopt,highs,cutest,llm,gnn]"]
 
