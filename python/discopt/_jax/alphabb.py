@@ -7,15 +7,21 @@ nonconvex C2 functions.
 
 For a function f(x) on a box [lb, ub], the alphaBB underestimator is:
 
-    L(x) = f(x) + sum_i alpha_i * (x_i - lb_i) * (ub_i - x_i)
+    L(x) = f(x) - sum_i alpha_i * (x_i - lb_i) * (ub_i - x_i)
 
-where alpha_i >= max(0, -lambda_min_i / 2) ensures L is convex. Here
-lambda_min_i is the minimum eigenvalue of the Hessian restricted to the
-i-th diagonal block.
+where alpha_i >= max(0, -lambda_min / 2) ensures L is convex. Here
+lambda_min is the minimum eigenvalue of the Hessian of f over [lb, ub].
 
 The perturbation term alpha_i * (x_i - lb_i) * (ub_i - x_i) is:
   - Non-negative on [lb_i, ub_i] (zero at boundaries, positive inside)
   - Concave, so subtracting it makes the result more convex
+
+The concave overestimator is:
+
+    U(x) = f(x) + sum_i beta_i * (x_i - lb_i) * (ub_i - x_i)
+
+where beta_i >= max(0, lambda_max / 2) for lambda_max of the Hessian of f,
+or equivalently beta = alpha for -f.
 
 All functions are pure JAX and compatible with jax.jit and jax.vmap.
 """
@@ -28,7 +34,25 @@ import jax
 import jax.numpy as jnp
 
 
-def estimate_alpha(f, lb, ub, n_samples=100):
+def _eigenvalue_method(H):
+    """Compute minimum eigenvalue of a symmetric matrix via eigvalsh."""
+    eigvals = jnp.linalg.eigvalsh(H)
+    return jnp.min(eigvals)
+
+
+def _gershgorin_method(H):
+    """Conservative lower bound on minimum eigenvalue using Gershgorin circles.
+
+    For each row i, eigenvalues lie in a disk centered at H[i,i] with
+    radius sum_{j != i} |H[i,j]|. The minimum eigenvalue is bounded below
+    by min_i(H[i,i] - R_i).
+    """
+    diag = jnp.diag(H)
+    off_diag_sum = jnp.sum(jnp.abs(H), axis=1) - jnp.abs(diag)
+    return jnp.min(diag - off_diag_sum)
+
+
+def estimate_alpha(f, lb, ub, n_samples=100, method="eigenvalue"):
     """Estimate sufficient alpha values to make f convex on [lb, ub].
 
     Computes the Hessian of f at n_samples random points in [lb, ub],
@@ -40,6 +64,7 @@ def estimate_alpha(f, lb, ub, n_samples=100):
         lb: Lower bounds, shape (n,).
         ub: Upper bounds, shape (n,).
         n_samples: Number of random sample points for Hessian estimation.
+        method: "eigenvalue" for exact eigvalsh, "gershgorin" for conservative bound.
 
     Returns:
         alpha: Array of shape (n,) with alpha_i >= max(0, -lambda_min / 2).
@@ -49,19 +74,16 @@ def estimate_alpha(f, lb, ub, n_samples=100):
     n = lb.shape[0]
 
     hessian_fn = jax.hessian(f)
+    eig_fn = _eigenvalue_method if method == "eigenvalue" else _gershgorin_method
 
     key = jax.random.PRNGKey(42)
-    # Generate random sample points in [lb, ub]
     random_pts = lb + (ub - lb) * jax.random.uniform(key, shape=(n_samples, n), dtype=jnp.float64)
 
-    # Also include a grid along edges for better coverage.
-    # For each dimension, sample points where one coordinate is at lb or ub.
     n_edge = min(20, n_samples)
     key2 = jax.random.PRNGKey(43)
     edge_pts = lb + (ub - lb) * jax.random.uniform(
         key2, shape=(n_edge * 2 * n, n), dtype=jnp.float64
     )
-    # Snap some coordinates to boundaries for edge coverage
     for dim in range(n):
         edge_pts = edge_pts.at[dim * n_edge : (dim + 1) * n_edge, dim].set(lb[dim])
         edge_pts = edge_pts.at[(n + dim) * n_edge : (n + dim + 1) * n_edge, dim].set(ub[dim])
@@ -70,18 +92,11 @@ def estimate_alpha(f, lb, ub, n_samples=100):
 
     def _min_eigenvalue(x):
         H = hessian_fn(x)
-        eigvals = jnp.linalg.eigvalsh(H)
-        return jnp.min(eigvals)
+        return eig_fn(H)
 
-    # Compute minimum eigenvalue at each sample point
     min_eigs = jax.vmap(_min_eigenvalue)(samples)
-
-    # Global minimum eigenvalue across all samples
     global_min_eig = jnp.min(min_eigs)
 
-    # alpha = max(0, -lambda_min / 2) with a safety factor of 1.5
-    # to account for Hessian variation at unsampled points.
-    # Conservative overestimation is critical for guaranteed convexity.
     alpha_scalar = jnp.maximum(0.0, -global_min_eig / 2.0 * 1.5 + 1e-6)
     alpha = jnp.full(n, alpha_scalar)
 
@@ -157,7 +172,47 @@ def alphabb_overestimator(f, x, lb, ub, alpha_neg=None):
     return f(x) + perturbation
 
 
-def make_alphabb_relaxation(f, lb, ub, n_samples=100):
+def relax_alphabb(f, x, lb, ub, alpha=None, alpha_neg=None, n_samples=100, method="eigenvalue"):
+    """Compute alphaBB relaxation of f at x, returning (cv, cc).
+
+    Matches the project convention: cv <= f(x) <= cc for all x in [lb, ub].
+
+    Args:
+        f: Scalar-valued function of a 1D array x.
+        x: Evaluation point, shape (n,).
+        lb: Lower bounds, shape (n,).
+        ub: Upper bounds, shape (n,).
+        alpha: Pre-computed alpha for underestimator. If None, computed.
+        alpha_neg: Pre-computed alpha for overestimator. If None, computed.
+        n_samples: Number of Hessian samples (only used if alpha/alpha_neg is None).
+        method: "eigenvalue" or "gershgorin".
+
+    Returns:
+        (cv, cc) where cv <= f(x) <= cc for all x in [lb, ub].
+    """
+    lb = jnp.asarray(lb, dtype=jnp.float64)
+    ub = jnp.asarray(ub, dtype=jnp.float64)
+    x = jnp.asarray(x, dtype=jnp.float64)
+
+    if alpha is None:
+        alpha = estimate_alpha(f, lb, ub, n_samples, method=method)
+    if alpha_neg is None:
+
+        def neg_f(z):
+            return -f(z)
+
+        alpha_neg = estimate_alpha(neg_f, lb, ub, n_samples, method=method)
+
+    fval = f(x)
+    perturbation = jnp.sum(alpha * (x - lb) * (ub - x))
+    perturbation_neg = jnp.sum(alpha_neg * (x - lb) * (ub - x))
+
+    cv = fval - perturbation
+    cc = fval + perturbation_neg
+    return cv, cc
+
+
+def make_alphabb_relaxation(f, lb, ub, n_samples=100, method="eigenvalue"):
     """Create alphaBB underestimator and overestimator functions for f.
 
     Pre-computes alpha values for both f and -f, then returns efficient
@@ -168,6 +223,7 @@ def make_alphabb_relaxation(f, lb, ub, n_samples=100):
         lb: Lower bounds, shape (n,).
         ub: Upper bounds, shape (n,).
         n_samples: Number of samples for Hessian estimation.
+        method: "eigenvalue" or "gershgorin".
 
     Returns:
         (under_fn, over_fn, alpha, alpha_neg) where:
@@ -179,12 +235,12 @@ def make_alphabb_relaxation(f, lb, ub, n_samples=100):
     lb = jnp.asarray(lb, dtype=jnp.float64)
     ub = jnp.asarray(ub, dtype=jnp.float64)
 
-    alpha = estimate_alpha(f, lb, ub, n_samples)
+    alpha = estimate_alpha(f, lb, ub, n_samples, method=method)
 
     def neg_f(z):
         return -f(z)
 
-    alpha_neg = estimate_alpha(neg_f, lb, ub, n_samples)
+    alpha_neg = estimate_alpha(neg_f, lb, ub, n_samples, method=method)
 
     @functools.wraps(f)
     def under_fn(x):
