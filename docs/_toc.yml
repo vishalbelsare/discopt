@@ -5,6 +5,7 @@ parts:
     chapters:
       - file: notebooks/quickstart
       - file: notebooks/minlp_examples
+      - file: notebooks/problem_classes
   - caption: Advanced Features
     chapters:
       - file: notebooks/advanced_features
@@ -14,6 +15,7 @@ parts:
     chapters:
       - file: notebooks/ipm_vs_ipopt
       - file: notebooks/batch_ipm_vs_ipopt
+      - file: notebooks/benchmarks_by_class
   - caption: Applications
     chapters:
       - file: notebooks/decision_focused_learning
