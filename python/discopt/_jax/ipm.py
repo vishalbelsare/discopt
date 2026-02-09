@@ -50,6 +50,12 @@ class IPMOptions(NamedTuple):
     nu_init: float = 10.0
     least_squares_mult_init: bool = False
     constr_mult_init_max: float = 1000.0
+    linear_solver: str = "dense"  # "dense", "pcg", "lineax_cg", "lineax_gmres"
+    pcg_tol: float = 1e-10
+    pcg_max_iter: int = 1000
+    lineax_max_steps: int = 1000
+    lineax_warm_start: bool = True
+    lineax_preconditioner: bool = True
 
 
 class IPMState(NamedTuple):
@@ -413,7 +419,7 @@ def _make_iteration_body(obj_fn, con_fn, pd, opts):
             rhs_y = jnp.zeros(0, dtype=jnp.float64)
 
         # --- Solve KKT system ---
-        def _solve_kkt(delta_w):
+        def _solve_kkt_dense(delta_w):
             W = H + jnp.diag(Sig_l + Sig_u) + delta_w * jnp.eye(n)
             if m > 0:
                 D_reg = jnp.diag(D_diag + opts.delta_c)
@@ -428,6 +434,68 @@ def _make_iteration_body(obj_fn, con_fn, pd, opts):
                 return sol[:n], sol[n:], W
             else:
                 return jnp.linalg.solve(W, rhs_x), jnp.zeros(0), W
+
+        def _solve_kkt_pcg(delta_w):
+            from discopt._jax.pcg import PCGOptions, solve_kkt_condensed_pcg
+
+            W = H + jnp.diag(Sig_l + Sig_u) + delta_w * jnp.eye(n)
+            pcg_opts = PCGOptions(tol=opts.pcg_tol, max_iter=opts.pcg_max_iter)
+            if m > 0:
+                D_reg_vec = D_diag + opts.delta_c
+                dx, dy, _ = solve_kkt_condensed_pcg(W, J, D_reg_vec, rhs_x, rhs_y, pcg_opts)
+                return dx, dy, W
+            else:
+                from discopt._jax.pcg import diagonal_preconditioner, pcg_solve
+
+                precond = diagonal_preconditioner(W)
+                result = pcg_solve(W, rhs_x, preconditioner=precond, options=pcg_opts)
+                return result.x, jnp.zeros(0), W
+
+        def _solve_kkt_lineax(delta_w, solver_type="cg"):
+            from discopt._jax.ipm_iterative import (
+                HAS_LINEAX,
+                IterativeKKTSolver,
+            )
+
+            if not HAS_LINEAX:
+                return _solve_kkt_pcg(delta_w)
+
+            W = H + jnp.diag(Sig_l + Sig_u) + delta_w * jnp.eye(n)
+            Sig_diag = Sig_l + Sig_u
+            D_reg_vec = D_diag if m > 0 else jnp.zeros(0, dtype=jnp.float64)
+
+            kkt_solver = IterativeKKTSolver(
+                linear_solver=solver_type,
+                rtol=opts.pcg_tol,
+                atol=opts.pcg_tol,
+                max_steps=opts.lineax_max_steps,
+                warm_start=False,
+                use_preconditioner=opts.lineax_preconditioner,
+            )
+            dx, dy, _ = kkt_solver.solve(
+                H,
+                J,
+                Sig_diag,
+                D_reg_vec,
+                delta_w,
+                opts.delta_c,
+                rhs_x,
+                rhs_y,
+            )
+            return dx, dy, W
+
+        use_pcg = opts.linear_solver == "pcg"
+        use_lineax_cg = opts.linear_solver == "lineax_cg"
+        use_lineax_gmres = opts.linear_solver == "lineax_gmres"
+
+        def _solve_kkt(delta_w):
+            if use_lineax_cg:
+                return _solve_kkt_lineax(delta_w, solver_type="cg")
+            if use_lineax_gmres:
+                return _solve_kkt_lineax(delta_w, solver_type="gmres")
+            if use_pcg:
+                return _solve_kkt_pcg(delta_w)
+            return _solve_kkt_dense(delta_w)
 
         # Inertia correction: W must be positive definite.
         # Check via minimum eigenvalue (fine for small B&B problems).
