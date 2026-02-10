@@ -15,7 +15,7 @@ directly provide the sensitivity information we need.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import jax
 import jax.numpy as jnp
@@ -676,6 +676,32 @@ def find_active_set(
     return active_constraints, active_bounds
 
 
+class SensitivityInfo(NamedTuple):
+    """Cached sensitivity data from implicit differentiation of the KKT system.
+
+    Stores the KKT factorization and intermediate matrices so that subsequent
+    sensitivity queries (e.g., for new parameter perturbations) can reuse the
+    factorization instead of recomputing it from scratch.
+
+    Attributes:
+        dx_dp: Primal sensitivity matrix, shape (n_vars, n_params).
+        dlambda_dp: Dual sensitivity matrix, shape (n_active, n_params), or None.
+        KKT_matrix: The KKT matrix used for the solve, shape (n_vars+n_active, ...).
+        H_xp: Mixed Hessian of Lagrangian w.r.t. x then p, shape (n_vars, n_params).
+        dg_dp: Active constraint parameter Jacobian, shape (n_active, n_params), or None.
+        n_vars: Number of primal variables.
+        n_active: Number of active constraints (including active bounds).
+    """
+
+    dx_dp: jnp.ndarray
+    dlambda_dp: Optional[jnp.ndarray]
+    KKT_matrix: Optional[jnp.ndarray]
+    H_xp: jnp.ndarray
+    dg_dp: Optional[jnp.ndarray]
+    n_vars: int
+    n_active: int
+
+
 def implicit_differentiate(
     model: Model,
     x_star: jnp.ndarray,
@@ -683,7 +709,7 @@ def implicit_differentiate(
     p_flat: jnp.ndarray,
     active_constraint_indices: list[int],
     active_bound_indices: list[int],
-) -> jnp.ndarray:
+) -> SensitivityInfo:
     """Compute dx/dp via implicit differentiation of the KKT system.
 
     Builds and solves the KKT linear system to obtain the sensitivity of the
@@ -698,7 +724,7 @@ def implicit_differentiate(
         active_bound_indices: Indices of variables at their bounds.
 
     Returns:
-        dx_dp: Matrix of shape (n_vars, n_params) giving dx*/dp.
+        SensitivityInfo with dx_dp, dlambda_dp, KKT matrix, and intermediate data.
     """
     obj_fn = _compile_parametric_objective(model)
     constraint_fns = []
@@ -737,7 +763,15 @@ def implicit_differentiate(
     if n_active == 0:
         # No active constraints or bounds: just solve H_xx dx/dp = -H_xp
         dx_dp = jnp.linalg.solve(H_xx, -H_xp)
-        return dx_dp
+        return SensitivityInfo(
+            dx_dp=dx_dp,
+            dlambda_dp=None,
+            KKT_matrix=H_xx,
+            H_xp=H_xp,
+            dg_dp=None,
+            n_vars=n_vars,
+            n_active=0,
+        )
 
     # J_a: Jacobian of active constraints w.r.t. x (n_active x n_vars)
     # dg_dp: Jacobian of active constraints w.r.t. p (n_active x n_params)
@@ -778,7 +812,17 @@ def implicit_differentiate(
     # Solve the linear system
     solution = jnp.linalg.solve(KKT, rhs)
     dx_dp = solution[:n_vars, :]
-    return dx_dp
+    dlambda_dp = solution[n_vars:, :]
+
+    return SensitivityInfo(
+        dx_dp=dx_dp,
+        dlambda_dp=dlambda_dp,
+        KKT_matrix=KKT,
+        H_xp=H_xp,
+        dg_dp=dg_dp,
+        n_vars=n_vars,
+        n_active=n_active,
+    )
 
 
 def _perturbation_gradient(
@@ -863,6 +907,10 @@ class DiffSolveResultL3(DiffSolveResult):
     Extends DiffSolveResult with:
       - implicit_gradient(param): gradient via KKT implicit differentiation
       - sensitivity_matrix(): full dx*/dp matrix
+      - approximate_resolve(new_params): first-order approximation of x* at new params
+      - dual_sensitivity(param): dlambda*/dp for a given parameter
+      - reduced_hessian(): reduced Hessian projected onto null space of active constraints
+      - sensitivity(dp): fast re-query with cached KKT factorization
       - Falls back to L1 gradient if L3 computation failed
     """
 
@@ -878,6 +926,11 @@ class DiffSolveResultL3(DiffSolveResult):
         _x_star: Optional[jnp.ndarray],
         _p_flat: Optional[jnp.ndarray],
         _l3_failed: bool = False,
+        _dlambda_dp: Optional[np.ndarray] = None,
+        _kkt_matrix: Optional[np.ndarray] = None,
+        _h_xp: Optional[np.ndarray] = None,
+        _dg_dp: Optional[np.ndarray] = None,
+        _n_active: int = 0,
     ):
         super().__init__(status, objective, x, _model, _sensitivity)
         self._dx_dp = _dx_dp
@@ -885,6 +938,11 @@ class DiffSolveResultL3(DiffSolveResult):
         self._x_star = _x_star
         self._p_flat = _p_flat
         self._l3_failed = _l3_failed
+        self._dlambda_dp = _dlambda_dp
+        self._kkt_matrix = _kkt_matrix
+        self._h_xp = _h_xp
+        self._dg_dp = _dg_dp
+        self._n_active = _n_active
 
     def sensitivity_matrix(self) -> Optional[np.ndarray]:
         """Return the full dx*/dp matrix from implicit differentiation.
@@ -929,6 +987,140 @@ class DiffSolveResultL3(DiffSolveResult):
         if param.shape == () or (end - start) == 1:
             return float(total_grad[0])
         return total_grad.reshape(param.shape)
+
+    def approximate_resolve(
+        self, new_params: list[tuple[Parameter, float]]
+    ) -> dict[str, np.ndarray]:
+        """Approximate x*(p') using first-order sensitivity: x* + (dx*/dp) * dp.
+
+        Args:
+            new_params: List of (Parameter, new_value) pairs for perturbed parameters.
+
+        Returns:
+            dict of variable names to approximate optimal values.
+
+        Raises:
+            RuntimeError: If L3 sensitivity computation failed.
+        """
+        if self._l3_failed or self._dx_dp is None or self._p_flat is None:
+            raise RuntimeError("Cannot approximate_resolve: L3 sensitivity not available.")
+        if self._x_star is None:
+            raise RuntimeError("Cannot approximate_resolve: no solution available.")
+
+        n_params = len(self._p_flat)
+        dp = np.zeros(n_params, dtype=np.float64)
+        for param, new_val in new_params:
+            start, end = _get_param_slice(param, self._model)
+            old_vals = np.asarray(self._p_flat[start:end])
+            new_arr = np.atleast_1d(np.asarray(new_val, dtype=np.float64)).ravel()
+            dp[start:end] = new_arr - old_vals
+
+        x_star_flat = np.asarray(self._x_star)
+        dx_dp = np.asarray(self._dx_dp)
+        x_approx = x_star_flat + dx_dp @ dp
+
+        result = {}
+        offset = 0
+        for v in self._model._variables:
+            size = v.size
+            val = x_approx[offset : offset + size]
+            result[v.name] = val.reshape(v.shape) if v.shape != () else val
+            offset += size
+        return result
+
+    def dual_sensitivity(self, param: Parameter) -> Optional[np.ndarray]:
+        """Return dlambda*/dp for a given parameter.
+
+        Shows how constraint multipliers change with parameter perturbation.
+
+        Args:
+            param: A Parameter from the model.
+
+        Returns:
+            Array of shape (n_active, param_size) or None if not available.
+        """
+        if self._dlambda_dp is None:
+            return None
+        start, end = _get_param_slice(param, self._model)
+        return np.asarray(self._dlambda_dp[:, start:end])
+
+    def reduced_hessian(self) -> Optional[np.ndarray]:
+        """Return the reduced Hessian of the Lagrangian projected onto the
+        null space of active constraints.
+
+        Useful for covariance estimation: Cov(p) ~ sigma^2 * inv(Z^T H Z)
+        where Z is the null space basis of the active constraint Jacobian.
+
+        Returns:
+            Array of shape (n_free, n_free), or None if KKT data not available.
+            n_free = n_vars - n_active (dimension of the null space).
+        """
+        if self._kkt_matrix is None:
+            return None
+
+        KKT = np.asarray(self._kkt_matrix)
+        n_active = self._n_active
+
+        if n_active == 0:
+            # No active constraints: reduced Hessian is the full Hessian
+            return KKT.copy()
+
+        n_vars = KKT.shape[0] - n_active
+        H_xx = KKT[:n_vars, :n_vars]
+        J_a = KKT[n_vars:, :n_vars]  # (n_active, n_vars)
+
+        # Compute null space of J_a
+        _, S, Vt = np.linalg.svd(J_a, full_matrices=True)
+        # Null space columns are the last (n_vars - rank) columns of V
+        rank = np.sum(S > 1e-10)
+        Z = Vt[rank:, :].T  # (n_vars, n_free)
+
+        if Z.shape[1] == 0:
+            return np.array([]).reshape(0, 0)
+
+        return Z.T @ H_xx @ Z
+
+    def sensitivity(self, dp: np.ndarray) -> np.ndarray:
+        """Compute dx for a given dp using cached KKT matrix.
+
+        Equivalent to sIPOPT's back-substitution: solves KKT @ [dx; dlam] = new_rhs.
+
+        Args:
+            dp: Parameter perturbation vector of shape (n_params,) or (n_params, k).
+
+        Returns:
+            dx: Primal perturbation, shape (n_vars,) or (n_vars, k).
+        """
+        if self._kkt_matrix is None or self._h_xp is None:
+            raise RuntimeError("Cannot compute sensitivity: KKT data not available.")
+
+        dp = np.asarray(dp, dtype=np.float64)
+        KKT = jnp.array(self._kkt_matrix)
+        H_xp = jnp.array(self._h_xp)
+        n_active = self._n_active
+
+        if dp.ndim == 1:
+            dim = KKT.shape[0]
+            rhs = jnp.zeros(dim, dtype=jnp.float64)
+            rhs = rhs.at[: H_xp.shape[0]].set(-H_xp @ dp)
+            if n_active > 0 and self._dg_dp is not None:
+                dg_dp = jnp.array(self._dg_dp)
+                rhs = rhs.at[H_xp.shape[0] :].set(-dg_dp @ dp)
+            solution = jnp.linalg.solve(KKT, rhs)
+            n_vars = H_xp.shape[0]
+            return np.asarray(solution[:n_vars])
+        else:
+            # Batch: dp is (n_params, k)
+            dim = KKT.shape[0]
+            n_vars = H_xp.shape[0]
+            k = dp.shape[1]
+            rhs = jnp.zeros((dim, k), dtype=jnp.float64)
+            rhs = rhs.at[:n_vars, :].set(-H_xp @ dp)
+            if n_active > 0 and self._dg_dp is not None:
+                dg_dp = jnp.array(self._dg_dp)
+                rhs = rhs.at[n_vars:, :].set(-dg_dp @ dp)
+            solution = jnp.linalg.solve(KKT, rhs)
+            return np.asarray(solution[:n_vars, :])
 
     def __repr__(self) -> str:
         l3_status = "ok" if not self._l3_failed else "fallback_to_L1"
@@ -1014,14 +1206,16 @@ def differentiable_solve_l3(
     # Compute L3 implicit differentiation
     dx_dp = None
     l3_failed = False
+    sens_info: Optional[SensitivityInfo] = None
 
     try:
         active_cons, active_bounds = find_active_set(
             x_star, model, constraint_fns, p_flat, tol=active_tol
         )
-        dx_dp = implicit_differentiate(
+        sens_info = implicit_differentiate(
             model, x_star, multipliers, p_flat, active_cons, active_bounds
         )
+        dx_dp = sens_info.dx_dp
 
         # Check condition number of the result
         if dx_dp is not None and jnp.any(jnp.isnan(dx_dp)) or jnp.any(jnp.isinf(dx_dp)):
@@ -1029,6 +1223,7 @@ def differentiable_solve_l3(
             # Fall back to perturbation smoothing
             l1_sensitivity = _perturbation_gradient(model, p_flat, ipopt_options)
             dx_dp = None
+            sens_info = None
 
     except Exception:
         l3_failed = True
@@ -1054,4 +1249,17 @@ def differentiable_solve_l3(
         _x_star=x_star,
         _p_flat=p_flat,
         _l3_failed=l3_failed,
+        _dlambda_dp=(
+            np.asarray(sens_info.dlambda_dp)
+            if sens_info and sens_info.dlambda_dp is not None
+            else None
+        ),
+        _kkt_matrix=(
+            np.asarray(sens_info.KKT_matrix)
+            if sens_info and sens_info.KKT_matrix is not None
+            else None
+        ),
+        _h_xp=np.asarray(sens_info.H_xp) if sens_info else None,
+        _dg_dp=(np.asarray(sens_info.dg_dp) if sens_info and sens_info.dg_dp is not None else None),
+        _n_active=sens_info.n_active if sens_info else 0,
     )
