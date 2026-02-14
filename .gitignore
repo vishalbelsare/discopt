@@ -30,5 +30,20 @@ build/
 # Benchmark results (timestamped output from make benchmarks)
 /results/
 
+# LaTeX build artifacts
+manuscript/_minted/
+manuscript/*.aux
+manuscript/*.bbl
+manuscript/*.bcf
+manuscript/*.blg
+manuscript/*.dvi
+manuscript/*.fdb_latexmk
+manuscript/*.fls
+manuscript/*.log
+manuscript/*.out
+manuscript/*.run.xml
+manuscript/*.synctex.gz
+manuscript/*.toc
+
 # Jupyter Book
 docs/_build/
