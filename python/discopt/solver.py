@@ -9,6 +9,7 @@ Connects:
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Optional
 
@@ -18,6 +19,9 @@ from scipy.optimize import minimize as scipy_minimize
 from discopt._jax.alphabb import estimate_alpha as _estimate_alpha_jax
 from discopt._jax.nlp_evaluator import NLPEvaluator
 from discopt._rust import PyTreeManager
+from discopt.constants import INFEASIBILITY_SENTINEL as _INFEASIBILITY_SENTINEL
+from discopt.constants import SENTINEL_THRESHOLD as _SENTINEL_THRESHOLD
+from discopt.constants import STARTING_POINT_CLIP as _SPC
 from discopt.modeling.core import (
     Constraint,
     Model,
@@ -26,6 +30,8 @@ from discopt.modeling.core import (
 )
 from discopt.solvers import SolveStatus
 from discopt.solvers.nlp_ipopt import solve_nlp
+
+logger = logging.getLogger(__name__)
 
 
 class _AugmentedEvaluator:
@@ -148,17 +154,8 @@ class _AugmentedEvaluator:
         return augmented_con
 
 
-def _has_nl_repr(model: Model) -> bool:
-    """Check if model was loaded from a .nl file."""
-    return hasattr(model, "_nl_repr") and model._nl_repr is not None
-
-
 def _make_evaluator(model: Model):
     """Create the appropriate evaluator for the model."""
-    if _has_nl_repr(model):
-        from discopt._jax.nl_evaluator import NLPEvaluatorFromNl
-
-        return NLPEvaluatorFromNl(model)
     return NLPEvaluator(model)
 
 
@@ -238,38 +235,10 @@ def _compute_alphabb_bound(evaluator, node_lb, node_ub, alpha):
             result = scipy_minimize(underestimator, x0, method="L-BFGS-B", bounds=bounds)
             if result.fun < best_val:
                 best_val = result.fun
-        except Exception:
+        except (ValueError, ArithmeticError, RuntimeError):
             continue
 
     return best_val if np.isfinite(best_val) else -np.inf
-
-
-def _infer_nl_constraint_bounds(model: Model):
-    """Infer (cl, cu) from .nl constraint senses and rhs values.
-
-    For .nl files, constraint body is evaluated by Rust, and the sense/rhs
-    are stored separately. We need:
-      - '<=' constraints: body <= rhs => cl = -inf, cu = rhs
-      - '==' constraints: body == rhs => cl = rhs, cu = rhs
-      - '>=' constraints: body >= rhs => cl = rhs, cu = inf
-    """
-    cl_list = []
-    cu_list = []
-    for i in range(model._nl_n_constraints):
-        sense = model._nl_constraint_senses[i]
-        rhs = model._nl_constraint_rhs[i]
-        if sense == "<=":
-            cl_list.append(-1e20)
-            cu_list.append(rhs)
-        elif sense == "==":
-            cl_list.append(rhs)
-            cu_list.append(rhs)
-        elif sense == ">=":
-            cl_list.append(rhs)
-            cu_list.append(1e20)
-        else:
-            raise ValueError(f"Unknown constraint sense: {sense}")
-    return cl_list, cu_list
 
 
 def _extract_variable_info(model: Model):
@@ -333,8 +302,8 @@ def _infer_constraint_bounds(model: Model):
 
 def _generate_starting_points(node_lb, node_ub, n_random=2):
     """Generate diverse starting points for multi-start NLP at root node."""
-    lb_clipped = np.clip(node_lb, -100.0, 100.0)
-    ub_clipped = np.clip(node_ub, -100.0, 100.0)
+    lb_clipped = np.clip(node_lb, -_SPC, _SPC)
+    ub_clipped = np.clip(node_ub, -_SPC, _SPC)
     span = ub_clipped - lb_clipped
 
     points = [
@@ -430,12 +399,13 @@ def _solve_root_node_multistart_ipm(
         state = solve_nlp_batch(
             obj_fn, con_fn, x0_batch, xl_batch, xu_batch, g_l_jax, g_u_jax, ipm_opts
         )
-    except Exception:
+    except Exception as e:
+        logger.debug("Root multistart batch IPM failed: %s", e)
         # Fall back: return infeasible sentinel
         return NLPResult(
             status=SolveStatus.ERROR,
             x=np.asarray(starting_points[0]),
-            objective=1e30,
+            objective=_INFEASIBILITY_SENTINEL,
         )
 
     # Unpack batched results: pick best converged solution
@@ -460,7 +430,7 @@ def _solve_root_node_multistart_ipm(
         return NLPResult(
             status=SolveStatus.ERROR,
             x=x_vals[0],
-            objective=1e30,
+            objective=_INFEASIBILITY_SENTINEL,
         )
 
 
@@ -565,6 +535,22 @@ def solve_model(
         Contains solution values, objective, gap, node count, and
         per-layer profiling times (Rust, JAX, Python).
     """
+    # --- Enforce float64 precision ---
+    # JAX defaults to float32 unless JAX_ENABLE_X64=1 is set *before* importing
+    # JAX.  All solver tolerances assume float64; float32 silently degrades
+    # convergence and may return incorrect solutions.
+    import jax.numpy as jnp
+
+    if jnp.zeros(1).dtype != jnp.float64:
+        import warnings
+
+        warnings.warn(
+            "JAX is running in float32 mode.  Set the environment variable "
+            "JAX_ENABLE_X64=1 *before* importing JAX for full solver precision.  "
+            "Results may be inaccurate.",
+            stacklevel=2,
+        )
+
     # --- GDP reformulation: convert indicator/disjunctive/SOS to standard MINLP ---
     from discopt._jax.gdp_reformulate import reformulate_gdp
 
@@ -609,16 +595,15 @@ def solve_model(
         print("Using Ipopt (via cyipopt)")
 
     # --- Problem classification: dispatch LP/QP to specialized solvers ---
-    # Skip LP/QP classification for .nl models: extract_lp_data/extract_qp_data
-    # rely on the DAG expression structure which .nl models don't have.
-    if not _has_nl_repr(model):
-        try:
-            from discopt._jax.problem_classifier import ProblemClass, classify_problem
+    try:
+        from discopt._jax.problem_classifier import ProblemClass, classify_problem
 
-            problem_class = classify_problem(model)
-        except Exception:
-            problem_class = None
+        problem_class = classify_problem(model)
+    except Exception as e:
+        logger.debug("Problem classification failed: %s", e)
+        problem_class = None
 
+    if problem_class is not None:
         if problem_class == ProblemClass.LP:
             return _solve_lp(model, t_start)
         elif problem_class == ProblemClass.QP:
@@ -670,10 +655,7 @@ def solve_model(
     jax_time += time.perf_counter() - t_jax_start
 
     # --- Infer constraint bounds ---
-    if _has_nl_repr(model):
-        cl_list, cu_list = _infer_nl_constraint_bounds(model)
-    else:
-        cl_list, cu_list = _infer_constraint_bounds(model)
+    cl_list, cu_list = _infer_constraint_bounds(model)
     constraint_bounds = list(zip(cl_list, cu_list)) if cl_list else None
 
     # Pre-compute constraint bounds as JAX arrays for batch IPM
@@ -700,10 +682,13 @@ def solve_model(
         _generate_cuts = generate_cuts_at_node
         _bilinear_terms = detect_bilinear_terms(model)
         _cut_pool = CutPool(max_cuts=500)
-        if _has_nl_repr(model):
-            _constraint_senses = list(model._nl_constraint_senses)
-        else:
-            _constraint_senses = [c.sense for c in model._constraints if isinstance(c, Constraint)]
+        _constraint_senses = [c.sense for c in model._constraints if isinstance(c, Constraint)]
+
+    # OA cuts are tangent hyperplanes — only globally valid for convex
+    # constraints.  The general MINLP B&B loop handles non-convex problems
+    # (LP/QP/MILP/MIQP are dispatched above), so disable OA here and rely
+    # on RLT cuts which are always valid for bilinear terms.
+    _oa_enabled = False
 
     # --- Default Ipopt options ---
     opts = dict(ipopt_options) if ipopt_options else {}
@@ -725,16 +710,8 @@ def solve_model(
                     _estimate_alpha_jax(evaluator._obj_fn, lb, ub, n_samples=100)
                 )
                 _use_alphabb = bool(np.any(_alphabb_alpha > 1e-8))
-            except Exception:
-                pass
-        elif _has_nl_repr(model):
-            # FD fallback for .nl models without JAX objective
-            try:
-                _alphabb_alpha = _estimate_alpha_fd(evaluator, lb, ub, n_samples=30)
-                if _alphabb_alpha is not None:
-                    _use_alphabb = bool(np.any(_alphabb_alpha > 1e-8))
-            except Exception:
-                pass
+            except (ValueError, ArithmeticError, RuntimeError) as e:
+                logger.debug("JAX alphaBB estimation failed: %s", e)
 
     # --- McCormick relaxation bounds ---
     _mc_obj_eval = None  # BatchRelaxationEvaluator for midpoint bounds
@@ -745,12 +722,12 @@ def solve_model(
     _mc_mode = mccormick_bounds
 
     if _mc_mode == "auto":
-        if not _has_nl_repr(model) and model._objective is not None:
+        if model._objective is not None:
             _mc_mode = "midpoint"
         else:
             _mc_mode = "none"
 
-    if _mc_mode in ("midpoint", "nlp") and not _has_nl_repr(model) and model._objective is not None:
+    if _mc_mode in ("midpoint", "nlp") and model._objective is not None:
         from discopt._jax.batch_evaluator import BatchRelaxationEvaluator
         from discopt._jax.relaxation_compiler import (
             compile_constraint_relaxation,
@@ -783,7 +760,8 @@ def solve_model(
                             )
                         )
                         _mc_con_senses.append(c.sense)
-        except Exception:
+        except Exception as e:
+            logger.debug("McCormick relaxation setup failed: %s", e)
             _mc_obj_eval = None
             _mc_obj_relax_fn = None
 
@@ -837,7 +815,7 @@ def solve_model(
             # Tighten lower bounds with alphaBB underestimator
             if _use_alphabb:
                 for i in range(n_batch):
-                    if result_lbs[i] < 1e20:
+                    if result_lbs[i] < _SENTINEL_THRESHOLD:
                         try:
                             node_lb_i = np.array(batch_lb[i])
                             node_ub_i = np.array(batch_ub[i])
@@ -845,8 +823,8 @@ def solve_model(
                                 evaluator, node_lb_i, node_ub_i, _alphabb_alpha
                             )
                             result_lbs[i] = max(result_lbs[i], relax_lb)
-                        except Exception:
-                            pass
+                        except (ValueError, ArithmeticError, RuntimeError) as e:
+                            logger.debug("alphaBB bound failed at node %d: %s", i, e)
             # Tighten lower bounds with McCormick relaxation
             if _mc_obj_eval is not None:
                 try:
@@ -882,10 +860,10 @@ def solve_model(
                             )
                         )
                     for i in range(n_batch):
-                        if result_lbs[i] < 1e20 and np.isfinite(mc_lbs[i]):
+                        if result_lbs[i] < _SENTINEL_THRESHOLD and np.isfinite(mc_lbs[i]):
                             result_lbs[i] = max(result_lbs[i], float(mc_lbs[i]))
-                except Exception:
-                    pass
+                except (ValueError, ArithmeticError, RuntimeError) as e:
+                    logger.debug("Batch McCormick bound failed: %s", e)
         else:
             result_ids = np.empty(n_batch, dtype=np.int64)
             result_lbs = np.empty(n_batch, dtype=np.float64)
@@ -923,8 +901,8 @@ def solve_model(
                         # Clip parent solution into child's bounds
                         x0 = np.clip(psol_i, node_lb, node_ub)
                     else:
-                        lb_clipped = np.clip(node_lb, -100.0, 100.0)
-                        ub_clipped = np.clip(node_ub, -100.0, 100.0)
+                        lb_clipped = np.clip(node_lb, -_SPC, _SPC)
+                        ub_clipped = np.clip(node_ub, -_SPC, _SPC)
                         x0 = 0.5 * (lb_clipped + ub_clipped)
                     nlp_result = _solve_node_nlp(
                         _active_evaluator,
@@ -946,8 +924,8 @@ def solve_model(
                                 evaluator, node_lb, node_ub, _alphabb_alpha
                             )
                             nlp_lb = max(nlp_lb, relax_lb)
-                        except Exception:
-                            pass
+                        except (ValueError, ArithmeticError, RuntimeError) as e:
+                            logger.debug("alphaBB bound failed: %s", e)
                     # McCormick relaxation bound
                     if _mc_obj_relax_fn is not None:
                         try:
@@ -981,15 +959,15 @@ def solve_model(
                                 )
                             if np.isfinite(mc_lb):
                                 nlp_lb = max(nlp_lb, mc_lb)
-                        except Exception:
-                            pass
+                        except (ValueError, ArithmeticError, RuntimeError) as e:
+                            logger.debug("McCormick bound failed: %s", e)
                     result_lbs[i] = nlp_lb
                     result_sols[i] = nlp_result.x
                     result_feas[i] = False
                 else:
-                    result_lbs[i] = 1e30
-                    lb_clipped = np.clip(node_lb, -100.0, 100.0)
-                    ub_clipped = np.clip(node_ub, -100.0, 100.0)
+                    result_lbs[i] = _INFEASIBILITY_SENTINEL
+                    lb_clipped = np.clip(node_lb, -_SPC, _SPC)
+                    ub_clipped = np.clip(node_ub, -_SPC, _SPC)
                     result_sols[i] = 0.5 * (lb_clipped + ub_clipped)
                     result_feas[i] = False
         jax_time += time.perf_counter() - t_jax_start
@@ -999,12 +977,12 @@ def solve_model(
         # only: actual branching is done by Rust's most-fractional policy
         # inside process_evaluated(). Full GNN-driven branching requires
         # extending the Rust TreeManager with a set_branch_variable() method.
-        if branching_policy == "gnn" and not _has_nl_repr(model):
+        if branching_policy == "gnn":
             from discopt._jax.gnn_policy import select_branch_variable_gnn
             from discopt._jax.problem_graph import build_graph
 
             for i in range(n_batch):
-                if result_lbs[i] < 1e20:
+                if result_lbs[i] < _SENTINEL_THRESHOLD:
                     node_lb_i = np.array(batch_lb[i])
                     node_ub_i = np.array(batch_ub[i])
                     graph = build_graph(model, result_sols[i], node_lb_i, node_ub_i)
@@ -1013,7 +991,7 @@ def solve_model(
         # --- Optional cut generation (OA + RLT + lift-and-project) ---
         if cutting_planes and _generate_cuts is not None and _cut_pool is not None:
             for i in range(n_batch):
-                if result_lbs[i] < 1e20:  # skip infeasible nodes
+                if result_lbs[i] < _SENTINEL_THRESHOLD:  # skip infeasible nodes
                     node_lb_i = np.array(batch_lb[i])
                     node_ub_i = np.array(batch_ub[i])
                     new_cuts = _generate_cuts(
@@ -1024,6 +1002,7 @@ def solve_model(
                         node_ub_i,
                         constraint_senses=_constraint_senses,
                         bilinear_terms=_bilinear_terms,
+                        oa_enabled=_oa_enabled,
                     )
                     _cut_pool.add_many(new_cuts)
                     # Age and purge stale cuts
@@ -1058,8 +1037,7 @@ def solve_model(
     if incumbent is not None:
         sol_array, obj_val = incumbent
         # Filter out bogus incumbents from infeasible NLP relaxations
-        # (1e30 is the sentinel value set in _solve_node_nlp for infeasible nodes)
-        if obj_val >= 1e20:
+        if obj_val >= _SENTINEL_THRESHOLD:
             incumbent = None
 
     if incumbent is not None:
@@ -1107,19 +1085,14 @@ def _solve_continuous(
     jax_time = time.perf_counter() - t_jax_start
 
     lb, ub = evaluator.variable_bounds
-    lb_clipped = np.clip(lb, -100.0, 100.0)
-    ub_clipped = np.clip(ub, -100.0, 100.0)
+    lb_clipped = np.clip(lb, -_SPC, _SPC)
+    ub_clipped = np.clip(ub, -_SPC, _SPC)
     x0 = 0.5 * (lb_clipped + ub_clipped)
 
     opts = dict(ipopt_options) if ipopt_options else {}
     opts.setdefault("print_level", 0)
 
-    # For .nl models, pass explicit constraint bounds
     constraint_bounds = None
-    if _has_nl_repr(model):
-        cl_list, cu_list = _infer_nl_constraint_bounds(model)
-        if cl_list:
-            constraint_bounds = list(zip(cl_list, cu_list))
 
     t_jax_start = time.perf_counter()
     if nlp_solver == "ripopt":
@@ -1133,18 +1106,17 @@ def _solve_continuous(
 
         # Build sparse Jacobian function if beneficial
         sparse_jac_fn = None
-        if not _has_nl_repr(model):
-            try:
-                from discopt._jax.sparsity import detect_and_color
+        try:
+            from discopt._jax.sparsity import detect_and_color
 
-                result = detect_and_color(model)
-                if result is not None:
-                    from discopt._jax.sparse_jacobian import make_sparse_jac_fn
+            result = detect_and_color(model)
+            if result is not None:
+                from discopt._jax.sparse_jacobian import make_sparse_jac_fn
 
-                    pattern, colors, n_colors, seed = result
-                    sparse_jac_fn = make_sparse_jac_fn(evaluator._cons_fn, pattern, colors, seed)
-            except Exception:
-                pass
+                pattern, colors, n_colors, seed = result
+                sparse_jac_fn = make_sparse_jac_fn(evaluator._cons_fn, pattern, colors, seed)
+        except Exception as e:
+            logger.debug("Sparse Jacobian setup failed: %s", e)
         nlp_result = solve_nlp_sparse_ipm(
             evaluator,
             x0,
@@ -1204,7 +1176,7 @@ def _solve_node_nlp(
         return _solve_node_nlp_ripopt(evaluator, x0, node_lb, node_ub, constraint_bounds, options)
     if nlp_solver == "ipm":
         # JAX IPM requires JAX-compiled _obj_fn/_cons_fn; fall back to ipopt
-        # for non-JAX evaluators (e.g. NLPEvaluatorFromNl from .nl files).
+        # for evaluators without these attributes.
         if not hasattr(evaluator, "_obj_fn"):
             return _solve_node_nlp_ipopt(
                 evaluator, x0, node_lb, node_ub, constraint_bounds, options
@@ -1247,8 +1219,9 @@ def _solve_node_nlp_ripopt(
             constraint_bounds=constraint_bounds,
             options=options,
         )
-    except Exception:
-        return NLPResult(status=SolveStatus.ERROR, x=x0, objective=1e30)
+    except Exception as e:
+        logger.debug("ripopt solver failed: %s", e)
+        return NLPResult(status=SolveStatus.ERROR, x=x0, objective=_INFEASIBILITY_SENTINEL)
 
 
 def _solve_node_nlp_ipm(
@@ -1284,8 +1257,9 @@ def _solve_node_nlp_ipm(
 
     try:
         state = ipm_solve(obj_fn, con_fn, x0_jax, x_l, x_u, g_l, g_u, ipm_opts)
-    except Exception:
-        return NLPResult(status=SolveStatus.ERROR, x=x0, objective=1e30)
+    except Exception as e:
+        logger.debug("IPM solver failed: %s", e)
+        return NLPResult(status=SolveStatus.ERROR, x=x0, objective=_INFEASIBILITY_SENTINEL)
 
     conv = int(state.converged)
     if conv in (1, 2):
@@ -1333,13 +1307,13 @@ def _solve_batch_ipm(
         psols_jax = jnp.array(batch_psols, dtype=jnp.float64)
         has_parent = ~jnp.any(jnp.isnan(psols_jax), axis=1, keepdims=True)
         warm_x0 = jnp.clip(psols_jax, xl_batch, xu_batch)
-        lb_clipped = jnp.clip(xl_batch, -100.0, 100.0)
-        ub_clipped = jnp.clip(xu_batch, -100.0, 100.0)
+        lb_clipped = jnp.clip(xl_batch, -_SPC, _SPC)
+        ub_clipped = jnp.clip(xu_batch, -_SPC, _SPC)
         midpoint_x0 = 0.5 * (lb_clipped + ub_clipped)
         x0_batch = jnp.where(has_parent, warm_x0, midpoint_x0)
     else:
-        lb_clipped = jnp.clip(xl_batch, -100.0, 100.0)
-        ub_clipped = jnp.clip(xu_batch, -100.0, 100.0)
+        lb_clipped = jnp.clip(xl_batch, -_SPC, _SPC)
+        ub_clipped = jnp.clip(xu_batch, -_SPC, _SPC)
         x0_batch = 0.5 * (lb_clipped + ub_clipped)
 
     ipm_opts = IPMOptions(max_iter=int(options.get("max_iter", 200)))
@@ -1348,11 +1322,12 @@ def _solve_batch_ipm(
         state = solve_nlp_batch(
             obj_fn, con_fn, x0_batch, xl_batch, xu_batch, g_l_jax, g_u_jax, ipm_opts
         )
-    except Exception:
+    except Exception as e:
+        logger.debug("Batch IPM failed: %s", e)
         # Fallback: mark all as infeasible
         result_ids = np.array(batch_ids, dtype=np.int64)
         x0_np = np.asarray(x0_batch)
-        result_lbs = np.full(n_batch, 1e30, dtype=np.float64)
+        result_lbs = np.full(n_batch, _INFEASIBILITY_SENTINEL, dtype=np.float64)
         result_sols = x0_np
         result_feas = np.zeros(n_batch, dtype=bool)
         return result_ids, result_lbs, result_sols, result_feas
@@ -1366,7 +1341,7 @@ def _solve_batch_ipm(
     result_lbs = np.where(
         (converged == 1) | (converged == 2) | (converged == 3),
         obj_vals,
-        1e30,
+        _INFEASIBILITY_SENTINEL,
     )
     result_sols = x_vals
     result_feas = np.zeros(n_batch, dtype=bool)  # Let Rust check integrality
@@ -1418,11 +1393,12 @@ def _solve_node_nlp_ipopt(
 
     try:
         x, info = problem.solve(x0.astype(np.float64))
-    except Exception:
+    except Exception as e:
+        logger.debug("Ipopt solver failed: %s", e)
         return NLPResult(
             status=SolveStatus.ERROR,
             x=x0,
-            objective=1e30,
+            objective=_INFEASIBILITY_SENTINEL,
         )
 
     from discopt.solvers.nlp_ipopt import _IPOPT_STATUS_MAP
@@ -1589,21 +1565,22 @@ def _solve_milp_bb(
                 x_vals = np.asarray(state.x)
 
                 ok = (converged == 1) | (converged == 2) | (converged == 3)
-                result_lbs = np.where(ok, obj_vals + lp_data.obj_const, 1e30)
+                result_lbs = np.where(ok, obj_vals + lp_data.obj_const, _INFEASIBILITY_SENTINEL)
                 result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
                 for i in range(n_batch):
                     if ok[i]:
                         result_sols[i] = x_vals[i, :n_vars]
                     else:
-                        lb_c = np.clip(np.array(batch_lb[i]), -100, 100)
-                        ub_c = np.clip(np.array(batch_ub[i]), -100, 100)
+                        lb_c = np.clip(np.array(batch_lb[i]), -_SPC, _SPC)
+                        ub_c = np.clip(np.array(batch_ub[i]), -_SPC, _SPC)
                         result_sols[i] = 0.5 * (lb_c + ub_c)
-            except Exception:
-                result_lbs = np.full(n_batch, 1e30, dtype=np.float64)
+            except Exception as e:
+                logger.debug("Batch LP solve failed: %s", e)
+                result_lbs = np.full(n_batch, _INFEASIBILITY_SENTINEL, dtype=np.float64)
                 result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
                 for i in range(n_batch):
-                    lb_c = np.clip(np.array(batch_lb[i]), -100, 100)
-                    ub_c = np.clip(np.array(batch_ub[i]), -100, 100)
+                    lb_c = np.clip(np.array(batch_lb[i]), -_SPC, _SPC)
+                    ub_c = np.clip(np.array(batch_ub[i]), -_SPC, _SPC)
                     result_sols[i] = 0.5 * (lb_c + ub_c)
             result_feas = np.zeros(n_batch, dtype=bool)
         else:
@@ -1628,14 +1605,15 @@ def _solve_milp_bb(
                         result_lbs[i] = float(state.obj) + lp_data.obj_const
                         result_sols[i] = np.asarray(state.x[:n_vars])
                     else:
-                        result_lbs[i] = 1e30
-                        lb_c = np.clip(node_lb, -100, 100)
-                        ub_c = np.clip(node_ub, -100, 100)
+                        result_lbs[i] = _INFEASIBILITY_SENTINEL
+                        lb_c = np.clip(node_lb, -_SPC, _SPC)
+                        ub_c = np.clip(node_ub, -_SPC, _SPC)
                         result_sols[i] = 0.5 * (lb_c + ub_c)
-                except Exception:
-                    result_lbs[i] = 1e30
-                    lb_c = np.clip(node_lb, -100, 100)
-                    ub_c = np.clip(node_ub, -100, 100)
+                except Exception as e:
+                    logger.debug("Per-node LP/QP solve failed: %s", e)
+                    result_lbs[i] = _INFEASIBILITY_SENTINEL
+                    lb_c = np.clip(node_lb, -_SPC, _SPC)
+                    ub_c = np.clip(node_ub, -_SPC, _SPC)
                     result_sols[i] = 0.5 * (lb_c + ub_c)
 
         jax_time += time.perf_counter() - t_jax_start
@@ -1661,7 +1639,7 @@ def _solve_milp_bb(
 
     if incumbent is not None:
         sol_array, obj_val = incumbent
-        if obj_val >= 1e20:
+        if obj_val >= _SENTINEL_THRESHOLD:
             incumbent = None
 
     if incumbent is not None:
@@ -1768,21 +1746,22 @@ def _solve_miqp_bb(
                 x_vals = np.asarray(state.x)
 
                 ok = (converged == 1) | (converged == 2) | (converged == 3)
-                result_lbs = np.where(ok, obj_vals + qp_data.obj_const, 1e30)
+                result_lbs = np.where(ok, obj_vals + qp_data.obj_const, _INFEASIBILITY_SENTINEL)
                 result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
                 for i in range(n_batch):
                     if ok[i]:
                         result_sols[i] = x_vals[i, :n_vars]
                     else:
-                        lb_c = np.clip(np.array(batch_lb[i]), -100, 100)
-                        ub_c = np.clip(np.array(batch_ub[i]), -100, 100)
+                        lb_c = np.clip(np.array(batch_ub[i]), -_SPC, _SPC)
+                        ub_c = np.clip(np.array(batch_ub[i]), -_SPC, _SPC)
                         result_sols[i] = 0.5 * (lb_c + ub_c)
-            except Exception:
-                result_lbs = np.full(n_batch, 1e30, dtype=np.float64)
+            except Exception as e:
+                logger.debug("Batch QP solve failed: %s", e)
+                result_lbs = np.full(n_batch, _INFEASIBILITY_SENTINEL, dtype=np.float64)
                 result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
                 for i in range(n_batch):
-                    lb_c = np.clip(np.array(batch_lb[i]), -100, 100)
-                    ub_c = np.clip(np.array(batch_ub[i]), -100, 100)
+                    lb_c = np.clip(np.array(batch_lb[i]), -_SPC, _SPC)
+                    ub_c = np.clip(np.array(batch_ub[i]), -_SPC, _SPC)
                     result_sols[i] = 0.5 * (lb_c + ub_c)
             result_feas = np.zeros(n_batch, dtype=bool)
         else:
@@ -1814,14 +1793,15 @@ def _solve_miqp_bb(
                         result_lbs[i] = float(state.obj) + qp_data.obj_const
                         result_sols[i] = np.asarray(state.x[:n_vars])
                     else:
-                        result_lbs[i] = 1e30
-                        lb_c = np.clip(node_lb, -100, 100)
-                        ub_c = np.clip(node_ub, -100, 100)
+                        result_lbs[i] = _INFEASIBILITY_SENTINEL
+                        lb_c = np.clip(node_lb, -_SPC, _SPC)
+                        ub_c = np.clip(node_ub, -_SPC, _SPC)
                         result_sols[i] = 0.5 * (lb_c + ub_c)
-                except Exception:
-                    result_lbs[i] = 1e30
-                    lb_c = np.clip(node_lb, -100, 100)
-                    ub_c = np.clip(node_ub, -100, 100)
+                except Exception as e:
+                    logger.debug("Per-node LP/QP solve failed: %s", e)
+                    result_lbs[i] = _INFEASIBILITY_SENTINEL
+                    lb_c = np.clip(node_lb, -_SPC, _SPC)
+                    ub_c = np.clip(node_ub, -_SPC, _SPC)
                     result_sols[i] = 0.5 * (lb_c + ub_c)
 
         jax_time += time.perf_counter() - t_jax_start
@@ -1847,7 +1827,7 @@ def _solve_miqp_bb(
 
     if incumbent is not None:
         sol_array, obj_val = incumbent
-        if obj_val >= 1e20:
+        if obj_val >= _SENTINEL_THRESHOLD:
             incumbent = None
 
     if incumbent is not None:

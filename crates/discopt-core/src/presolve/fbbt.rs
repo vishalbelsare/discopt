@@ -358,6 +358,40 @@ fn eval_node_interval(
                     // Conservative: tan can diverge, return entire.
                     Interval::entire()
                 }
+                MathFunc::Atan => {
+                    // atan is monotonically increasing, range (-pi/2, pi/2)
+                    Interval::new(a0.lo.atan(), a0.hi.atan())
+                }
+                MathFunc::Sinh => {
+                    // sinh is monotonically increasing
+                    Interval::new(a0.lo.sinh(), a0.hi.sinh())
+                }
+                MathFunc::Cosh => {
+                    // cosh is convex, minimum at 0
+                    if a0.lo >= 0.0 {
+                        Interval::new(a0.lo.cosh(), a0.hi.cosh())
+                    } else if a0.hi <= 0.0 {
+                        Interval::new(a0.hi.cosh(), a0.lo.cosh())
+                    } else {
+                        Interval::new(1.0, a0.lo.cosh().max(a0.hi.cosh()))
+                    }
+                }
+                MathFunc::Asin => {
+                    // asin defined on [-1, 1], monotonically increasing
+                    let lo = a0.lo.max(-1.0).asin();
+                    let hi = a0.hi.min(1.0).asin();
+                    Interval::new(lo, hi)
+                }
+                MathFunc::Acos => {
+                    // acos defined on [-1, 1], monotonically decreasing
+                    let lo = a0.hi.min(1.0).acos();
+                    let hi = a0.lo.max(-1.0).acos();
+                    Interval::new(lo, hi)
+                }
+                MathFunc::Tanh => {
+                    // tanh is monotonically increasing, range (-1, 1)
+                    Interval::new(a0.lo.tanh(), a0.hi.tanh())
+                }
                 MathFunc::Abs => interval_abs(&a0),
                 MathFunc::Sign => Interval::new(-1.0, 1.0),
                 MathFunc::Min => {

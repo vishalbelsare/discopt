@@ -428,6 +428,165 @@ def relax_tan(x, lb, ub):
 
 
 # ---------------------------------------------------------------------------
+# Inverse trigonometric: atan, asin, acos
+# ---------------------------------------------------------------------------
+
+
+def relax_atan(x, lb, ub):
+    """McCormick relaxation of atan(x) on [lb, ub].
+
+    atan is concave on [0, inf) and convex on (-inf, 0].
+    Returns (cv, cc).
+    """
+    f = jnp.arctan
+
+    # Case 1: lb >= 0 -> concave: cv = secant, cc = f(x)
+    case1_cv = _secant(f, x, lb, ub)
+    case1_cc = f(x)
+
+    # Case 2: ub <= 0 -> convex: cv = f(x), cc = secant
+    case2_cv = f(x)
+    case2_cc = _secant(f, x, lb, ub)
+
+    # Case 3: lb < 0 < ub -> mixed
+    sec_neg = _secant(f, x, lb, 0.0)
+    sec_pos = _secant(f, x, 0.0, ub)
+    case3_cv = jnp.where(x >= 0, sec_pos, f(x))
+    case3_cc = jnp.where(x >= 0, f(x), sec_neg)
+
+    is_concave = lb >= 0
+    is_convex = ub <= 0
+
+    cv = jnp.where(is_concave, case1_cv, jnp.where(is_convex, case2_cv, case3_cv))
+    cc = jnp.where(is_concave, case1_cc, jnp.where(is_convex, case2_cc, case3_cc))
+    return cv, cc
+
+
+def relax_asin(x, lb, ub):
+    """McCormick relaxation of asin(x) on [lb, ub] (subset of [-1, 1]).
+
+    asin is convex on [-1, 0] and concave on [0, 1].
+    Returns (cv, cc).
+    """
+    f = jnp.arcsin
+
+    case1_cv = _secant(f, x, lb, ub)
+    case1_cc = f(x)
+
+    case2_cv = f(x)
+    case2_cc = _secant(f, x, lb, ub)
+
+    sec_neg = _secant(f, x, lb, 0.0)
+    sec_pos = _secant(f, x, 0.0, ub)
+    case3_cv = jnp.where(x >= 0, sec_pos, f(x))
+    case3_cc = jnp.where(x >= 0, f(x), sec_neg)
+
+    is_concave = lb >= 0
+    is_convex = ub <= 0
+
+    cv = jnp.where(is_concave, case1_cv, jnp.where(is_convex, case2_cv, case3_cv))
+    cc = jnp.where(is_concave, case1_cc, jnp.where(is_convex, case2_cc, case3_cc))
+    return cv, cc
+
+
+def relax_acos(x, lb, ub):
+    """McCormick relaxation of acos(x) on [lb, ub] (subset of [-1, 1]).
+
+    acos is concave on [-1, 0] and convex on [0, 1] (decreasing).
+    Returns (cv, cc).
+    """
+    f = jnp.arccos
+
+    case1_cv = f(x)
+    case1_cc = _secant(f, x, lb, ub)
+
+    case2_cv = _secant(f, x, lb, ub)
+    case2_cc = f(x)
+
+    sec_neg = _secant(f, x, lb, 0.0)
+    sec_pos = _secant(f, x, 0.0, ub)
+    case3_cv = jnp.where(x >= 0, f(x), sec_neg)
+    case3_cc = jnp.where(x >= 0, sec_pos, f(x))
+
+    is_convex = lb >= 0
+    is_concave = ub <= 0
+
+    cv = jnp.where(is_convex, case1_cv, jnp.where(is_concave, case2_cv, case3_cv))
+    cc = jnp.where(is_convex, case1_cc, jnp.where(is_concave, case2_cc, case3_cc))
+    return cv, cc
+
+
+# ---------------------------------------------------------------------------
+# Hyperbolic: sinh, cosh, tanh
+# ---------------------------------------------------------------------------
+
+
+def relax_sinh(x, lb, ub):
+    """McCormick relaxation of sinh(x) on [lb, ub].
+
+    sinh is convex on [0, inf) and concave on (-inf, 0].
+    Returns (cv, cc).
+    """
+    f = jnp.sinh
+
+    case1_cv = f(x)
+    case1_cc = _secant(f, x, lb, ub)
+
+    case2_cv = _secant(f, x, lb, ub)
+    case2_cc = f(x)
+
+    sec_neg = _secant(f, x, lb, 0.0)
+    sec_pos = _secant(f, x, 0.0, ub)
+    case3_cv = jnp.where(x >= 0, f(x), sec_neg)
+    case3_cc = jnp.where(x >= 0, sec_pos, f(x))
+
+    is_convex = lb >= 0
+    is_concave = ub <= 0
+
+    cv = jnp.where(is_convex, case1_cv, jnp.where(is_concave, case2_cv, case3_cv))
+    cc = jnp.where(is_convex, case1_cc, jnp.where(is_concave, case2_cc, case3_cc))
+    return cv, cc
+
+
+def relax_cosh(x, lb, ub):
+    """McCormick relaxation of cosh(x) on [lb, ub].
+
+    cosh is convex everywhere.
+    Returns (cv, cc).
+    """
+    cv = jnp.cosh(x)
+    cc = _secant(jnp.cosh, x, lb, ub)
+    return cv, cc
+
+
+def relax_tanh(x, lb, ub):
+    """McCormick relaxation of tanh(x) on [lb, ub].
+
+    tanh is concave on [0, inf) and convex on (-inf, 0].
+    Returns (cv, cc).
+    """
+    f = jnp.tanh
+
+    case1_cv = _secant(f, x, lb, ub)
+    case1_cc = f(x)
+
+    case2_cv = f(x)
+    case2_cc = _secant(f, x, lb, ub)
+
+    sec_neg = _secant(f, x, lb, 0.0)
+    sec_pos = _secant(f, x, 0.0, ub)
+    case3_cv = jnp.where(x >= 0, sec_pos, f(x))
+    case3_cc = jnp.where(x >= 0, f(x), sec_neg)
+
+    is_concave = lb >= 0
+    is_convex = ub <= 0
+
+    cv = jnp.where(is_concave, case1_cv, jnp.where(is_convex, case2_cv, case3_cv))
+    cc = jnp.where(is_concave, case1_cc, jnp.where(is_convex, case2_cc, case3_cc))
+    return cv, cc
+
+
+# ---------------------------------------------------------------------------
 # Composite: sign, min, max
 # ---------------------------------------------------------------------------
 

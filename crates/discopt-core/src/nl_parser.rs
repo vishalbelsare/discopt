@@ -355,13 +355,10 @@ fn parse_opcode(
         }
         // Math functions (unary)
         37 => {
-            // o37: atan — not in MathFunc, approximate with Tan inverse.
-            // We don't have atan in the IR; store as a generic approach.
-            // For now, treat atan(x) as a function call to Tan (placeholder).
-            // TODO: Add Atan to MathFunc if needed.
+            // o37: atan
             let arg = parse_expr(reader, arena, var_nodes)?;
             Ok(arena.add(ExprNode::FunctionCall {
-                func: MathFunc::Tan, // closest available
+                func: MathFunc::Atan,
                 args: vec![arg],
             }))
         }
@@ -390,19 +387,18 @@ fn parse_opcode(
             }))
         }
         41 => {
-            // o41: sinh — not in IR, use Exp-based identity later.
-            // For now, store as Exp (placeholder).
+            // o41: sinh
             let arg = parse_expr(reader, arena, var_nodes)?;
             Ok(arena.add(ExprNode::FunctionCall {
-                func: MathFunc::Exp, // placeholder
+                func: MathFunc::Sinh,
                 args: vec![arg],
             }))
         }
         42 => {
-            // o42: asin — not in IR, placeholder as Sin.
+            // o42: asin
             let arg = parse_expr(reader, arena, var_nodes)?;
             Ok(arena.add(ExprNode::FunctionCall {
-                func: MathFunc::Sin, // placeholder
+                func: MathFunc::Asin,
                 args: vec![arg],
             }))
         }
@@ -451,11 +447,27 @@ fn parse_opcode(
                 args: vec![arg],
             }))
         }
-        51 => {
-            // o51: tanh — not in IR, placeholder as Tan.
+        49 => {
+            // o49: cosh
             let arg = parse_expr(reader, arena, var_nodes)?;
             Ok(arena.add(ExprNode::FunctionCall {
-                func: MathFunc::Tan, // placeholder
+                func: MathFunc::Cosh,
+                args: vec![arg],
+            }))
+        }
+        51 => {
+            // o51: tanh
+            let arg = parse_expr(reader, arena, var_nodes)?;
+            Ok(arena.add(ExprNode::FunctionCall {
+                func: MathFunc::Tanh,
+                args: vec![arg],
+            }))
+        }
+        53 => {
+            // o53: acos
+            let arg = parse_expr(reader, arena, var_nodes)?;
+            Ok(arena.add(ExprNode::FunctionCall {
+                func: MathFunc::Acos,
                 args: vec![arg],
             }))
         }

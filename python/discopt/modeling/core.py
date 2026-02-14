@@ -1517,13 +1517,14 @@ def from_nl(path: str) -> Model:
     -------
     Model
         A Model ready to solve. The NLP evaluation is delegated to the
-        Rust backend (``NLPEvaluatorFromNl``).
+        the standard ``NLPEvaluator`` with JAX autodiff.
 
     Examples
     --------
     >>> model = dm.from_nl("problem.nl")
     >>> result = model.solve()
     """
+    from discopt._jax.nl_reconstruction import reconstruct_dag
     from discopt._rust import parse_nl_file
 
     nl_repr = parse_nl_file(path)
@@ -1555,17 +1556,26 @@ def from_nl(path: str) -> Model:
         elif vt == "integer":
             m.integer(name, shape=shape, lb=lb, ub=ub)
 
-    # Set a dummy objective (the real evaluation comes from _nl_repr)
-    if nl_repr.objective_sense == "minimize":
-        m.minimize(Constant(0.0))
-    else:
-        m.maximize(Constant(0.0))
+    # Reconstruct the expression DAG from the Rust arena
+    objective_expr, constraint_tuples = reconstruct_dag(nl_repr, m._variables)
 
-    # Store constraint info for the solver
+    # Set the objective with the reconstructed expression
+    if nl_repr.objective_sense == "minimize":
+        m.minimize(objective_expr)
+    else:
+        m.maximize(objective_expr)
+
+    # Add constraints from the reconstructed DAG
+    for body, sense, rhs in constraint_tuples:
+        if sense == "<=":
+            m.subject_to(body <= rhs)
+        elif sense == ">=":
+            m.subject_to(body >= rhs)
+        elif sense == "==":
+            m.subject_to(body == rhs)
+
+    # Keep nl_repr for backward compatibility (Rust evaluator for validation)
     m._nl_repr = nl_repr
-    m._nl_n_constraints = nl_repr.n_constraints
-    m._nl_constraint_senses = [nl_repr.constraint_sense(i) for i in range(nl_repr.n_constraints)]
-    m._nl_constraint_rhs = [nl_repr.constraint_rhs(i) for i in range(nl_repr.n_constraints)]
 
     return m
 

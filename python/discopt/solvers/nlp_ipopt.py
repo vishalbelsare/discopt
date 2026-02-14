@@ -23,10 +23,16 @@ from discopt.solvers import NLPResult, SolveStatus
 
 # Ipopt status code mapping
 # See: https://coin-or.github.io/Ipopt/IpReturnCodes_8inc.html
+#
+# NOTE: Status 2 ("Infeasible_Problem_Detected") is mapped to ERROR rather
+# than INFEASIBLE because IPOPT can only detect *local* infeasibility.
+# For non-convex NLPs the problem may still be feasible from a different
+# starting point.  Mapping to ERROR prevents the solver from confidently
+# reporting "infeasible" when the problem is merely hard to solve.
 _IPOPT_STATUS_MAP: dict[int, SolveStatus] = {
     0: SolveStatus.OPTIMAL,  # Solve_Succeeded
     1: SolveStatus.OPTIMAL,  # Solved_To_Acceptable_Level
-    2: SolveStatus.INFEASIBLE,  # Infeasible_Problem_Detected
+    2: SolveStatus.ERROR,  # Infeasible_Problem_Detected (local only)
     3: SolveStatus.UNBOUNDED,  # Search_Direction_Becomes_Too_Small
     4: SolveStatus.ERROR,  # Diverging_Iterates
     5: SolveStatus.ERROR,  # User_Requested_Stop

@@ -64,6 +64,18 @@ pub enum MathFunc {
     Cos,
     /// Tangent.
     Tan,
+    /// Arctangent.
+    Atan,
+    /// Hyperbolic sine.
+    Sinh,
+    /// Hyperbolic cosine.
+    Cosh,
+    /// Inverse sine (arcsine).
+    Asin,
+    /// Inverse cosine (arccosine).
+    Acos,
+    /// Hyperbolic tangent.
+    Tanh,
     /// Absolute value.
     Abs,
     /// Sign function (-1, 0, or 1).
@@ -419,6 +431,12 @@ impl ExprArena {
                     | MathFunc::Sin
                     | MathFunc::Cos
                     | MathFunc::Tan
+                    | MathFunc::Atan
+                    | MathFunc::Sinh
+                    | MathFunc::Cosh
+                    | MathFunc::Asin
+                    | MathFunc::Acos
+                    | MathFunc::Tanh
                     | MathFunc::Norm2 => usize::MAX,
                     // abs, sign: not strictly polynomial but handled specially
                     MathFunc::Abs | MathFunc::Sign => usize::MAX,
@@ -575,6 +593,12 @@ impl ExprArena {
                     MathFunc::Sin => a0.sin(),
                     MathFunc::Cos => a0.cos(),
                     MathFunc::Tan => a0.tan(),
+                    MathFunc::Atan => a0.atan(),
+                    MathFunc::Sinh => a0.sinh(),
+                    MathFunc::Cosh => a0.cosh(),
+                    MathFunc::Asin => a0.asin(),
+                    MathFunc::Acos => a0.acos(),
+                    MathFunc::Tanh => a0.tanh(),
                     MathFunc::Abs => a0.abs(),
                     MathFunc::Sign => {
                         if a0 > 0.0 {
@@ -797,6 +821,12 @@ impl ModelRepr {
                     MathFunc::Sin => a0.sin(),
                     MathFunc::Cos => a0.cos(),
                     MathFunc::Tan => a0.tan(),
+                    MathFunc::Atan => a0.atan(),
+                    MathFunc::Sinh => a0.sinh(),
+                    MathFunc::Cosh => a0.cosh(),
+                    MathFunc::Asin => a0.asin(),
+                    MathFunc::Acos => a0.acos(),
+                    MathFunc::Tanh => a0.tanh(),
                     MathFunc::Abs => a0.abs(),
                     MathFunc::Sign => {
                         if a0 > 0.0 { 1.0 } else if a0 < 0.0 { -1.0 } else { 0.0 }

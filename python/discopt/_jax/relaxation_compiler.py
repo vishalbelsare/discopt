@@ -19,9 +19,13 @@ if TYPE_CHECKING:
 
 from discopt._jax.mccormick import (
     relax_abs,
+    relax_acos,
     relax_add,
+    relax_asin,
+    relax_atan,
     relax_bilinear,
     relax_cos,
+    relax_cosh,
     relax_div,
     relax_exp,
     relax_log,
@@ -31,9 +35,11 @@ from discopt._jax.mccormick import (
     relax_pow,
     relax_sign,
     relax_sin,
+    relax_sinh,
     relax_sqrt,
     relax_sub,
     relax_tan,
+    relax_tanh,
 )
 from discopt._jax.piecewise_mccormick import (
     piecewise_mccormick_bilinear,
@@ -361,6 +367,12 @@ def _compile_relax_node(
             "sin": relax_sin,
             "cos": relax_cos,
             "tan": relax_tan,
+            "atan": relax_atan,
+            "sinh": relax_sinh,
+            "cosh": relax_cosh,
+            "asin": relax_asin,
+            "acos": relax_acos,
+            "tanh": relax_tanh,
             "abs": relax_abs,
         }
 

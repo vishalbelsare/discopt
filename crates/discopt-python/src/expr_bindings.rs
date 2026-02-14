@@ -4,7 +4,7 @@
 //! and exposes evaluation functions for round-trip verification.
 
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
+use pyo3::types::{PyDict, PyTuple};
 
 use discopt_core::expr::{
     BinOp, ConstraintRepr, ConstraintSense, ExprArena, ExprId, ExprNode, IndexSpec, MathFunc,
@@ -143,6 +143,139 @@ impl PyModelRepr {
     /// Constraint right-hand side.
     fn constraint_rhs(&self, i: usize) -> f64 {
         self.inner.constraints[i].rhs
+    }
+
+    /// Number of nodes in the expression arena (alias for arena access).
+    fn arena_len(&self) -> usize {
+        self.inner.arena.len()
+    }
+
+    /// Return a Python dict describing arena node at `idx`.
+    fn get_node(&self, py: Python<'_>, idx: usize) -> PyResult<PyObject> {
+        if idx >= self.inner.arena.len() {
+            return Err(PyErr::new::<pyo3::exceptions::PyIndexError, _>(format!(
+                "node index {idx} out of range (arena has {} nodes)",
+                self.inner.arena.len()
+            )));
+        }
+        let node = self.inner.arena.get(ExprId(idx));
+        let dict = PyDict::new(py);
+        match node {
+            ExprNode::Constant(v) => {
+                dict.set_item("type", "constant")?;
+                dict.set_item("value", *v)?;
+            }
+            ExprNode::ConstantArray(data, shape) => {
+                dict.set_item("type", "constant_array")?;
+                dict.set_item("value", data.clone())?;
+                dict.set_item("shape", shape.clone())?;
+            }
+            ExprNode::Variable { name, index, size, shape } => {
+                dict.set_item("type", "variable")?;
+                dict.set_item("name", name.clone())?;
+                dict.set_item("index", *index)?;
+                dict.set_item("size", *size)?;
+                dict.set_item("shape", shape.clone())?;
+            }
+            ExprNode::Parameter { name, value, shape } => {
+                dict.set_item("type", "parameter")?;
+                dict.set_item("name", name.clone())?;
+                dict.set_item("value", value.clone())?;
+                dict.set_item("shape", shape.clone())?;
+            }
+            ExprNode::BinaryOp { op, left, right } => {
+                dict.set_item("type", "binary_op")?;
+                dict.set_item("op", match op {
+                    BinOp::Add => "+",
+                    BinOp::Sub => "-",
+                    BinOp::Mul => "*",
+                    BinOp::Div => "/",
+                    BinOp::Pow => "**",
+                })?;
+                dict.set_item("left", left.0)?;
+                dict.set_item("right", right.0)?;
+            }
+            ExprNode::UnaryOp { op, operand } => {
+                dict.set_item("type", "unary_op")?;
+                dict.set_item("op", match op {
+                    UnOp::Neg => "neg",
+                    UnOp::Abs => "abs",
+                })?;
+                dict.set_item("arg", operand.0)?;
+            }
+            ExprNode::FunctionCall { func, args } => {
+                dict.set_item("type", "function_call")?;
+                dict.set_item("func", match func {
+                    MathFunc::Exp => "exp",
+                    MathFunc::Log => "log",
+                    MathFunc::Log2 => "log2",
+                    MathFunc::Log10 => "log10",
+                    MathFunc::Sqrt => "sqrt",
+                    MathFunc::Sin => "sin",
+                    MathFunc::Cos => "cos",
+                    MathFunc::Tan => "tan",
+                    MathFunc::Atan => "atan",
+                    MathFunc::Sinh => "sinh",
+                    MathFunc::Cosh => "cosh",
+                    MathFunc::Asin => "asin",
+                    MathFunc::Acos => "acos",
+                    MathFunc::Tanh => "tanh",
+                    MathFunc::Abs => "abs",
+                    MathFunc::Sign => "sign",
+                    MathFunc::Min => "min",
+                    MathFunc::Max => "max",
+                    MathFunc::Prod => "prod",
+                    MathFunc::Norm2 => "norm2",
+                })?;
+                let arg_indices: Vec<usize> = args.iter().map(|a| a.0).collect();
+                dict.set_item("args", arg_indices)?;
+            }
+            ExprNode::Index { base, index } => {
+                dict.set_item("type", "index")?;
+                dict.set_item("base", base.0)?;
+                match index {
+                    IndexSpec::Scalar(i) => dict.set_item("index_spec", *i)?,
+                    IndexSpec::Tuple(indices) => dict.set_item("index_spec", indices.clone())?,
+                }
+            }
+            ExprNode::MatMul { left, right } => {
+                dict.set_item("type", "matmul")?;
+                dict.set_item("left", left.0)?;
+                dict.set_item("right", right.0)?;
+            }
+            ExprNode::Sum { operand, axis } => {
+                dict.set_item("type", "sum")?;
+                dict.set_item("operand", operand.0)?;
+                dict.set_item("axis", *axis)?;
+            }
+            ExprNode::SumOver { terms } => {
+                dict.set_item("type", "sum_over")?;
+                let term_indices: Vec<usize> = terms.iter().map(|t| t.0).collect();
+                dict.set_item("terms", term_indices)?;
+            }
+        }
+        Ok(dict.into())
+    }
+
+    /// ExprId (index) of the objective expression root.
+    fn objective_id(&self) -> usize {
+        self.inner.objective.0
+    }
+
+    /// ExprId (index) of each constraint expression root.
+    fn constraint_ids(&self) -> Vec<usize> {
+        self.inner.constraints.iter().map(|c| c.body.0).collect()
+    }
+
+    /// (expr_id, sense, rhs) for constraint i.
+    fn constraint_info(&self, i: usize) -> (usize, String, f64) {
+        let c = &self.inner.constraints[i];
+        let sense = match c.sense {
+            ConstraintSense::Le => "<=".to_string(),
+            ConstraintSense::Eq => "==".to_string(),
+            ConstraintSense::Ge => ">=".to_string(),
+        };
+        (c.body.0, sense, c.rhs)
     }
 
     /// Evaluate the objective at a given point x.
@@ -421,6 +554,12 @@ fn convert_expr(
                 "sin" => MathFunc::Sin,
                 "cos" => MathFunc::Cos,
                 "tan" => MathFunc::Tan,
+                "atan" => MathFunc::Atan,
+                "sinh" => MathFunc::Sinh,
+                "cosh" => MathFunc::Cosh,
+                "asin" => MathFunc::Asin,
+                "acos" => MathFunc::Acos,
+                "tanh" => MathFunc::Tanh,
                 "abs" => MathFunc::Abs,
                 "sign" => MathFunc::Sign,
                 "min" => MathFunc::Min,

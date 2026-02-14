@@ -513,6 +513,7 @@ def generate_cuts_at_node(
     constraint_senses: list[str] | None = None,
     bilinear_terms: list[BilinearTerm] | None = None,
     tol: float = 1e-8,
+    oa_enabled: bool = True,
 ) -> list[LinearCut]:
     """Generate all applicable cuts at a B&B node solution.
 
@@ -532,15 +533,21 @@ def generate_cuts_at_node(
         constraint_senses: list of senses for each constraint.
         bilinear_terms: pre-detected bilinear terms (avoids re-scanning).
         tol: violation tolerance.
+        oa_enabled: If True, generate OA (outer approximation) cuts for violated
+            constraints.  OA cuts are tangent hyperplanes that are only globally
+            valid when all constraints are convex.  For non-convex problems, set
+            this to False to avoid cutting off feasible integer points.  RLT cuts
+            are always generated regardless of this flag.
 
     Returns:
         List of LinearCut objects (OA + RLT).
     """
     cuts: list[LinearCut] = []
 
-    # OA cuts for violated constraints
-    oa = separate_oa_cuts(evaluator, x_sol, constraint_senses, tol)
-    cuts.extend(oa)
+    # OA cuts for violated constraints (only valid for convex constraints)
+    if oa_enabled:
+        oa = separate_oa_cuts(evaluator, x_sol, constraint_senses, tol)
+        cuts.extend(oa)
 
     # RLT cuts for bilinear terms using current node bounds
     if bilinear_terms is None:

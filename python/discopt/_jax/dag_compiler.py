@@ -134,6 +134,12 @@ def _compile_node(expr: Expression, model: Model) -> Callable:
             "sin": jnp.sin,
             "cos": jnp.cos,
             "tan": jnp.tan,
+            "atan": jnp.arctan,
+            "sinh": jnp.sinh,
+            "cosh": jnp.cosh,
+            "asin": jnp.arcsin,
+            "acos": jnp.arccos,
+            "tanh": jnp.tanh,
             "abs": jnp.abs,
             "sign": jnp.sign,
         }

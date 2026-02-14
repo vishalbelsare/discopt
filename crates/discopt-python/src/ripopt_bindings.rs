@@ -173,6 +173,7 @@ fn status_to_string(status: ripopt::SolveStatus) -> &'static str {
         ripopt::SolveStatus::Unbounded => "unbounded",
         ripopt::SolveStatus::RestorationFailed => "restoration_failed",
         ripopt::SolveStatus::InternalError => "internal_error",
+        ripopt::SolveStatus::LocalInfeasibility => "local_infeasibility",
     }
 }
 

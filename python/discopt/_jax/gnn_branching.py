@@ -191,9 +191,7 @@ def collect_strong_branching_data(
     from discopt._rust import PyTreeManager
     from discopt.solver import (
         _extract_variable_info,
-        _has_nl_repr,
         _infer_constraint_bounds,
-        _infer_nl_constraint_bounds,
         _solve_node_nlp,
     )
 
@@ -202,15 +200,8 @@ def collect_strong_branching_data(
     tree = PyTreeManager(n_vars, lb.tolist(), ub.tolist(), int_offsets, int_sizes, "best_first")
     tree.initialize()
 
-    evaluator: NLPEvaluator
-    if _has_nl_repr(model):
-        from discopt._jax.nl_evaluator import NLPEvaluatorFromNl
-
-        evaluator = NLPEvaluatorFromNl(model)  # type: ignore[assignment]
-        cl_list, cu_list = _infer_nl_constraint_bounds(model)
-    else:
-        evaluator = NLPEvaluator(model)
-        cl_list, cu_list = _infer_constraint_bounds(model)
+    evaluator = NLPEvaluator(model)
+    cl_list, cu_list = _infer_constraint_bounds(model)
 
     constraint_bounds = list(zip(cl_list, cu_list)) if cl_list else None
 
@@ -334,9 +325,8 @@ def collect_strong_branching_data(
         best_var = max(sb_scores, key=lambda k: sb_scores[k])
 
         # Build the graph for this node state
-        if not _has_nl_repr(model):
-            graph = build_graph(model, solution, node_lb, node_ub)
-            training_data.append((graph, best_var))
+        graph = build_graph(model, solution, node_lb, node_ub)
+        training_data.append((graph, best_var))
 
         # Import results to Rust and let it branch (most-fractional)
         result_ids = np.array([int(batch_ids[0])], dtype=np.int64)
