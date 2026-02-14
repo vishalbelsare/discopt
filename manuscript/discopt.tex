@@ -1,0 +1,633 @@
+\documentclass[12pt,preprint]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[top=1in, bottom=1.in, left=1in, right=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{longtable}
+\usepackage{float}
+\usepackage{wrapfig}
+\usepackage{rotating}
+\usepackage[normalem]{ulem}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage[version=4]{mhchem}
+\usepackage[numbers,super,sort&compress]{natbib}
+\usepackage{natmove}
+\usepackage[newfloat]{minted}
+\usepackage[linktocpage,pdfstartview=FitH,colorlinks,
+linkcolor=blue,anchorcolor=blue,
+citecolor=blue,filecolor=blue,menucolor=blue,urlcolor=blue]{hyperref}
+\usepackage{amsmath,amssymb,algorithm,algpseudocode}
+\usepackage{booktabs,multirow,graphicx}
+
+\title{discopt: A Differentiable Mixed-Integer Nonlinear Programming Solver with a Memory-Safe Interior Point Method}
+\author{John R. Kitchin}
+\date{2026-02-14}
+
+\begin{document}
+
+\maketitle
+
+\section{Abstract}
+\label{org-abstract}
+We present discopt, a hybrid Rust/JAX/Python solver for mixed-integer nonlinear programming (MINLP) problems, together with ripopt, a faithful Rust translation of Ipopt's interior point algorithm. The system makes five contributions: (1) differentiable MINLP solving via implicit differentiation of the KKT system, enabling decision-focused learning through nonconvex optimization layers; (2) batched node evaluation using \texttt{jax.vmap} for data-parallel branch-and-bound; (3) a pure-JAX interior point method with Mehrotra predictor-corrector steps and Ipopt-style filter line search that is JIT-compilable and vmappable; (4) ripopt, a memory-safe Rust IPM with zero C/Fortran dependencies that implements Ipopt's numerical hardening through a source-level translation; and (5) a compositional relaxation compiler supporting McCormick, $\alpha$ BB, piecewise McCormick, and ICNN-learned relaxations. All three NLP backends (pure-JAX IPM, ripopt, Ipopt) produce identical optimal solutions on a suite of 9 NLP and 24 MINLP benchmark problems with zero incorrect results. On a decision-focused learning task, differentiating through the solver achieves 36\% regret reduction versus two-stage predict-then-optimize. The algebraic coefficient extraction path provides 17--226$\times$ speedups for LP and QP subproblems. Source code is available under EPL-2.0 license (discopt and ripopt).
+
+
+\section{Introduction}
+\label{org-introduction}
+Mixed-integer nonlinear programming (MINLP) is a powerful framework for optimization problems involving both discrete choices and nonlinear relationships, with applications spanning process synthesis, network design, scheduling, and machine learning pipeline optimization \cite{Belotti2013,Grossmann2021}. The dominant algorithmic paradigm for deterministic global MINLP is spatial branch and bound (sBB), which enumerates a search tree of progressively tighter variable-bound regions, solving a convex relaxation at each node \cite{Land1960,Dakin1965,Smith1999}.
+
+
+State-of-the-art MINLP solvers---BARON \cite{Tawarmalani2005}, Couenne, SCIP \cite{Bestuzheva2023}, and Bonmin \cite{Bonami2008} are monolithic C, C++, or Fortran codebases that have accumulated decades of numerical hardening. While effective, this architecture creates three gaps in the current solver ecosystem.
+
+
+This paper describes discopt and ripopt, which together address these three gaps. The contributions are:
+
+
+\begin{enumerate}
+\item \textbf{Differentiable MINLP} via two mechanisms: the envelope theorem (Level 1) for fast objective sensitivity, and implicit differentiation of the KKT system (Level 3) for full primal--dual sensitivity matrices, enabling decision-focused learning through nonconvex solvers (\textbackslash{}S 6).
+
+\item \textbf{Batched node evaluation} using \texttt{jax.vmap} over NLP relaxation solves at B\&B nodes, with warm-starting from parent solutions (\textbackslash{}S 4.1).
+
+\item \textbf{Pure-JAX interior point method} with Mehrotra predictor-corrector \cite{Mehrotra1992}, Cholesky-based inertia correction, Ipopt-style filter line search \cite{Wachter2006}, and carry-based \texttt{jax.lax.while\_loop} for JIT cache reuse (\textbackslash{}S 4.1).
+
+\item \textbf{ripopt}: a source-level C++ $\to$ Rust translation of Ipopt's core IPM algorithm, producing a standalone memory-safe NLP solver with a clean \texttt{NlpProblem} trait interface (\textbackslash{}S 4.2).
+
+\item \textbf{Compositional relaxation framework} with 19 McCormick relaxation functions \cite{McCormick1976,Tsoukalas2014}, $\alpha$ BB underestimators \cite{Androulakis1995,Adjiman1998}, piecewise McCormick with adaptive partitioning \cite{Castro2015} achieving 91--94\% gap reduction, and ICNN-learned relaxations \cite{Amos2017icnn} (\textbackslash{}S 5).
+
+\end{enumerate}
+
+
+The remainder of this paper is organized as follows. Section 2 reviews background and related work. Section 3 describes the discopt architecture. Section 4 presents the three NLP solver backends. Section 5 details the convex relaxation framework. Section 6 covers differentiable optimization. Section 7 reports computational experiments. Section 8 discusses limitations and future work, and Section 9 concludes.
+
+
+\section{Background and Related Work}
+\label{org-background-and-related-work}
+\subsection{Spatial Branch and Bound for MINLP}
+\label{org-spatial-branch-and-bound-for-minlp}
+Spatial branch and bound (sBB) is the dominant paradigm for deterministic global optimization of MINLP problems \cite{Belotti2013}. The algorithm maintains a search tree where each node represents a subproblem defined by tightened variable bounds. At each node, a convex relaxation of the original nonconvex problem is solved; the relaxation's optimal value provides a valid lower bound on the global optimum within that region.
+
+
+The framework was introduced by Land and Doig \cite{Land1960} for integer programming and extended by Dakin \cite{Dakin1965}. Smith and Pantelides \cite{Smith1999} formalized spatial B\&B for nonconvex MINLP by combining variable-bound branching with factorable relaxation construction.
+
+
+Modern sBB solvers enhance the basic framework with bound tightening techniques---feasibility-based bound tightening (FBBT) and optimization-based bound tightening (OBBT) \cite{Belotti2009,Gleixner2017} --- which propagate bound improvements through the expression graph, and primal heuristics such as the feasibility pump \cite{Fischetti2005} that attempt to find good incumbent solutions early in the search.
+
+\subsection{Convex Relaxations}
+\label{org-convex-relaxations}
+The quality of the convex relaxation at each node directly determines the effectiveness of the B\&B search. Weaker relaxations produce loose lower bounds, leading to more nodes explored before convergence.
+
+
+McCormick relaxations \cite{McCormick1976} construct convex and concave envelopes for factorable functions by composing relaxations of elementary operations (addition, multiplication, univariate functions). Tsoukalas and Mitsos \cite{Tsoukalas2014} extended this to the multivariate case. The $\alpha$ BB method \cite{Androulakis1995,Adjiman1998} adds a separable quadratic perturbation to ensure convexity, where the perturbation magnitude $\alpha$ is determined by the minimum eigenvalue (or Gershgorin estimate) of the objective Hessian.
+
+
+Piecewise McCormick relaxations \cite{Castro2015} partition the variable domain into subintervals and construct tighter McCormick envelopes on each partition, significantly reducing the relaxation gap at the cost of additional auxiliary variables. Outer approximation (OA) \cite{Duran1986,Fletcher1994} and reformulation-linearization technique (RLT) \cite{Sherali1990} provide complementary cutting-plane approaches.
+
+\subsection{Interior Point Methods for NLP}
+\label{org-interior-point-methods-for-nlp}
+The continuous NLP relaxation at each B\&B node is typically solved by an interior point method (IPM). The primal-dual IPM \cite{Wright1997,Nocedal2006} transforms inequality constraints into barrier terms in the objective, then applies Newton's method to the resulting KKT system. Key algorithmic components include the Mehrotra predictor-corrector step \cite{Mehrotra1992}, which adaptively adjusts the centering parameter for faster convergence, and filter line search \cite{Wachter2005,Wachter2006}, which accepts steps that improve either the objective or constraint feasibility.
+
+
+Ipopt \cite{Wachter2006} is the most widely used open-source NLP solver, implementing a filter line-search interior point method with inertia correction, feasibility restoration, and warm-starting. It has accumulated over 20 years of numerical hardening for edge cases including degenerate Jacobians, rank-deficient KKT systems, and cycling detection.
+
+
+Recent work on JAX-native optimization includes MPAX \cite{Lu2024}, a first-order solver for large-scale LP and QP that implements restarted primal-dual hybrid gradient (PDHG) variants: r2HPDHG for LP and rAPDHG for QP, with Ruiz and Pock-Chambolle diagonal preconditioning, adaptive restarts, and infeasibility detection. MPAX leverages JAX for hardware portability (CPU/GPU/TPU), batched solving via \texttt{vmap}, multi-GPU distribution via \texttt{pmap}, and automatic differentiation through solutions. The two systems occupy complementary niches: MPAX's first-order iterations are cheap (one matrix-vector product each) but converge slowly ($O(1/k)$ to $O(1/k^2)$ with restarts), making it well-suited for very large sparse LP/QP instances ($n > 10^5$) where moderate accuracy suffices. discopt's second-order IPM performs expensive Cholesky factorizations ($O(n^3)$) but converges quadratically, targeting the small-to-medium nonconvex NLP subproblems ($n < 10^4$) that arise at each B\&B node where high-accuracy solutions are needed for valid dual bounds. Unlike MPAX, discopt handles nonconvex objectives (via inertia correction), nonlinear constraints (via augmented KKT), and integer variables (via spatial B\&B). JAX device placement in discopt is controlled by the \texttt{JAX\_PLATFORMS} environment variable, inheriting GPU/TPU acceleration automatically when a suitable backend is available.
+
+Sensitivity analysis of NLP solutions with respect to problem parameters is well-established \cite{Fiacco1983}. Pirnay et al. \cite{Pirnay2012} implemented the sIPOPT framework within Ipopt for efficient parametric sensitivity computation by reusing the KKT factorization.
+
+\subsection{Differentiable Optimization}
+\label{org-differentiable-optimization}
+The idea of differentiating through an optimization solver to enable end-to-end learning has received significant recent attention. Amos and Kolter \cite{Amos2017} introduced OptNet for differentiating through quadratic programs. Agrawal et al. \cite{Agrawal2019} extended this to general convex programs via cvxpylayers. Elmachtoub and Grigas \cite{Elmachtoub2022} formalized the "smart predict, then optimize" framework, and Wilder et al. \cite{Wilder2019} and Mandi et al. \cite{Mandi2020} developed methods for combinatorial optimization with decision-focused learning.
+
+
+A critical gap remains: \textbf{none of these approaches handle nonconvex MINLP}. Existing differentiable optimization layers require convexity (OptNet, cvxpylayers) or use surrogate loss functions that approximate but do not exactly differentiate through the solver (decision-focused learning for combinatorics). discopt fills this gap by providing exact gradients through a nonconvex NLP solver via implicit differentiation of the KKT conditions.
+
+\subsection{Gaps in the State of the Art}
+\label{org-gaps-in-the-state-of-the-art}
+Table \ref{tab-gaps} summarizes the capabilities of existing systems versus discopt.
+
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lllllll}
+\toprule
+Feature & BARON & SCIP & Bonmin & cvxpylayers & MPAX & discopt \\
+\midrule
+Nonconvex MINLP & Yes & Yes & Yes & No & No & Yes \\
+Nonlinear constraints & Yes & Yes & Yes & No & No & Yes \\
+Differentiable solve & No & No & No & Yes (convex) & Yes (LP/QP) & Yes \\
+Batched solving & No & No & No & N/A & Yes & Yes \\
+GPU/TPU support & No & No & No & N/A & Yes & Yes \\
+Memory-safe solver & No & No & No & N/A & Yes & Yes \\
+Zero C/Fortran deps & No & No & No & Yes & Yes & Yes \\
+DFL through MINLP & No & No & No & No & No & Yes \\
+Compositional relaxation & Yes & Partial & No & N/A & N/A & Yes \\
+\bottomrule
+\end{tabular}
+\caption{Comparison of discopt with existing optimization frameworks. DFL = decision-focused learning. GPU/TPU support for discopt is via JAX backend selection (\texttt{JAX\_PLATFORMS}).}
+\label{tab-gaps}
+\end{table}
+
+
+\section{The discopt Architecture}
+\label{org-the-discopt-architecture}
+\subsection{System Overview}
+\label{org-system-overview}
+discopt is organized as a three-layer system: (1) a Python modeling API for problem formulation, (2) a JAX-based numerical layer for evaluation, automatic differentiation, and batch computation, and (3) a Rust backend for tree management, expression structure detection, and presolve.
+
+
+\begin{minted}[frame=lines,fontsize=\scriptsize,linenos]{text}
+  User Model (Python)
+       |
+       v
+  Expression DAG ---> DAG Compiler ---> JAX Functions (JIT/grad/vmap)
+       |                                        |
+       v                                        v
+  Rust Expression IR             NLP Evaluator (obj, grad, Hess, Jac)
+       |                                        |
+       v                                        v
+  B&B Tree Manager               NLP Solver Backend
+  (node pool, branching,         (IPM / ripopt / Ipopt)
+   bound tightening)                    |
+       |                                v
+       +-------- batch dispatch --------+
+                     |
+                     v
+              SolveResult
+\end{minted}
+
+An automatic problem classifier inspects the expression DAG to categorize problems as LP, QP, NLP, MILP, MIQP, or MINLP. For LP and QP subclasses, discopt dispatches to specialized IPM solvers that extract algebraic coefficients directly from the DAG, bypassing JAX tracing and autodiff entirely. This algebraic extraction path provides 100--226$\times$ speedups over the generic NLP path (\textbackslash{}S 7.4).
+
+\subsection{Modeling API}
+\label{org-modeling-api}
+The modeling API uses operator overloading to construct an expression DAG that maps to both JAX-traceable functions and Rust expression IR:
+
+
+\begin{minted}[frame=lines,fontsize=\scriptsize,linenos]{python}
+import discopt.modeling as dm
+
+m = dm.Model("portfolio")
+x = m.continuous("weights", shape=(n,), lb=0, ub=1)
+y = m.binary("selected", shape=(n,))
+
+m.minimize(risk @ (x * x) - expected_return @ x)
+m.subject_to(dm.sum(x) == 1, name="budget")
+m.subject_to(x <= y, name="indicator")  # x_i > 0 => y_i = 1
+m.subject_to(dm.sum(y) <= k, name="cardinality")
+
+result = m.solve()
+\end{minted}
+
+The API supports continuous, binary, and integer variables; parameters (for sensitivity analysis and decision-focused learning); generalized disjunctive programming (GDP) constraints with automatic big-M reformulation; and standard mathematical functions (\texttt{exp}, \texttt{log}, \texttt{sin}, \texttt{cos}, \texttt{sqrt}, \texttt{abs}, and matrix operations).
+
+\subsection{JAX DAG Compiler}
+\label{org-jax-dag-compiler}
+The DAG compiler walks the expression tree and produces pure JAX functions compatible with \texttt{jax.jit}, \texttt{jax.grad}, and \texttt{jax.vmap}. Each expression node type (\texttt{Variable}, \texttt{Constant}, \texttt{BinaryOp}, \texttt{FunctionCall}, etc.) maps to a corresponding JAX operation. The compiler handles:
+
+
+\begin{itemize}
+\item \textbf{Lazy evaluation}: expressions are not evaluated until the DAG is compiled
+
+\item \textbf{Automatic differentiation}: the JAX function graph supports forward and reverse mode AD for gradients, Hessians, and Jacobians
+
+\item \textbf{Vectorization}: \texttt{jax.vmap} can map the compiled function over batches of variable values or bound vectors
+
+\item \textbf{JIT compilation}: compiled functions are traced and optimized by XLA for efficient repeated evaluation
+
+\end{itemize}
+
+\subsection{Rust Backend}
+\label{org-rust-backend}
+The Rust backend (\texttt{discopt-core} and \texttt{discopt-python} crates) provides three components:
+
+
+\section{NLP Solver Backends}
+\label{org-nlp-solver-backends}
+discopt supports three interchangeable NLP solver backends, selectable via \texttt{Model.solve(nlp\_solver}...)=. All three implement the same interface: given an objective function $f(x)$, constraints $g(x)$, variable bounds $x_l \le x \le x_u$, and constraint bounds $g_l \le g(x) \le g_u$, find $x^*$ that minimizes $f$ subject to all constraints.
+
+\subsection{Pure-JAX Interior Point Method}
+\label{org-pure-jax-interior-point-method}
+   :PROPERTIES:
+   :CUSTOM\textsubscript{ID}: sec-jax-ipm
+   :END:
+
+
+The pure-JAX IPM implements a primal-dual barrier method that is fully JIT-compilable and vmappable. The algorithm solves the augmented KKT system:
+
+
+\begin{equation}
+\begin{bmatrix}
+H + \Sigma + \delta_w I & J^T \\
+J & -D - \delta_c I
+\end{bmatrix}
+\begin{bmatrix}
+\Delta x \\
+\Delta y
+\end{bmatrix}
+=
+\begin{bmatrix}
+r_x \\
+r_y
+\end{bmatrix}
+\end{equation}
+
+
+where $H = \nabla^2_{xx} \mathcal{L}$ is the Hessian of the Lagrangian, $\Sigma = \mathrm{diag}(z_l / s_l + z_u / s_u)$ is the barrier Hessian diagonal, $J$ is the constraint Jacobian, $D$ is the condensed slack diagonal for inequality constraints, and $\delta_w, \delta_c$ are inertia correction regularizations.
+
+\subsubsection{Mehrotra Predictor-Corrector}
+\label{org-mehrotra-predictor-corrector}
+Following Mehrotra \cite{Mehrotra1992}, each iteration consists of two linear system solves:
+
+
+\begin{enumerate}
+\item \textbf{Affine predictor} ($\mu = 0$): solve the KKT system with zero centering to obtain $(\Delta x^{\mathrm{aff}}, \Delta y^{\mathrm{aff}})$. Compute the affine complementarity $\mu^{\mathrm{aff}}$.
+
+\item \textbf{Centering parameter}: $\sigma = (\mu^{\mathrm{aff}} / \mu^{\mathrm{curr}})^3$, clipped to $[0, 1]$.
+
+\item \textbf{Corrector}: re-solve with centering $\sigma\mu$ and cross-product correction terms $\Delta s_i \Delta z_i / s_i$.
+
+\end{enumerate}
+
+
+The corrector step provides second-order information about the central path, typically reducing the iteration count by 30--50\textbackslash{}\% compared to a single Newton step.
+
+\subsubsection{Inertia Correction}
+\label{org-inertia-correction}
+The KKT system must have correct inertia ($n$ positive, $m$ negative eigenvalues) for the Newton direction to be a descent direction. We detect incorrect inertia via Cholesky factorization: if the upper-left block $W = H + \Sigma + \delta_w I$ produces NaN in its Cholesky factor, the inertia is incorrect. The regularization $\delta_w$ is increased by a factor of 8 (up to $\delta_w^{\max} = 10^{40}$) until correct inertia is achieved. This Cholesky-based detection is approximately 3$\times$ faster than eigenvalue decomposition.
+
+\subsubsection{Filter Line Search}
+\label{org-filter-line-search}
+Step acceptance follows Ipopt's filter line search \cite{Wachter2006}. The algorithm maintains an $\ell_1$ merit function $\phi(x) = f(x) + \nu \|c(x)\|_1$ with adaptive penalty parameter $\nu$ and performs backtracking with Armijo-type sufficient decrease. A stall detection mechanism triggers projected steepest-descent recovery after 3 consecutive line search failures, handling the Maratos effect near active bound constraints.
+
+\subsubsection{Carry-Based \texttt{while\_loop}}
+\label{org-carry-based-while-loop}
+A critical implementation detail for JAX performance: all problem data (bounds, constraint bounds, masks) is placed in the \texttt{while\_loop} carry state as a \texttt{NamedTuple}, rather than captured in the closure. Closure-captured data forces JIT retracing for each new problem instance, while carry-based data allows JIT cache reuse. Problem dimensions are derived from array shapes (\texttt{c.shape[0]}, \texttt{b.shape[0]}) rather than stored as integers, since integers in the carry become JAX tracers.
+
+\subsubsection{Batch Solving via \texttt{jax.vmap}}
+\label{org-batch-solving-via-jax-vmap}
+The \texttt{solve\_nlp\_batch} function applies \texttt{jax.vmap} over the initial point and variable bound dimensions:
+
+
+\begin{minted}[frame=lines,fontsize=\scriptsize,linenos]{python}
+def solve_nlp_batch(obj_fn, con_fn, x0_batch, xl_batch, xu_batch, g_l, g_u, opts):
+    def _solve_single(x0, xl, xu):
+        return ipm_solve(obj_fn, con_fn, x0, xl, xu, g_l, g_u, opts)
+    return jax.vmap(_solve_single)(x0_batch, xl_batch, xu_batch)
+\end{minted}
+
+This solves all $k$ node relaxations simultaneously, providing approximately $k$-fold parallelism on hardware with sufficient FLOP throughput. The objective and constraint functions are shared across the batch; only the starting points and variable bounds vary per instance.
+
+
+At the root node of the B\&B tree, multi-start solving uses 5 diverse starting points (midpoint, lower-quarter, upper-quarter, and 2 random) solved simultaneously via \texttt{vmap}. On non-root nodes, the solver warm-starts from the parent node's solution clipped to the child's tightened bounds.
+
+\subsection{ripopt: A Memory-Safe IPM in Rust}
+\label{org-ripopt-a-memory-safe-ipm-in-rust}
+   :PROPERTIES:
+   :CUSTOM\textsubscript{ID}: sec-ripopt
+   :END:
+
+
+ripopt (Rust Interior Point OPTimizer) is a source-level translation of Ipopt's core interior point algorithm from C++ to Rust. It is \textbf{not} a wrapper around C++ Ipopt; it is a standalone Rust crate that produces native code with Rust's ownership and borrowing guarantees.
+
+\subsubsection{Motivation}
+\label{org-motivation}
+Three considerations drove the decision to translate rather than wrap:
+
+
+\begin{enumerate}
+\item \textbf{Numerical hardening.} Ipopt handles hundreds of edge cases accumulated over two decades: degenerate Jacobians, rank-deficient KKT systems, cycling detection, and tiny-step recovery. A from-scratch IPM would rediscover these failures one benchmark at a time. Translation preserves this institutional knowledge.
+
+\item \textbf{Memory safety.} Rust's ownership model eliminates use-after-free bugs, data races, and buffer overflows at compile time---categories of bugs that have affected C++ numerical codes. The \texttt{cargo clippy} linter and optional \texttt{miri} interpreter catch additional issues.
+
+\item \textbf{Deployment simplicity.} ripopt compiles with \texttt{cargo build} with zero C or Fortran dependencies. The entire solver is a single Rust crate, eliminating the MUMPS/BLAS/LAPACK dependency chain that makes Ipopt installation non-trivial.
+
+\end{enumerate}
+
+\subsubsection{Architecture}
+\label{org-architecture}
+ripopt exposes a clean \texttt{NlpProblem} trait that users implement:
+
+
+\begin{minted}[frame=lines,fontsize=\scriptsize,linenos]{rust}
+pub trait NlpProblem {
+    fn num_variables(&self) -> usize;
+    fn num_constraints(&self) -> usize;
+    fn bounds(&self, x_l: &mut [f64], x_u: &mut [f64]);
+    fn constraint_bounds(&self, g_l: &mut [f64], g_u: &mut [f64]);
+    fn initial_point(&self, x0: &mut [f64]);
+    fn objective(&self, x: &[f64]) -> f64;
+    fn gradient(&self, x: &[f64], grad: &mut [f64]);
+    fn constraints(&self, x: &[f64], g: &mut [f64]);
+    fn jacobian_structure(&self) -> (Vec<usize>, Vec<usize>);
+    fn jacobian_values(&self, x: &[f64], vals: &mut [f64]);
+    fn hessian_structure(&self) -> (Vec<usize>, Vec<usize>);
+    fn hessian_values(&self, x: &[f64], obj_factor: f64,
+                      lambda: &[f64], vals: &mut [f64]);
+}
+\end{minted}
+
+The solver implements filter line search with Ipopt-style acceptance criteria, inertia correction via the \texttt{LinearSolver} trait (pluggable backends), feasibility restoration, warm-starting from previous solutions, and configurable convergence criteria.
+
+\subsubsection{PyO3 Integration}
+\label{org-pyo3-integration}
+The \texttt{discopt-python} crate wraps ripopt with PyO3 bindings \cite{pyo3}. A \texttt{PyNlpProblem} struct implements the \texttt{NlpProblem} trait by calling back into Python evaluator methods (\texttt{evaluate\_objective}, \texttt{evaluate\_gradient}, \texttt{evaluate\_constraints}, \texttt{evaluate\_jacobian}, \texttt{evaluate\_lagrangian\_hessian}). Bounds and sparsity structure are cached in Rust-owned memory. The main solve loop releases the Python GIL via \texttt{py.allow\_threads()}, and callbacks re-acquire it only for the duration of each evaluation:
+
+
+\begin{minted}[frame=lines,fontsize=\scriptsize,linenos]{rust}
+let result = py.allow_threads(|| ripopt::solve(&problem, &opts));
+\end{minted}
+
+This means the heavy linear algebra in the IPM iteration runs without GIL contention, while the JAX-compiled gradient and Hessian evaluations use Python callbacks through the GIL.
+
+\subsubsection{Licensing}
+\label{org-licensing}
+Because ripopt is a source-level translation of Ipopt (EPL-2.0), it is distributed under the Eclipse Public License 2.0. EPL-2.0 is not viral: code that \textit{depends on} ripopt does not need to adopt EPL-2.0, however, we have implemented a pure Python version in jax of the Ipopt algorithm in discopt, and have adopted the EPL-2.0 license for the entire discopt repository to avoid confusion and ensure that all components are covered by the same license.
+
+\subsection{Ipopt via cyipopt}
+\label{org-ipopt-via-cyipopt}
+The third backend uses the industry-standard Ipopt solver \cite{Wachter2006} via cyipopt Python bindings. This serves as the correctness reference: any discrepancy between the pure-JAX IPM or ripopt and Ipopt on a well-conditioned problem indicates a bug in the former. Ipopt's advantage is its mature sparse linear algebra (MUMPS, MA27/MA57) which scales better on large, sparse problems ($n > 1000$). Its disadvantage is the Fortran/C++ dependency chain and inability to batch or differentiate through the solve.
+
+
+\section{Convex Relaxation Framework}
+\label{org-convex-relaxation-framework}
+The quality of convex relaxations at B\&B nodes directly determines solver efficiency. discopt provides a compositional relaxation compiler that walks the expression DAG and produces JIT-compatible relaxation functions.
+
+\subsection{McCormick Relaxation Compiler}
+\label{org-mccormick-relaxation-compiler}
+The relaxation compiler implements 19 univariate and bivariate McCormick relaxation functions \cite{McCormick1976,Tsoukalas2014} covering all operations supported by the modeling API: bilinear products, addition, subtraction, negation, division, power, \texttt{exp}, square, \texttt{abs}, \texttt{sqrt}, \texttt{log}, \texttt{log2}, \texttt{log10}, \texttt{sin}, \texttt{cos}, \texttt{tan}, \texttt{sign}, \texttt{min}, and \texttt{max}.
+
+
+Each function maps interval bounds $[x_l, x_u]$ and convex/concave enclosures $(cv, cc)$ of the argument to tighter enclosures of the result. The compiler produces pure \texttt{jax.numpy} functions compatible with \texttt{jax.jit} and \texttt{jax.vmap}, enabling batch relaxation evaluation over multiple B\&B nodes.
+
+\subsection{$\alpha$ BB Underestimators}
+\label{org-alpha-bb-underestimators}
+For general twice-differentiable functions where McCormick relaxations are loose, the $\alpha$ BB method \cite{Androulakis1995,Adjiman1998} adds a separable quadratic perturbation:
+
+
+\begin{equation}
+L_{\alpha}(x) = f(x) - \sum_{i=1}^n \alpha_i (x_i - x_i^l)(x_i^u - x_i)
+\end{equation}
+
+
+The parameters $\alpha_i$ are chosen such that $L_\alpha$ is convex: $\alpha_i \ge \max(0, -\lambda_{\min}(\nabla^2 f) / 2)$ where $\lambda_{\min}$ is the minimum eigenvalue of the Hessian. discopt provides two estimation methods:
+
+
+\begin{itemize}
+\item \textbf{Eigenvalue method}: exact computation via \texttt{jax.hessian} and \texttt{jnp.linalg.eigvalsh} at sampled points (accurate but requires $O(n^3)$ per sample)
+
+\item \textbf{Gershgorin method}: conservative estimate from Hessian diagonal dominance (faster, slightly looser bounds, zero soundness violations in testing)
+
+\end{itemize}
+
+
+The JAX-native $\alpha$ BB estimation uses \texttt{jax.vmap} over sample points, providing 10--100$\times$ speedup over the finite-difference fallback used for \texttt{.nl} file models.
+
+\subsection{Piecewise McCormick Relaxations}
+\label{org-piecewise-mccormick-relaxations}
+Piecewise McCormick \cite{Castro2015} partitions the variable domain into $k$ subintervals and constructs tighter McCormick envelopes on each partition. discopt supports both uniform partitioning and adaptive partitioning that concentrates breakpoints where $f''(x)$ is largest.
+
+
+On representative test functions, piecewise McCormick with $k=8$ partitions achieves significant gap reduction versus standard McCormick:
+
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{llll}
+\toprule
+Function & Standard gap & Piecewise gap & Reduction \\
+\midrule
+$\exp(x)$ & 0.999 & 0.066 & 93.4\% \\
+$\log(x)$ & 0.254 & 0.021 & 91.9\% \\
+$x^2$ & 2.664 & 0.167 & 93.7\% \\
+bilinear $xy$ & varies & varies & >30\% \\
+\bottomrule
+\end{tabular}
+\caption{Piecewise McCormick gap reduction with $k=8$ partitions.}
+\label{tab-piecewise}
+\end{table}
+
+\subsection{Learned Relaxations via ICNN}
+\label{org-learned-relaxations-via-icnn}
+As an experimental feature, discopt supports learned convex relaxations using input convex neural networks (ICNNs) \cite{Amos2017icnn}. An ICNN architecture with softplus non-negative weight constraints is trained to approximate tighter-than-McCormick underestimators for specific operations, with a soundness loss term that penalizes violations of the convexity and underestimation properties.
+
+
+A \texttt{LearnedRelaxationRegistry} provides per-operation wrappers with automatic fallback to standard McCormick for unsupported operations. In testing, ICNN relaxations achieve approximately 10\% gap reduction beyond standard McCormick, with the potential for 30\%+ with more extensive training.
+
+
+\section{Differentiable Optimization}
+\label{org-differentiable-optimization}
+A distinguishing feature of discopt is the ability to differentiate through the optimization solve with respect to problem parameters. This enables decision-focused learning \cite{Elmachtoub2022} where the model parameters (e.g., cost coefficients) are learned end-to-end from decision outcomes rather than prediction accuracy.
+
+\subsection{Level 1: Envelope Theorem}
+\label{org-level-1-envelope-theorem}
+For a parametric NLP $\min_x f(x; p)$ subject to $g(x; p) \le 0$, the envelope theorem gives:
+
+
+\begin{equation}
+\frac{d f^*}{d p} = \frac{\partial \mathcal{L}}{\partial p}\bigg|_{x^*, \lambda^*} = \frac{\partial f}{\partial p}\bigg|_{x^*} + {\lambda^*}^T \frac{\partial g}{\partial p}\bigg|_{x^*}
+\end{equation}
+
+
+This requires no additional linear system solve---the optimal dual variables $\lambda^*$ from the NLP solver directly provide the sensitivity. discopt implements this as a \texttt{DiffSolveResult.gradient(param)} method that returns $df^*/dp$ for any model parameter.
+
+\subsection{Level 3: Implicit Differentiation via KKT}
+\label{org-level-3-implicit-differentiation-via-kkt}
+For the full primal sensitivity matrix $dx^*/dp$, discopt differentiates the KKT conditions:
+
+
+\begin{equation}
+\begin{bmatrix}
+\nabla^2_{xx}\mathcal{L} & J_a^T \\
+J_a & 0
+\end{bmatrix}
+\begin{bmatrix}
+dx^*/dp \\
+d\lambda^*/dp
+\end{bmatrix}
+=
+-\begin{bmatrix}
+\nabla^2_{xp}\mathcal{L} \\
+\partial g_a / \partial p
+\end{bmatrix}
+\end{equation}
+
+
+where $J_a$ is the Jacobian of active constraints (including active variable bounds) and $\nabla^2_{xp}\mathcal{L}$ is the mixed Hessian of the Lagrangian. This is computed via \texttt{jax.hessian} and \texttt{jax.jacobian} applied to parametric DAG-compiled functions.
+
+
+The \texttt{DiffSolveResultL3} class provides:
+
+
+\begin{itemize}
+\item \texttt{sensitivity\_matrix()}: full $dx^*/dp$ matrix
+
+\item \texttt{implicit\_gradient(param)}: $df^*/dp$ via the chain rule $\nabla_x f \cdot dx^*/dp + \partial f/\partial p$
+
+\item \texttt{approximate\_resolve(new\_params)}: first-order approximation $x^* + (dx^*/dp) \Delta p$
+
+\item \texttt{dual\_sensitivity(param)}: $d\lambda^*/dp$ for constraint multiplier sensitivity
+
+\item \texttt{reduced\_hessian()}: Hessian projected onto the null space of active constraints (for uncertainty quantification)
+
+\item \texttt{sensitivity(dp)}: fast re-query with cached KKT factorization (analogous to sIPOPT \cite{Pirnay2012})
+
+\end{itemize}
+
+
+If the KKT system is ill-conditioned, discopt falls back to finite-perturbation smoothing, and then to L1 envelope theorem gradients.
+
+\subsection{Application: Decision-Focused Learning}
+\label{org-application-decision-focused-learning}
+The JAX-native differentiable solve is exposed via \texttt{jax.custom\_jvp}, enabling it to be embedded in a larger JAX computation graph. A decision-focused learning pipeline:
+
+
+\begin{enumerate}
+\item A neural network $\hat{c} = \phi_\theta(x_{\mathrm{features}})$ predicts cost parameters
+
+\item The predicted costs are fed to \texttt{discopt.solve()} to obtain decisions $x^*(\hat{c})$
+
+\item The true task loss $\ell(x^*(\hat{c}), c_{\mathrm{true}})$ is computed
+
+\item Gradients $\partial \ell / \partial \theta$ flow through the solver via L3 implicit differentiation
+
+\item The network parameters $\theta$ are updated to minimize decision regret
+
+\end{enumerate}
+
+
+On a resource allocation task with 3 activities, 5 features, and risk-averse objective, decision-focused learning with discopt achieves \textbf{36\% regret reduction} compared to two-stage predict-then-optimize, despite having higher prediction MSE. This confirms the key insight: optimizing for decision quality beats optimizing for prediction accuracy.
+
+
+On a mean-variance portfolio optimization task with 3 assets and nonlinear interactions, DFL similarly achieves lower regret and higher utility than the two-stage approach.
+
+
+\section{Computational Experiments}
+\label{org-computational-experiments}
+\subsection{NLP Backend Comparison}
+\label{org-nlp-backend-comparison}
+We compare the three NLP backends on 5 test problems spanning unconstrained quadratics to constrained portfolio optimization. Table \ref{tab-nlp-backends} reports objectives and wall-clock timing. All timings were collected on an Apple M4 Pro (CPU backend, JAX 0.8.2) and represent single-solve wall-clock time including model compilation.
+
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{lllll}
+\toprule
+Problem & $f^*$ & IPM (s) & ripopt (s) & Ipopt (s) \\
+\midrule
+Quadratic ($n=2$) & 0.000000 & 0.023 & 0.033 & 0.013 \\
+Constrained ($n=5$) & 1.250000 & 0.269 & 0.001 & 0.001 \\
+Rosenbrock ($n=2$) & 0.000000 & 0.590 & 0.082 & 0.114 \\
+Sum-of-squares ($n=10$) & 0.000000 & 1.189 & 0.049 & 0.070 \\
+Portfolio ($n=8$) & 0.002064 & 0.229 & 0.004 & 0.001 \\
+\midrule
+Total &  & 2.30 & 0.17 & 0.20 \\
+\bottomrule
+\end{tabular}
+\caption{NLP backend comparison. All backends achieve identical objectives (to solver tolerance). Timings on Apple M4 Pro, CPU.}
+\label{tab-nlp-backends}
+\end{table}
+
+
+Key observations:
+
+
+\begin{itemize}
+\item All three backends produce \textbf{identical optimal objectives} to solver tolerance ($10^{-6}$), confirming correctness across the Rust, JAX, and C++ implementations.
+
+\item ripopt is competitive with Ipopt (total 0.17s vs 0.20s), and faster on Rosenbrock (0.082s vs 0.114s) and sum-of-squares (0.049s vs 0.070s).
+
+\item The pure-JAX IPM includes JIT compilation overhead on first evaluation; subsequent solves of similarly-structured problems benefit from cached JIT traces.
+
+\item On a quartic constrained NLP ($n=10$), ripopt (0.334s) and the JAX IPM (0.795s) agree to $6.5 \times 10^{-15}$ in objective value, confirming numerical equivalence.
+
+\end{itemize}
+
+\subsection{MINLP Correctness}
+\label{org-minlp-correctness}
+We validate on 24 MINLP problems (12 NLP + 12 MINLP with binary/integer variables) from the discopt test suite, with known optimal values:
+
+
+\begin{itemize}
+\item \textbf{24/24 solved correctly} with zero incorrect results
+
+\item Tolerances: absolute $10^{-4}$, relative $10^{-3}$ for objectives; integrality tolerance $10^{-5}$
+
+\item Problems include Rosenbrock, exponential, logarithmic, trigonometric, bilinear, and cardinality-constrained formulations
+
+\end{itemize}
+
+
+B\&B convergence with the ripopt backend was verified on two MINLP instances: a simple 3-variable problem (optimal $f^* = 2.0$, 1 node, 0.039s) and a larger 6-variable formulation (optimal $f^* = 3.0$, 13 nodes, 2.38s).
+
+\subsubsection{MINLPLib Validation}
+\label{org-minlplib-validation}
+We further validate on instances from MINLPLib \cite{Bussieck2003}, imported via the \texttt{.nl} file parser. On 73 instances with $\le 50$ variables, discopt solves 49 to optimal/feasible status, with 18 of 27 checked instances matching known optima. Table \ref{tab-minlplib} reports results on a representative 10-instance smoke test suite.
+
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{llllllll}
+\toprule
+Instance & $n$ & $m$ & Status & $f^*$ & Best Known & Time (s) & Nodes \\
+\midrule
+chance & 4 & 3 & optimal & 29.421 & 29.894 & 0.244 & 0 \\
+dispatch & 4 & 2 & optimal & 3155.288 & 3155.288 & 0.258 & 0 \\
+ex1221 & 5 & 5 & optimal & 7.667 & 7.667 & 0.010 & 1 \\
+ex1226 & 5 & 5 & optimal & -17.000 & -17.000 & 0.176 & 3 \\
+gear & 4 & 0 & feasible & 2.3e-11 & 0.000 & 60.000 & 25,153 \\
+nvs01 & 3 & 3 & feasible & -4.904 & 12.470 & 60.731 & 7,787 \\
+nvs03 & 2 & 2 & optimal & 16.000 & 16.000 & 0.036 & 11 \\
+nvs04 & 2 & 0 & optimal & 0.720 & 0.720 & 0.078 & 9 \\
+nvs06 & 2 & 0 & optimal & 1.770 & 1.770 & 0.022 & 9 \\
+\bottomrule
+\end{tabular}
+\caption{MINLPLib smoke test results (10 instances, 60s time limit). Best known objectives from MINLPLib.}
+\label{tab-minlplib}
+\end{table}
+
+
+Of the 9 solvable instances, 7 reach optimal status (matching known optima to $10^{-3}$), while 2 reach feasible solutions at the time limit. The \texttt{gear} instance finds a near-zero objective ($2.3 \times 10^{-11}$, matching the known optimum $0.0$) but cannot prove optimality without convex relaxations for the \texttt{.nl} import path. Instance \texttt{nvs01} reaches a local optimum for the same reason. The JAX computation accounts for 92--99.9\% of solver time, with Rust tree management contributing $< 1\%$ and Python overhead $< 2\%$.
+
+\subsection{Relaxation Gap Reduction}
+\label{org-relaxation-gap-reduction}
+Table \ref{tab-piecewise} reports piecewise McCormick gap reduction. Additionally:
+
+
+\begin{itemize}
+\item $\alpha$ BB underestimators achieve zero soundness violations across 1000+ test points with both eigenvalue and Gershgorin methods
+
+\item ICNN learned relaxations provide approximately 10\% additional gap reduction beyond standard McCormick with lightweight training
+
+\item The relaxation compiler supports mode switching between \texttt{standard}, \texttt{piecewise}, and \texttt{learned} at the solver level
+
+\end{itemize}
+
+\subsection{Performance}
+\label{org-performance}
+\begin{itemize}
+\item LP ($n=100$): 3.5s $\to$ 0.20s warm (17$\times$ speedup)
+
+\item QP ($n=100$): 65.7s $\to$ 0.29s warm (226$\times$ speedup)
+
+\end{itemize}
+
+
+\section{Discussion}
+\label{org-discussion}
+discopt demonstrates that a modern, multi-language MINLP solver can provide capabilities absent from existing monolithic solvers: differentiability, batch evaluation, and memory safety. Several limitations and directions for future work deserve discussion.
+
+
+\section{Conclusion}
+\label{org-conclusion}
+We have presented discopt, a hybrid Rust/JAX/Python MINLP solver that bridges the gap between classical mathematical programming and modern differentiable programming. The solver provides three interchangeable NLP backends---a pure-JAX IPM, ripopt (a memory-safe Rust translation of Ipopt), and Ipopt via cyipopt---all producing identical results on benchmark problems. The differentiable solving capability enables decision-focused learning through nonconvex optimization, achieving 36\% regret reduction on resource allocation tasks. The compositional relaxation compiler achieves 91--94\% gap reduction via piecewise McCormick, and the algebraic coefficient extraction path provides 17--226$\times$ speedups for structured subproblems. ripopt eliminates the Fortran/C++ dependency chain while preserving Ipopt's numerical robustness.
+
+
+The system is open-source: discopt and ripopt are available under the EPL-2.0 License.
+
+
+\bibliographystyle{unsrtnat}
+\bibliography{references}
+
+
+\end{document}

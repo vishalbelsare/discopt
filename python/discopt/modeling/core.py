@@ -1241,7 +1241,6 @@ class Model:
         time_limit: float = 3600,
         gap_tolerance: float = 1e-4,
         threads: int = 1,
-        gpu: bool = True,
         llm: bool = False,
         sensitivity: bool = False,
         stream: bool = False,
@@ -1264,8 +1263,6 @@ class Model:
             Relative optimality gap tolerance for termination.
         threads : int, default 1
             Number of CPU threads for Rust components.
-        gpu : bool, default True
-            Enable GPU acceleration for JAX components.
         llm : bool, default False
             Enable LLM explanation of results.
         sensitivity : bool, default False
@@ -1321,7 +1318,6 @@ class Model:
             time_limit=time_limit,
             gap_tolerance=gap_tolerance,
             threads=threads,
-            gpu=gpu,
             deterministic=deterministic,
             partitions=partitions,
             branching_policy=branching_policy,

@@ -489,7 +489,6 @@ def solve_model(
     time_limit: float = 3600.0,
     gap_tolerance: float = 1e-4,
     threads: int = 1,
-    gpu: bool = True,
     deterministic: bool = True,
     batch_size: int = 16,
     strategy: str = "best_first",
@@ -501,6 +500,7 @@ def solve_model(
     partitions: int = 0,
     branching_policy: str = "fractional",
     use_learned_relaxations: bool = False,
+    mccormick_bounds: str = "none",
 ) -> SolveResult:
     """
     Solve a Model via NLP-based spatial Branch & Bound.
@@ -523,8 +523,6 @@ def solve_model(
         Relative optimality gap tolerance for termination.
     threads : int, default 1
         Number of CPU threads (reserved for future use).
-    gpu : bool, default True
-        Enable GPU for JAX (currently CPU-only on macOS).
     deterministic : bool, default True
         Ensure deterministic results.
     batch_size : int, default 16
@@ -554,6 +552,12 @@ def solve_model(
         Use ICNN-based learned convex relaxations instead of standard
         McCormick. Requires ``pip install discopt[gnn]`` (equinox + optax).
         Falls back to standard McCormick for unsupported operations.
+    mccormick_bounds : str, default "none"
+        McCormick relaxation lower-bounding strategy:
+        ``"nlp"`` solves a convex NLP over the relaxation (valid bounds),
+        ``"midpoint"`` evaluates the convex underestimator at midpoint
+        (heuristic, not a valid global lower bound),
+        ``"none"`` disables (default).
 
     Returns
     -------
@@ -732,6 +736,57 @@ def solve_model(
             except Exception:
                 pass
 
+    # --- McCormick relaxation bounds ---
+    _mc_obj_eval = None  # BatchRelaxationEvaluator for midpoint bounds
+    _mc_obj_relax_fn = None  # raw relaxation fn for NLP bounds
+    _mc_con_relax_fns = None
+    _mc_con_senses = None
+    _mc_negate = False
+    _mc_mode = mccormick_bounds
+
+    if _mc_mode == "auto":
+        if not _has_nl_repr(model) and model._objective is not None:
+            _mc_mode = "midpoint"
+        else:
+            _mc_mode = "none"
+
+    if _mc_mode in ("midpoint", "nlp") and not _has_nl_repr(model) and model._objective is not None:
+        from discopt._jax.batch_evaluator import BatchRelaxationEvaluator
+        from discopt._jax.relaxation_compiler import (
+            compile_constraint_relaxation,
+            compile_objective_relaxation,
+        )
+        from discopt.modeling.core import ObjectiveSense
+
+        try:
+            _mc_obj_relax_fn = compile_objective_relaxation(
+                model,
+                partitions=partitions,
+                mode=_relax_mode,
+                learned_registry=_learned_registry,
+            )
+            _mc_obj_eval = BatchRelaxationEvaluator(_mc_obj_relax_fn, n_vars)
+            _mc_negate = model._objective.sense == ObjectiveSense.MAXIMIZE
+
+            if _mc_mode == "nlp" and model._constraints:
+                _mc_con_relax_fns = []
+                _mc_con_senses = []
+                for c in model._constraints:
+                    if isinstance(c, Constraint):
+                        _mc_con_relax_fns.append(
+                            compile_constraint_relaxation(
+                                c,
+                                model,
+                                partitions=partitions,
+                                mode=_relax_mode,
+                                learned_registry=_learned_registry,
+                            )
+                        )
+                        _mc_con_senses.append(c.sense)
+        except Exception:
+            _mc_obj_eval = None
+            _mc_obj_relax_fn = None
+
     # --- B&B loop ---
     iteration = 0
     while True:
@@ -792,6 +847,45 @@ def solve_model(
                             result_lbs[i] = max(result_lbs[i], relax_lb)
                         except Exception:
                             pass
+            # Tighten lower bounds with McCormick relaxation
+            if _mc_obj_eval is not None:
+                try:
+                    import jax.numpy as jnp
+
+                    lb_jax = jnp.array(batch_lb, dtype=jnp.float64)
+                    ub_jax = jnp.array(batch_ub, dtype=jnp.float64)
+                    if _mc_mode == "nlp" and _mc_obj_relax_fn is not None:
+                        from discopt._jax.mccormick_nlp import solve_mccormick_batch
+
+                        mc_lbs = np.asarray(
+                            solve_mccormick_batch(
+                                _mc_obj_relax_fn,
+                                _mc_con_relax_fns,
+                                _mc_con_senses,
+                                lb_jax,
+                                ub_jax,
+                                negate=_mc_negate,
+                            )
+                        )
+                    else:
+                        from discopt._jax.mccormick_nlp import (
+                            evaluate_midpoint_bound_batch,
+                        )
+
+                        assert _mc_obj_relax_fn is not None
+                        mc_lbs = np.asarray(
+                            evaluate_midpoint_bound_batch(
+                                _mc_obj_relax_fn,
+                                lb_jax,
+                                ub_jax,
+                                negate=_mc_negate,
+                            )
+                        )
+                    for i in range(n_batch):
+                        if result_lbs[i] < 1e20 and np.isfinite(mc_lbs[i]):
+                            result_lbs[i] = max(result_lbs[i], float(mc_lbs[i]))
+                except Exception:
+                    pass
         else:
             result_ids = np.empty(n_batch, dtype=np.int64)
             result_lbs = np.empty(n_batch, dtype=np.float64)
@@ -852,6 +946,41 @@ def solve_model(
                                 evaluator, node_lb, node_ub, _alphabb_alpha
                             )
                             nlp_lb = max(nlp_lb, relax_lb)
+                        except Exception:
+                            pass
+                    # McCormick relaxation bound
+                    if _mc_obj_relax_fn is not None:
+                        try:
+                            import jax.numpy as jnp
+
+                            lb_j = jnp.array(node_lb, dtype=jnp.float64)
+                            ub_j = jnp.array(node_ub, dtype=jnp.float64)
+                            if _mc_mode == "nlp":
+                                from discopt._jax.mccormick_nlp import (
+                                    solve_mccormick_relaxation_nlp,
+                                )
+
+                                mc_lb = solve_mccormick_relaxation_nlp(
+                                    _mc_obj_relax_fn,
+                                    _mc_con_relax_fns,
+                                    _mc_con_senses,
+                                    lb_j,
+                                    ub_j,
+                                    negate=_mc_negate,
+                                )
+                            else:
+                                from discopt._jax.mccormick_nlp import (
+                                    evaluate_midpoint_bound,
+                                )
+
+                                mc_lb = evaluate_midpoint_bound(
+                                    _mc_obj_relax_fn,
+                                    lb_j,
+                                    ub_j,
+                                    negate=_mc_negate,
+                                )
+                            if np.isfinite(mc_lb):
+                                nlp_lb = max(nlp_lb, mc_lb)
                         except Exception:
                             pass
                     result_lbs[i] = nlp_lb

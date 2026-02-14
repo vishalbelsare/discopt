@@ -82,7 +82,6 @@ class BenchmarkRunner:
         """
         result: SolveResult = model.solve(
             time_limit=self._config.time_limit,
-            gpu=False,
         )
 
         return BenchmarkResult(

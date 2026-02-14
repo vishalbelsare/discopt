@@ -140,7 +140,3 @@ See [ROADMAP.md](ROADMAP.md) for the full development roadmap and task history.
 
 [Eclipse Public License 2.0 (EPL-2.0)](LICENSE)
 
-## Roadmap
-
-- [ ] GPU acceleration (JAX Metal backend blocked on upstream fix)
-- [ ] OptiLitBot to scan literature for new papers that are relevant

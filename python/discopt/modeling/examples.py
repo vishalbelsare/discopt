@@ -428,12 +428,12 @@ def example_pyomo_import():
     # One-line import to discopt
     dm_model = dm.from_pyomo(pyo_model)
 
-    # Now solve with GPU acceleration
-    result = dm_model.solve(gpu=True)
+    # Now solve with discopt
+    result = dm_model.solve()
 
     # Or use as discopt solver plugin directly in Pyomo:
     solver = pyo.SolverFactory('discopt')
-    results = solver.solve(pyo_model, options={'gpu': True})
+    results = solver.solve(pyo_model)
     """
     print("Pyomo import example (requires pyomo and solver backend)")
 
@@ -504,8 +504,8 @@ def example_llm_formulation():
     print(model)
     print(model.summary())
 
-    # Solve with GPU
-    result = model.solve(gpu=True, llm=True)
+    # Solve with LLM explanation
+    result = model.solve(llm=True)
     print(result.explain())
     # "Opened warehouses NYC and Chicago (total fixed cost $18,000).
     #  Boston and Miami served from NYC; Denver, Seattle, Dallas from Chicago.
