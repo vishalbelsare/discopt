@@ -509,7 +509,7 @@ def _is_const_expr(expr) -> bool:
     return False
 
 
-def _eval_const(expr) -> float:
+def _eval_const(expr) -> float:  # type: ignore[return-value]
     """Evaluate a constant expression to a float scalar."""
     if isinstance(expr, Constant):
         v = expr.value
@@ -629,7 +629,7 @@ def extract_lp_data_algebraic(model: Model) -> LPData:
     c_full = np.concatenate([c, np.zeros(n_slack, dtype=np.float64)])
 
     return LPData(
-        c=jnp.asarray(c_full),
+        c=jnp.asarray(c_full),  # type: ignore[arg-type]
         A_eq=A_eq,
         b_eq=b_eq,
         x_l=x_l,
@@ -664,8 +664,8 @@ def extract_qp_data_algebraic(model: Model) -> QPData:
         c_full = c_vec
 
     return QPData(
-        Q=jnp.asarray(Q_full),
-        c=jnp.asarray(c_full),
+        Q=jnp.asarray(Q_full),  # type: ignore[arg-type]
+        c=jnp.asarray(c_full),  # type: ignore[arg-type]
         A_eq=A_eq,
         b_eq=b_eq,
         x_l=x_l,
