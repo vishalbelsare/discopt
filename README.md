@@ -22,7 +22,7 @@ A hybrid Mixed-Integer Nonlinear Programming (MINLP) solver combining a Rust bac
 - **.nl file import** -- read AMPL-format models via Rust parser
 - **CUTEst interface** -- NLP benchmarking against the CUTEst test set
 - **LLM integration** (optional) -- conversational model building, diagnostics, and reformulation suggestions
-- **900+ tests** -- 140 Rust + 770+ Python
+- **1650+ tests** -- 141 Rust + 1510+ Python
 
 ## Quick Start
 
@@ -82,6 +82,24 @@ result = model.solve(nlp_solver="ripopt")   # Rust IPM
 result = model.solve(nlp_solver="cyipopt")  # Ipopt
 ```
 
+## Benchmarks
+
+Performance measured on Apple M4 Pro (CPU, JAX 0.8.2). "Warm" times exclude JIT compilation. All solvers produce matching objective values.
+
+| Problem Class | discopt | Comparison | Notes |
+|---------------|---------|------------|-------|
+| **LP** (n=100) | 0.015s warm | HiGHS 0.002s, scipy 0.002s | Algebraic extraction, no autodiff |
+| **QP** (n=100) | 0.04s warm | scipy SLSQP 0.02s | Was 66s before algebraic extraction |
+| **MILP** (n=25) | 0.002s | HiGHS MIP 0.002s | B&B + LP relaxation, correct objectives |
+| **MIQP** (n=10) | 0.004s | NLP path 4.9s | QP-specialized path: 1000x+ speedup |
+| **NLP** (n=20, Rosenbrock) | IPM 1.1s warm, ripopt 0.42s, Ipopt 0.43s | -- | ripopt fastest single-solve; IPM best for batched B&B |
+| **MINLP** (n=10) | 0.9s (batch=1) | 0.9s (batch=16) | vmap batching helps with deeper B&B trees |
+
+See the benchmark notebooks for full scaling plots and details:
+- [Benchmarks by Problem Class](notebooks/benchmarks_by_class.ipynb) -- LP, QP, MILP, MIQP, NLP (3 backends), MINLP
+- [IPM vs ripopt vs Ipopt](notebooks/ipm_vs_ipopt.ipynb) -- detailed NLP backend comparison
+- [Batch IPM vs Ipopt](notebooks/batch_ipm_vs_ipopt.ipynb) -- vmap-batched IPM for B&B inner loops
+
 ## Installation
 
 Requires Rust 1.84+, Python 3.10+, and Ipopt.
@@ -122,11 +140,7 @@ See [ROADMAP.md](ROADMAP.md) for the full development roadmap and task history.
 
 [Eclipse Public License 2.0 (EPL-2.0)](LICENSE)
 
-## Tasks
+## Roadmap
 
-- [ ] Performance benchmarks (timing, solution success)
-  - [ ] Across LP, QP, MIP, MILP, MIQP, MINLP
-    - [ ] Pure Jax version
-    - [ ] ripopt version
-- [ ] Add sparsity for large scale problems
+- [ ] GPU acceleration (JAX Metal backend blocked on upstream fix)
 - [ ] OptiLitBot to scan literature for new papers that are relevant
