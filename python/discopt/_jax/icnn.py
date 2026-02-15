@@ -87,7 +87,8 @@ class ICNN(eqx.Module):
         # Subsequent hidden layers with non-negative weight enforcement
         for w_z, w_x in zip(self.hidden_layers, self.input_layers[1:]):
             # Enforce non-negative weights: softplus(raw_weight) >= 0
-            z = jax.nn.relu(jnp.dot(z, jax.nn.softplus(w_z.weight.T)) + w_z.bias + w_x(x))
+            bias = w_z.bias if w_z.bias is not None else 0.0
+            z = jax.nn.relu(jnp.dot(z, jax.nn.softplus(w_z.weight.T)) + bias + w_x(x))
 
         # Final scalar output
         out: jnp.ndarray = self.output_layer(z).squeeze(-1)
@@ -164,7 +165,8 @@ def enforce_nonneg(icnn: ICNN) -> ICNN:
         # softplus(w) >= 0 for all w, so this is mainly to avoid large negative
         # raw weights that would produce near-zero effective weights.
         new_weight = jnp.maximum(layer.weight, 0.0)
-        return eqx.tree_at(lambda ly: ly.weight, layer, new_weight)
+        result: eqx.nn.Linear = eqx.tree_at(lambda ly: ly.weight, layer, new_weight)
+        return result
 
     new_hidden = [clamp_weight(layer) for layer in icnn.hidden_layers]
     result: ICNN = eqx.tree_at(lambda m: m.hidden_layers, icnn, new_hidden)
