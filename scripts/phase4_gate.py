@@ -173,6 +173,7 @@ def solve_instance(name: str, nl_path: Path, time_limit: float, max_nodes: int) 
             time_limit=time_limit,
             gap_tolerance=1e-4,
             max_nodes=max_nodes,
+            mccormick_bounds="nlp",
         )
 
         signal.alarm(0)

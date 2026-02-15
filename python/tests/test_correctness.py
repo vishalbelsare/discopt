@@ -996,3 +996,68 @@ class TestCorrectnessGate:
             f"CORRECTNESS GATE FAILED: {len(incorrect)} incorrect result(s):\n"
             + "\n".join(f"  - {msg}" for msg in incorrect)
         )
+
+
+class TestConstraintFeasibilityCheck:
+    """Verify that constraint-violating NLP solutions are rejected as incumbents.
+
+    Regression test for the bug where the Rust B&B tree accepted solutions
+    based solely on integer feasibility, ignoring constraint violations.
+    """
+
+    def test_prob03_constraint_satisfaction(self):
+        """prob03: min 3x + 2y s.t. x*y >= 3.5, 1 <= x,y <= 5, integers.
+
+        The correct optimum is x=1, y=4 with obj=11 (or x=2, y=2, obj=10).
+        An infeasible point (1,3) has obj=9 but violates x*y >= 3.5.
+        """
+        m = dm.Model("prob03_constraint_check")
+        x = m.integer("x", lb=1, ub=5)
+        y = m.integer("y", lb=1, ub=5)
+        m.minimize(3 * x + 2 * y)
+        m.subject_to(x * y >= 3.5)
+
+        result = m.solve(time_limit=30.0, max_nodes=10000)
+
+        assert result.status in ("optimal", "feasible"), (
+            f"Expected optimal/feasible, got {result.status}"
+        )
+        assert result.objective is not None
+
+        # The correct optimum is 10.0 (x=2, y=2)
+        assert result.objective >= 10.0 - 1e-4, (
+            f"Objective {result.objective} is below the true optimum 10.0 "
+            f"— constraint-violating solution accepted as incumbent"
+        )
+
+        # Verify constraint satisfaction at solution
+        if result.x is not None:
+            x_val = float(result.x["x"])
+            y_val = float(result.x["y"])
+            assert x_val * y_val >= 3.5 - 1e-6, (
+                f"Constraint x*y >= 3.5 violated: {x_val}*{y_val} = {x_val * y_val}"
+            )
+
+    def test_feasibility_check_helper(self):
+        """Unit test for _check_constraint_feasibility."""
+        import numpy as np
+        from discopt._jax.nlp_evaluator import NLPEvaluator
+        from discopt.solver import _check_constraint_feasibility
+
+        # The modeling API normalizes x + y >= 3 to 3 - x - y <= 0,
+        # so _infer_constraint_bounds yields cl=-1e20, cu=0.
+        m = dm.Model("feas_check_test")
+        x = m.continuous("x", lb=0, ub=5)
+        y = m.continuous("y", lb=0, ub=5)
+        m.minimize(x + y)
+        m.subject_to(x + y >= 3.0)
+
+        ev = NLPEvaluator(m)
+        cl = [-1e20]  # <= constraint (normalized from >=)
+        cu = [0.0]
+
+        # Feasible point: x=2, y=2 => 3-4 = -1 <= 0 ✓
+        assert _check_constraint_feasibility(ev, np.array([2.0, 2.0]), cl, cu)
+
+        # Infeasible point: x=0.5, y=0.5 => 3-1 = 2 > 0 ✗
+        assert not _check_constraint_feasibility(ev, np.array([0.5, 0.5]), cl, cu)

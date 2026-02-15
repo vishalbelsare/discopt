@@ -272,6 +272,36 @@ def _extract_variable_info(model: Model):
     return n_vars, lb, ub, int_var_offsets, int_var_sizes
 
 
+def _check_constraint_feasibility(evaluator, x, cl_list, cu_list, tol=1e-6):
+    """Return True if x satisfies all constraints within tolerance.
+
+    Parameters
+    ----------
+    evaluator : NLPEvaluator or _AugmentedEvaluator
+        Constraint evaluator with ``evaluate_constraints`` and ``n_constraints``.
+    x : np.ndarray
+        Candidate solution vector.
+    cl_list : list[float]
+        Lower bounds on constraints (use -1e20 for no lower bound).
+    cu_list : list[float]
+        Upper bounds on constraints (use 1e20 for no upper bound).
+    tol : float
+        Feasibility tolerance.
+
+    Returns
+    -------
+    bool
+        True if all constraints are satisfied within *tol*.
+    """
+    if evaluator.n_constraints == 0:
+        return True
+    cons = evaluator.evaluate_constraints(np.asarray(x, dtype=np.float64))
+    cl = np.array(cl_list, dtype=np.float64)
+    cu = np.array(cu_list, dtype=np.float64)
+    max_viol = max(float(np.max(cons - cu)), float(np.max(cl - cons)))
+    return max_viol <= tol
+
+
 def _infer_constraint_bounds(model: Model):
     """Infer (cl, cu) arrays from model constraint senses.
 
@@ -985,6 +1015,22 @@ def solve_model(
                 _active_gu,
                 batch_psols=batch_psols,
             )
+            # Constraint feasibility post-check for batch IPM results
+            if cl_list:
+                for i in range(n_batch):
+                    if result_lbs[i] < _SENTINEL_THRESHOLD:
+                        if not _check_constraint_feasibility(
+                            _active_evaluator,
+                            result_sols[i],
+                            cl_list,
+                            cu_list,
+                        ):
+                            result_lbs[i] = _INFEASIBILITY_SENTINEL
+                            logger.debug(
+                                "Batch node %d: IPM solution violates "
+                                "constraints, marking infeasible",
+                                int(batch_ids[i]),
+                            )
             # Tighten lower bounds with alphaBB underestimator
             if _use_alphabb:
                 for i in range(n_batch):
@@ -1134,6 +1180,17 @@ def solve_model(
                                 nlp_lb = max(nlp_lb, mc_lb)
                         except (ValueError, ArithmeticError, RuntimeError) as e:
                             logger.debug("McCormick bound failed: %s", e)
+                    # Constraint feasibility post-check: reject NLP solutions
+                    # that violate constraints (the Rust B&B tree only checks
+                    # integrality, not constraint satisfaction).
+                    if cl_list and not _check_constraint_feasibility(
+                        _active_evaluator, nlp_result.x, cl_list, cu_list
+                    ):
+                        nlp_lb = _INFEASIBILITY_SENTINEL
+                        logger.debug(
+                            "Node %d: NLP solution violates constraints, marking infeasible",
+                            int(batch_ids[i]),
+                        )
                     result_lbs[i] = nlp_lb
                     result_sols[i] = nlp_result.x
                     result_feas[i] = False
@@ -1250,7 +1307,10 @@ def solve_model(
                     fp_sol = feasibility_pump(model, result_sols[best_root_idx], max_rounds=5)
                     if fp_sol is not None:
                         fp_obj = float(evaluator.evaluate_objective(fp_sol))
-                        if np.isfinite(fp_obj) and fp_obj < _SENTINEL_THRESHOLD:
+                        fp_feas = not cl_list or _check_constraint_feasibility(
+                            evaluator, fp_sol, cl_list, cu_list
+                        )
+                        if np.isfinite(fp_obj) and fp_obj < _SENTINEL_THRESHOLD and fp_feas:
                             tree.inject_incumbent(fp_sol, fp_obj)
                             logger.info("Feasibility pump found incumbent: obj=%.6g", fp_obj)
                 except Exception as e:

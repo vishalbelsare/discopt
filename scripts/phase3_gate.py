@@ -162,7 +162,10 @@ max_nodes = int(sys.argv[3])
 model = dm.from_nl(nl_path)
 n_vars = len(model._variables)
 n_cons = len(model._constraints)
-result = model.solve(time_limit=time_limit, gap_tolerance=1e-4, max_nodes=max_nodes)
+result = model.solve(
+    time_limit=time_limit, gap_tolerance=1e-4, max_nodes=max_nodes,
+    mccormick_bounds="nlp",
+)
 wt = result.wall_time if result.wall_time > 0 else 1e-10
 nc = result.node_count or 0
 nps = nc / wt if wt > 0 else 0.0
