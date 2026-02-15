@@ -733,13 +733,13 @@ def solve_model(
     jax_time = 0.0
 
     if nlp_solver == "ripopt":
-        print("Using ripopt (Rust interior point method)")
+        logger.info("Using ripopt (Rust interior point method)")
     elif nlp_solver == "sparse_ipm":
-        print("Using sparse IPM (scipy direct solve)")
+        logger.info("Using sparse IPM (scipy direct solve)")
     elif nlp_solver == "ipm":
-        print("Using discopt IPM (pure-JAX interior point method)")
+        logger.info("Using discopt IPM (pure-JAX interior point method)")
     else:
-        print("Using Ipopt (via cyipopt)")
+        logger.info("Using Ipopt (via cyipopt)")
 
     # --- Problem classification: dispatch LP/QP to specialized solvers ---
     try:

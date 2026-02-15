@@ -25,7 +25,6 @@ parts:
       - file: notebooks/solver_internals
       - file: notebooks/sensitivity_analysis
       - file: notebooks/llm_integration
-      - file: llm_features
   - caption: Solver Backends
     chapters:
       - file: notebooks/ipm_vs_ipopt
@@ -39,4 +38,5 @@ parts:
       - file: api
   - caption: Appendix
     chapters:
+      - file: comparison
       - file: references
