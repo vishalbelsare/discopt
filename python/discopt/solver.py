@@ -449,6 +449,141 @@ def _unpack_solution(model: Model, x_flat: np.ndarray):
     return result
 
 
+def _strong_branch_lp(
+    evaluator,
+    solution: np.ndarray,
+    node_lb: np.ndarray,
+    node_ub: np.ndarray,
+    candidate_var_indices: np.ndarray,
+    parent_lb: float,
+    max_candidates: int = 5,
+    time_limit: float = 1.0,
+) -> Optional[int]:
+    """Perform strong branching via LP relaxations for unreliable candidates.
+
+    For each candidate variable, solves two LP relaxations (down-branch and
+    up-branch) and returns the variable index with the best product score.
+
+    Uses the NLP evaluator's gradient at the current solution as LP objective
+    (first-order Taylor approximation), with node bounds as variable bounds.
+
+    Parameters
+    ----------
+    evaluator : NLPEvaluator or _AugmentedEvaluator
+        Evaluator for gradient/constraint computation.
+    solution : np.ndarray
+        Current relaxation solution at this node.
+    node_lb, node_ub : np.ndarray
+        Variable bounds for this node.
+    candidate_var_indices : np.ndarray
+        Flat indices of candidate variables to evaluate.
+    parent_lb : float
+        Parent node's relaxation lower bound.
+    max_candidates : int
+        Maximum number of candidates to evaluate (most fractional first).
+    time_limit : float
+        Total time budget for all LP solves.
+
+    Returns
+    -------
+    int or None
+        Best variable index to branch on, or None if no valid candidate.
+    """
+    from discopt.solvers.lp_highs import solve_lp
+
+    n_vars = len(solution)
+    n_candidates = len(candidate_var_indices)
+    if n_candidates == 0:
+        return None
+
+    # Limit candidates — prioritize those closest to 0.5 fractionality
+    if n_candidates > max_candidates:
+        fracs = np.array([solution[i] - np.floor(solution[i]) for i in candidate_var_indices])
+        closeness_to_half = 0.5 - np.abs(fracs - 0.5)
+        top_k = np.argsort(-closeness_to_half)[:max_candidates]
+        candidate_var_indices = candidate_var_indices[top_k]
+
+    # LP objective: gradient of the objective at the current solution.
+    try:
+        c = np.asarray(evaluator.evaluate_gradient(solution), dtype=np.float64).ravel()
+    except Exception:
+        return None
+
+    # LP constraints from the evaluator's Jacobian (linearized).
+    A_ub = None
+    b_ub = None
+    try:
+        if evaluator.n_constraints > 0:
+            g_vals = np.asarray(evaluator.evaluate_constraints(solution), dtype=np.float64).ravel()
+            J = np.asarray(evaluator.evaluate_jacobian(solution), dtype=np.float64)
+            if J.ndim == 1:
+                J = J.reshape(1, -1)
+            # Linearized constraints: J @ (x - x0) + g(x0) <= 0
+            # => J @ x <= J @ x0 - g(x0)
+            A_ub = J
+            b_ub = J @ solution - g_vals
+    except Exception:
+        pass  # Proceed without constraints (just variable bounds)
+
+    bounds_list = [(float(node_lb[j]), float(node_ub[j])) for j in range(n_vars)]
+
+    best_var = None
+    best_score = -np.inf
+    t_start = time.perf_counter()
+    per_solve_limit = max(0.05, time_limit / (2 * len(candidate_var_indices) + 1))
+
+    for var_idx in candidate_var_indices:
+        if time.perf_counter() - t_start > time_limit:
+            break
+
+        var_idx = int(var_idx)
+        val = solution[var_idx]
+        floor_val = np.floor(val)
+
+        # Down branch: x_i <= floor(val)
+        down_bounds = list(bounds_list)
+        down_bounds[var_idx] = (down_bounds[var_idx][0], floor_val)
+        try:
+            down_result = solve_lp(
+                c, A_ub=A_ub, b_ub=b_ub, bounds=down_bounds, time_limit=per_solve_limit
+            )
+            down_obj = down_result.objective
+            down_lb = (
+                float(down_obj)
+                if down_result.status == SolveStatus.OPTIMAL and down_obj is not None
+                else np.inf
+            )
+        except Exception:
+            down_lb = np.inf
+
+        # Up branch: x_i >= ceil(val)
+        up_bounds = list(bounds_list)
+        up_bounds[var_idx] = (floor_val + 1.0, up_bounds[var_idx][1])
+        try:
+            up_result = solve_lp(
+                c, A_ub=A_ub, b_ub=b_ub, bounds=up_bounds, time_limit=per_solve_limit
+            )
+            up_obj = up_result.objective
+            up_lb = (
+                float(up_obj)
+                if up_result.status == SolveStatus.OPTIMAL and up_obj is not None
+                else np.inf
+            )
+        except Exception:
+            up_lb = np.inf
+
+        # Product score: improvement in each direction
+        down_gain = max(0.0, down_lb - parent_lb) if np.isfinite(down_lb) else 1e6
+        up_gain = max(0.0, up_lb - parent_lb) if np.isfinite(up_lb) else 1e6
+        score = (1e-6 + down_gain) * (1e-6 + up_gain)
+
+        if score > best_score:
+            best_score = score
+            best_var = var_idx
+
+    return best_var
+
+
 def _is_pure_continuous(model: Model) -> bool:
     """Check if model has no integer/binary variables."""
     return all(v.var_type == VarType.CONTINUOUS for v in model._variables)
@@ -1049,6 +1184,48 @@ def solve_model(
                 tree.set_branch_hints(
                     np.array(hint_node_ids, dtype=np.int64),
                     np.array(hint_var_indices, dtype=np.int64),
+                )
+
+        # --- Strong branching for unreliable pseudocost candidates ---
+        # For nodes without GNN hints, use LP-based strong branching when
+        # pseudocost observations are insufficient for reliable branching.
+        if branching_policy != "gnn" and iteration > 0:
+            sb_hint_ids: list[int] = []
+            sb_hint_vars = []
+            rel_thresh = tree.reliability_threshold()
+            for i in range(n_batch):
+                if result_lbs[i] >= _SENTINEL_THRESHOLD:
+                    continue  # skip infeasible nodes
+                node_id = int(batch_ids[i])
+                sol_i = result_sols[i]
+                var_indices, _frac_parts, obs_counts, _scores = tree.score_candidates(sol_i)
+                if len(var_indices) == 0:
+                    continue
+                # Identify unreliable candidates
+                unreliable_mask = obs_counts < rel_thresh
+                if not np.any(unreliable_mask):
+                    continue  # all candidates are reliable, pseudocosts will work
+                unreliable_vars = np.asarray(var_indices)[unreliable_mask]
+                try:
+                    best_var = _strong_branch_lp(
+                        _active_evaluator,
+                        sol_i,
+                        np.array(batch_lb[i]),
+                        np.array(batch_ub[i]),
+                        unreliable_vars,
+                        parent_lb=float(result_lbs[i]),
+                        max_candidates=5,
+                        time_limit=0.5,
+                    )
+                    if best_var is not None:
+                        sb_hint_ids.append(node_id)
+                        sb_hint_vars.append(best_var)
+                except Exception as e:
+                    logger.debug("Strong branching failed for node %d: %s", node_id, e)
+            if sb_hint_ids:
+                tree.set_branch_hints(
+                    np.array(sb_hint_ids, dtype=np.int64),
+                    np.array(sb_hint_vars, dtype=np.int64),
                 )
 
         # --- Optional cut generation (OA + RLT + lift-and-project) ---

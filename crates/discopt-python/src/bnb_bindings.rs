@@ -274,6 +274,47 @@ impl PyTreeManager {
         self.inner.inject_incumbent(sol_vec, obj_val)
     }
 
+    /// Score branching candidates for a solution vector.
+    ///
+    /// Returns (var_indices, frac_parts, obs_counts, scores) as four arrays.
+    /// Only fractional integer variables are included.
+    #[allow(clippy::type_complexity)]
+    fn score_candidates<'py>(
+        &self,
+        py: Python<'py>,
+        solution: PyReadonlyArray1<f64>,
+    ) -> (
+        Bound<'py, PyArray1<i64>>,
+        Bound<'py, PyArray1<f64>>,
+        Bound<'py, PyArray1<i64>>,
+        Bound<'py, PyArray1<f64>>,
+    ) {
+        let sol = solution.as_slice().unwrap();
+        let candidates = self.inner.score_candidates(sol);
+        let n = candidates.len();
+        let mut var_indices = Vec::with_capacity(n);
+        let mut frac_parts = Vec::with_capacity(n);
+        let mut obs_counts = Vec::with_capacity(n);
+        let mut scores = Vec::with_capacity(n);
+        for (idx, frac, obs, score) in candidates {
+            var_indices.push(idx as i64);
+            frac_parts.push(frac);
+            obs_counts.push(obs as i64);
+            scores.push(score);
+        }
+        (
+            PyArray1::from_vec(py, var_indices),
+            PyArray1::from_vec(py, frac_parts),
+            PyArray1::from_vec(py, obs_counts),
+            PyArray1::from_vec(py, scores),
+        )
+    }
+
+    /// Get the reliability threshold for pseudocost branching.
+    fn reliability_threshold(&self) -> u32 {
+        self.inner.get_reliability_threshold()
+    }
+
     /// Set a branch hint for the next branching decision.
     ///
     /// When set, process_evaluated() will branch on the hinted variable

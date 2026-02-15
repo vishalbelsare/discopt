@@ -425,6 +425,44 @@ impl TreeManager {
         self.branch_hints.insert(node_id, var_index);
     }
 
+    /// Return branching candidate info for a solution vector.
+    ///
+    /// For each fractional integer variable, returns:
+    /// `(var_index, frac_part, observation_count, pseudocost_score)`.
+    ///
+    /// This allows the Python orchestrator to identify unreliable candidates
+    /// and perform strong branching before calling `process_evaluated`.
+    pub fn score_candidates(
+        &self,
+        solution: &[f64],
+    ) -> Vec<(usize, f64, u32, f64)> {
+        let mut candidates = Vec::new();
+        for var in &self.integer_vars {
+            if !var.is_integer {
+                continue;
+            }
+            for i in 0..var.size {
+                let idx = var.offset + i;
+                if idx >= solution.len() {
+                    continue;
+                }
+                let val = solution[idx];
+                let frac = val - val.floor();
+                if frac > 1e-5 && frac < 1.0 - 1e-5 {
+                    let obs = self.pseudocosts.observation_count(idx);
+                    let score = self.pseudocosts.score(idx, frac);
+                    candidates.push((idx, frac, obs, score));
+                }
+            }
+        }
+        candidates
+    }
+
+    /// Get the reliability threshold for pseudocost branching.
+    pub fn get_reliability_threshold(&self) -> u32 {
+        self.reliability_threshold
+    }
+
     /// Inject an externally-found incumbent (e.g. from a primal heuristic).
     ///
     /// Updates the incumbent only if `obj_val` is strictly better than the
