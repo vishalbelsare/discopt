@@ -8,7 +8,7 @@ use pyo3::types::{PyDict, PyTuple};
 
 use discopt_core::expr::{
     BinOp, ConstraintRepr, ConstraintSense, ExprArena, ExprId, ExprNode, IndexSpec, MathFunc,
-    ModelRepr, ObjectiveSense, UnOp, VarInfo, VarType,
+    ModelBuilder, ModelRepr, ObjectiveSense, UnOp, VarInfo, VarType,
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -342,67 +342,109 @@ impl PyModelRepr {
 // ─────────────────────────────────────────────────────────────
 
 /// Convert a Python Model object to a Rust ModelRepr.
+///
+/// When `builder` is provided, starts from the builder's pre-populated arena
+/// (fast-API constraints) and merges in any expression-based constraints.
 #[pyfunction]
-pub fn model_to_repr(py: Python<'_>, model: &Bound<'_, PyAny>) -> PyResult<PyModelRepr> {
-    let mut arena = ExprArena::new();
-
-    // Build variable info from model._variables
-    let py_vars = model.getattr("_variables")?;
-    let py_vars_list: Vec<Bound<'_, PyAny>> = py_vars.extract()?;
-    let mut variables = Vec::new();
-    let mut offset = 0;
-    for py_var in &py_vars_list {
-        let name: String = py_var.getattr("name")?.extract()?;
-        let shape_tuple: Vec<usize> = py_var.getattr("shape")?.extract()?;
-        let size: usize = py_var.getattr("size")?.extract()?;
-
-        let var_type_obj = py_var.getattr("var_type")?;
-        let var_type_str: String = var_type_obj.getattr("value")?.extract()?;
-        let var_type = match var_type_str.as_str() {
-            "continuous" => VarType::Continuous,
-            "binary" => VarType::Binary,
-            "integer" => VarType::Integer,
-            _ => {
-                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                    "Unknown VarType: {var_type_str}"
-                )));
-            }
+#[pyo3(signature = (model, builder=None))]
+pub fn model_to_repr(
+    py: Python<'_>,
+    model: &Bound<'_, PyAny>,
+    builder: Option<&mut PyModelBuilder>,
+) -> PyResult<PyModelRepr> {
+    // Determine whether we're in hybrid mode (builder provided) or pure-expression mode.
+    // Clone (not take) from builder so it can be reused across multiple calls.
+    let (mut arena, mut variables, mut constraints, builder_objective, builder_sense, n_vars_init, builder_var_expr_ids) =
+        if let Some(b) = builder {
+            let a = b.inner.arena.clone();
+            let v = b.inner.variables.clone();
+            let c = b.inner.constraints.clone();
+            let obj = b.inner.objective;
+            let sense = b.inner.objective_sense;
+            let nv = b.inner.n_vars;
+            let ve = b.inner.var_expr_ids.clone();
+            (a, v, c, obj, Some(sense), nv, ve)
+        } else {
+            (ExprArena::new(), Vec::new(), Vec::new(), None, None, 0usize, Vec::new())
         };
 
-        // Extract bounds as flat arrays
-        let lb_obj = py_var.getattr("lb")?;
-        let lb = extract_flat_f64(&lb_obj)?;
-        let ub_obj = py_var.getattr("ub")?;
-        let ub = extract_flat_f64(&ub_obj)?;
+    // Build variable info from model._variables for the expression path.
+    let py_vars = model.getattr("_variables")?;
+    let py_vars_list: Vec<Bound<'_, PyAny>> = py_vars.extract()?;
 
-        variables.push(VarInfo {
-            name,
-            var_type,
-            offset,
-            size,
-            shape: shape_tuple,
-            lb,
-            ub,
-        });
-        offset += size;
-    }
-    let n_vars = offset;
-
-    // Register all variables in the arena upfront.
     // Map from Python Variable object id -> ExprId.
     let mut var_expr_ids: std::collections::HashMap<isize, ExprId> =
         std::collections::HashMap::new();
-    for (i, py_var) in py_vars_list.iter().enumerate() {
-        let vi = &variables[i];
-        let expr_id = arena.add(ExprNode::Variable {
-            name: vi.name.clone(),
-            index: i,
-            size: vi.size,
-            shape: vi.shape.clone(),
-        });
-        let py_id = py_var.as_ptr() as isize;
-        var_expr_ids.insert(py_id, expr_id);
+
+    if !builder_var_expr_ids.is_empty() {
+        // Builder mode: variables already registered in arena. Map Python objects
+        // to the builder's ExprIds using _builder_idx.
+        for py_var in &py_vars_list {
+            let py_id = py_var.as_ptr() as isize;
+            // Try to get _builder_idx — if the variable was registered via the builder
+            if let Ok(idx) = py_var.getattr("_builder_idx") {
+                if let Ok(bidx) = idx.extract::<usize>() {
+                    if bidx < builder_var_expr_ids.len() {
+                        var_expr_ids.insert(py_id, builder_var_expr_ids[bidx]);
+                    }
+                }
+            }
+        }
+    } else {
+        // Pure-expression mode: build VarInfo and arena nodes from scratch.
+        let mut offset = 0usize;
+        for py_var in &py_vars_list {
+            let name: String = py_var.getattr("name")?.extract()?;
+            let shape_tuple: Vec<usize> = py_var.getattr("shape")?.extract()?;
+            let size: usize = py_var.getattr("size")?.extract()?;
+
+            let var_type_obj = py_var.getattr("var_type")?;
+            let var_type_str: String = var_type_obj.getattr("value")?.extract()?;
+            let var_type = match var_type_str.as_str() {
+                "continuous" => VarType::Continuous,
+                "binary" => VarType::Binary,
+                "integer" => VarType::Integer,
+                _ => {
+                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                        "Unknown VarType: {var_type_str}"
+                    )));
+                }
+            };
+
+            let lb_obj = py_var.getattr("lb")?;
+            let lb = extract_flat_f64(&lb_obj)?;
+            let ub_obj = py_var.getattr("ub")?;
+            let ub = extract_flat_f64(&ub_obj)?;
+
+            let vi_idx = variables.len();
+            variables.push(VarInfo {
+                name: name.clone(),
+                var_type,
+                offset,
+                size,
+                shape: shape_tuple.clone(),
+                lb,
+                ub,
+            });
+
+            let expr_id = arena.add(ExprNode::Variable {
+                name,
+                index: vi_idx,
+                size,
+                shape: shape_tuple,
+            });
+            let py_id = py_var.as_ptr() as isize;
+            var_expr_ids.insert(py_id, expr_id);
+
+            offset += size;
+        }
     }
+
+    let n_vars = if n_vars_init > 0 {
+        n_vars_init
+    } else {
+        variables.iter().map(|v| v.size).sum()
+    };
 
     // Register parameters.
     let py_params = model.getattr("_parameters")?;
@@ -424,31 +466,64 @@ pub fn model_to_repr(py: Python<'_>, model: &Bound<'_, PyAny>) -> PyResult<PyMod
         param_expr_ids.insert(py_id, expr_id);
     }
 
-    // Convert the objective expression
+    // Determine objective: builder's objective takes priority, fall back to model._objective.
     let py_objective = model.getattr("_objective")?;
-    let py_obj_expr = py_objective.getattr("expression")?;
-    let objective = convert_expr(py, &py_obj_expr, &mut arena, &var_expr_ids, &param_expr_ids)?;
-
-    let sense_obj = py_objective.getattr("sense")?;
-    let sense_str: String = sense_obj.getattr("value")?.extract()?;
-    let objective_sense = match sense_str.as_str() {
-        "minimize" => ObjectiveSense::Minimize,
-        "maximize" => ObjectiveSense::Maximize,
-        _ => {
-            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Unknown ObjectiveSense: {sense_str}"
-            )));
+    let (objective, objective_sense) = if let Some(obj_id) = builder_objective {
+        // Builder has an objective. Check if model also has one (expression-based override).
+        if py_objective.is_none() {
+            // No Python objective — use builder's
+            (obj_id, builder_sense.unwrap_or(ObjectiveSense::Minimize))
+        } else {
+            // Python objective exists — check if it's a placeholder (from fast API)
+            let is_placeholder: bool = py_objective
+                .getattr("_is_placeholder")
+                .and_then(|v| v.extract())
+                .unwrap_or(false);
+            if is_placeholder {
+                (obj_id, builder_sense.unwrap_or(ObjectiveSense::Minimize))
+            } else {
+                // Expression-based objective overrides builder
+                let py_obj_expr = py_objective.getattr("expression")?;
+                let obj =
+                    convert_expr(py, &py_obj_expr, &mut arena, &var_expr_ids, &param_expr_ids)?;
+                let sense_obj = py_objective.getattr("sense")?;
+                let sense_str: String = sense_obj.getattr("value")?.extract()?;
+                let os = match sense_str.as_str() {
+                    "minimize" => ObjectiveSense::Minimize,
+                    "maximize" => ObjectiveSense::Maximize,
+                    _ => {
+                        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                            "Unknown ObjectiveSense: {sense_str}"
+                        )));
+                    }
+                };
+                (obj, os)
+            }
         }
+    } else {
+        // No builder objective — must come from Python model.
+        let py_obj_expr = py_objective.getattr("expression")?;
+        let obj = convert_expr(py, &py_obj_expr, &mut arena, &var_expr_ids, &param_expr_ids)?;
+        let sense_obj = py_objective.getattr("sense")?;
+        let sense_str: String = sense_obj.getattr("value")?.extract()?;
+        let os = match sense_str.as_str() {
+            "minimize" => ObjectiveSense::Minimize,
+            "maximize" => ObjectiveSense::Maximize,
+            _ => {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "Unknown ObjectiveSense: {sense_str}"
+                )));
+            }
+        };
+        (obj, os)
     };
 
-    // Convert constraints (only standard Constraint objects)
+    // Convert expression-based constraints (only standard Constraint objects)
     let py_constraints = model.getattr("_constraints")?;
     let py_constraints_list: Vec<Bound<'_, PyAny>> = py_constraints.extract()?;
-    let mut constraints = Vec::new();
     for py_con in &py_constraints_list {
         let class_name = get_class_name(py_con)?;
         if class_name != "Constraint" {
-            // Skip _IndicatorConstraint, _DisjunctiveConstraint, _SOSConstraint
             continue;
         }
         let body_expr = py_con.getattr("body")?;
@@ -664,6 +739,166 @@ fn convert_expr(
         }
         other => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
             "Unknown expression type: {other}"
+        ))),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// PyModelBuilder — fast construction without Python expression objects
+// ─────────────────────────────────────────────────────────────
+
+/// Fast model builder that constructs the Rust ExprArena directly,
+/// bypassing Python expression objects for linear/quadratic models.
+#[pyclass]
+pub struct PyModelBuilder {
+    inner: ModelBuilder,
+}
+
+#[pymethods]
+impl PyModelBuilder {
+    /// Create a new empty model builder.
+    #[new]
+    fn new() -> Self {
+        Self {
+            inner: ModelBuilder::new(),
+        }
+    }
+
+    /// Register a variable block. Returns the block index.
+    fn add_variable(
+        &mut self,
+        name: String,
+        var_type: &str,
+        shape: Vec<usize>,
+        lb: numpy::PyReadonlyArray1<f64>,
+        ub: numpy::PyReadonlyArray1<f64>,
+    ) -> PyResult<usize> {
+        let vt = match var_type {
+            "continuous" => VarType::Continuous,
+            "binary" => VarType::Binary,
+            "integer" => VarType::Integer,
+            _ => {
+                return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "Unknown VarType: {var_type}"
+                )));
+            }
+        };
+        let lb_vec: Vec<f64> = lb.as_array().iter().copied().collect();
+        let ub_vec: Vec<f64> = ub.as_array().iter().copied().collect();
+        Ok(self.inner.add_variable(name, vt, shape, lb_vec, ub_vec))
+    }
+
+    /// Add linear constraints from CSR sparse data.
+    ///
+    /// Parameters:
+    ///   indptr — CSR row pointers (int64)
+    ///   indices — CSR column indices (int64)
+    ///   data — CSR nonzero values (float64)
+    ///   var_idx — Variable block index
+    ///   sense — "<=" / "==" / ">="
+    ///   rhs — Right-hand side vector (float64)
+    ///   name_prefix — Optional name prefix
+    #[pyo3(signature = (indptr, indices, data, var_idx, sense, rhs, name_prefix=None))]
+    fn add_linear_constraints(
+        &mut self,
+        indptr: numpy::PyReadonlyArray1<i64>,
+        indices: numpy::PyReadonlyArray1<i64>,
+        data: numpy::PyReadonlyArray1<f64>,
+        var_idx: usize,
+        sense: &str,
+        rhs: numpy::PyReadonlyArray1<f64>,
+        name_prefix: Option<String>,
+    ) -> PyResult<()> {
+        let cs = parse_constraint_sense(sense)?;
+
+        let indptr_usize: Vec<usize> = indptr.as_array().iter().map(|&v| v as usize).collect();
+        let indices_usize: Vec<usize> = indices.as_array().iter().map(|&v| v as usize).collect();
+        let data_slice: Vec<f64> = data.as_array().iter().copied().collect();
+        let rhs_slice: Vec<f64> = rhs.as_array().iter().copied().collect();
+
+        self.inner.add_linear_constraints_csr(
+            &indptr_usize,
+            &indices_usize,
+            &data_slice,
+            var_idx,
+            cs,
+            &rhs_slice,
+            name_prefix.as_deref(),
+        );
+        Ok(())
+    }
+
+    /// Set a linear objective: c'x + constant.
+    #[pyo3(signature = (c, var_idx, constant=0.0, sense="minimize"))]
+    fn set_linear_objective(
+        &mut self,
+        c: numpy::PyReadonlyArray1<f64>,
+        var_idx: usize,
+        constant: f64,
+        sense: &str,
+    ) -> PyResult<()> {
+        let os = parse_objective_sense(sense)?;
+        let c_vec: Vec<f64> = c.as_array().iter().copied().collect();
+        self.inner.set_linear_objective(&c_vec, var_idx, constant, os);
+        Ok(())
+    }
+
+    /// Set a quadratic objective: 0.5 x'Qx + c'x + constant.
+    ///
+    /// Q is provided in CSR format.
+    #[pyo3(signature = (q_indptr, q_indices, q_data, c, var_idx, constant=0.0, sense="minimize"))]
+    fn set_quadratic_objective(
+        &mut self,
+        q_indptr: numpy::PyReadonlyArray1<i64>,
+        q_indices: numpy::PyReadonlyArray1<i64>,
+        q_data: numpy::PyReadonlyArray1<f64>,
+        c: numpy::PyReadonlyArray1<f64>,
+        var_idx: usize,
+        constant: f64,
+        sense: &str,
+    ) -> PyResult<()> {
+        let os = parse_objective_sense(sense)?;
+        let qi: Vec<usize> = q_indptr.as_array().iter().map(|&v| v as usize).collect();
+        let qj: Vec<usize> = q_indices.as_array().iter().map(|&v| v as usize).collect();
+        let qd: Vec<f64> = q_data.as_array().iter().copied().collect();
+        let cv: Vec<f64> = c.as_array().iter().copied().collect();
+        self.inner
+            .set_quadratic_objective(&qi, &qj, &qd, &cv, var_idx, constant, os);
+        Ok(())
+    }
+
+    /// Number of constraints built so far.
+    #[getter]
+    fn n_constraints(&self) -> usize {
+        self.inner.constraints.len()
+    }
+
+    /// Number of nodes in the arena.
+    #[getter]
+    fn n_nodes(&self) -> usize {
+        self.inner.arena.len()
+    }
+}
+
+/// Parse a constraint sense string.
+fn parse_constraint_sense(s: &str) -> PyResult<ConstraintSense> {
+    match s {
+        "<=" => Ok(ConstraintSense::Le),
+        "==" => Ok(ConstraintSense::Eq),
+        ">=" => Ok(ConstraintSense::Ge),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Unknown constraint sense: '{s}'. Expected '<=', '==', or '>='."
+        ))),
+    }
+}
+
+/// Parse an objective sense string.
+fn parse_objective_sense(s: &str) -> PyResult<ObjectiveSense> {
+    match s {
+        "minimize" => Ok(ObjectiveSense::Minimize),
+        "maximize" => Ok(ObjectiveSense::Maximize),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Unknown objective sense: '{s}'. Expected 'minimize' or 'maximize'."
         ))),
     }
 }

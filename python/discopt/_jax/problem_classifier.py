@@ -57,7 +57,8 @@ def classify_problem(model: Model) -> ProblemClass:
     try:
         from discopt._rust import model_to_repr
 
-        repr = model_to_repr(model)
+        _builder = getattr(model, "_builder", None)
+        repr = model_to_repr(model, _builder)
         obj_linear = repr.is_objective_linear()
         obj_quadratic = repr.is_objective_quadratic()
         all_constraints_linear = all(
@@ -674,11 +675,192 @@ def extract_qp_data_algebraic(model: Model) -> QPData:
     )
 
 
+def _extract_lp_data_from_repr(model: Model) -> LPData:
+    """Extract LP data by evaluating the Rust ModelRepr at unit vectors.
+
+    For linear functions, c_j = f(e_j) - f(0) and A_ij = g_i(e_j) - g_i(0).
+    This works for fast-API models where Python expression trees don't exist.
+    """
+    from discopt._rust import model_to_repr
+
+    _builder = getattr(model, "_builder", None)
+    repr_ = model_to_repr(model, _builder)
+
+    n_orig = repr_.n_vars
+    n_con = repr_.n_constraints
+
+    x_zero = np.zeros(n_orig, dtype=np.float64)
+    obj_at_zero = repr_.evaluate_objective(x_zero)
+
+    # Extract objective coefficients
+    c = np.zeros(n_orig, dtype=np.float64)
+    for j in range(n_orig):
+        ej = np.zeros(n_orig, dtype=np.float64)
+        ej[j] = 1.0
+        c[j] = repr_.evaluate_objective(ej) - obj_at_zero
+
+    # Extract constraint data
+    eq_rows = []
+    eq_rhs = []
+    ineq_rows = []
+    ineq_senses = []
+    ineq_rhs = []
+
+    for i in range(n_con):
+        sense = repr_.constraint_sense(i)
+        rhs_val = repr_.constraint_rhs(i)
+        g_at_zero = repr_.evaluate_constraint(i, x_zero)
+
+        a_row = np.zeros(n_orig, dtype=np.float64)
+        for j in range(n_orig):
+            ej = np.zeros(n_orig, dtype=np.float64)
+            ej[j] = 1.0
+            a_row[j] = repr_.evaluate_constraint(i, ej) - g_at_zero
+
+        if sense == "==":
+            eq_rows.append(a_row)
+            eq_rhs.append(rhs_val - g_at_zero)
+        elif sense == "<=":
+            ineq_rows.append(a_row)
+            ineq_senses.append("le")
+            ineq_rhs.append(rhs_val - g_at_zero)
+        elif sense == ">=":
+            ineq_rows.append(a_row)
+            ineq_senses.append("ge")
+            ineq_rhs.append(rhs_val - g_at_zero)
+
+    n_eq = len(eq_rows)
+    n_ineq = len(ineq_rows)
+    n_slack = n_ineq
+    n_total = n_orig + n_slack
+
+    A_rows = []
+    b_vals = []
+
+    for i in range(n_eq):
+        row_full = np.zeros(n_total, dtype=np.float64)
+        row_full[:n_orig] = eq_rows[i]
+        A_rows.append(row_full)
+        b_vals.append(eq_rhs[i])
+
+    for i in range(n_ineq):
+        row_full = np.zeros(n_total, dtype=np.float64)
+        row_full[:n_orig] = ineq_rows[i]
+        if ineq_senses[i] == "le":
+            row_full[n_orig + i] = 1.0
+        else:
+            row_full[n_orig + i] = -1.0
+        A_rows.append(row_full)
+        b_vals.append(ineq_rhs[i])
+
+    m_total = n_eq + n_ineq
+    if m_total > 0:
+        A_eq = np.stack(A_rows).astype(np.float64)
+        b_eq = np.array(b_vals, dtype=np.float64)
+    else:
+        A_eq = np.zeros((0, n_total), dtype=np.float64)
+        b_eq = np.zeros(0, dtype=np.float64)
+
+    x_l_orig, x_u_orig = _get_variable_bounds(model)
+    c_full = np.concatenate([c, np.zeros(n_slack, dtype=np.float64)])
+    x_l = np.concatenate([x_l_orig, np.zeros(n_slack, dtype=np.float64)])
+    x_u = np.concatenate([x_u_orig, np.full(n_slack, 1e20, dtype=np.float64)])
+
+    obj_sense = repr_.objective_sense
+    if obj_sense == "maximize":
+        c_full = -c_full
+        obj_at_zero = -obj_at_zero
+
+    return LPData(
+        c=jnp.asarray(c_full),
+        A_eq=jnp.asarray(A_eq),
+        b_eq=jnp.asarray(b_eq),
+        x_l=jnp.asarray(x_l),
+        x_u=jnp.asarray(x_u),
+        obj_const=obj_at_zero,
+    )
+
+
+def _extract_qp_data_from_repr(model: Model) -> QPData:
+    """Extract QP data by evaluating the Rust ModelRepr numerically.
+
+    For the quadratic objective 0.5 x'Qx + c'x + d:
+      - d = f(0)
+      - c_j = f(e_j) - d - 0.5*Q[j,j]   but Q[j,j] = f(e_j) + f(-e_j) - 2*d
+      - Q[i,j] = f(e_i+e_j) - f(e_i) - f(e_j) + d  (for i != j)
+
+    Constraints are extracted as in the LP case.
+    """
+    from discopt._rust import model_to_repr
+
+    _builder = getattr(model, "_builder", None)
+    repr_ = model_to_repr(model, _builder)
+
+    n_orig = repr_.n_vars
+    x_zero = np.zeros(n_orig, dtype=np.float64)
+    d = repr_.evaluate_objective(x_zero)
+
+    # Evaluate at all unit vectors
+    f_ej = np.zeros(n_orig, dtype=np.float64)
+    f_neg_ej = np.zeros(n_orig, dtype=np.float64)
+    for j in range(n_orig):
+        ej = np.zeros(n_orig, dtype=np.float64)
+        ej[j] = 1.0
+        f_ej[j] = repr_.evaluate_objective(ej)
+        ej[j] = -1.0
+        f_neg_ej[j] = repr_.evaluate_objective(ej)
+
+    # Q diagonal: Q[j,j] = f(e_j) + f(-e_j) - 2*d
+    Q = np.zeros((n_orig, n_orig), dtype=np.float64)
+    for j in range(n_orig):
+        Q[j, j] = f_ej[j] + f_neg_ej[j] - 2 * d
+
+    # Q off-diagonal: Q[i,j] = f(e_i+e_j) - f(e_i) - f(e_j) + d
+    for i in range(n_orig):
+        for j in range(i + 1, n_orig):
+            eij = np.zeros(n_orig, dtype=np.float64)
+            eij[i] = 1.0
+            eij[j] = 1.0
+            f_eij = repr_.evaluate_objective(eij)
+            qij = f_eij - f_ej[i] - f_ej[j] + d
+            Q[i, j] = qij
+            Q[j, i] = qij
+
+    # Linear coefficients: c_j = f(e_j) - d - 0.5*Q[j,j]
+    c_vec = np.zeros(n_orig, dtype=np.float64)
+    for j in range(n_orig):
+        c_vec[j] = f_ej[j] - d - 0.5 * Q[j, j]
+
+    # Extract constraints (same as LP)
+    lp_data = _extract_lp_data_from_repr(model)
+    n_slack = lp_data.c.shape[0] - n_orig
+
+    if n_slack > 0:
+        n_total = n_orig + n_slack
+        Q_full = np.zeros((n_total, n_total), dtype=np.float64)
+        Q_full[:n_orig, :n_orig] = Q
+        c_full = np.concatenate([c_vec, np.zeros(n_slack, dtype=np.float64)])
+    else:
+        Q_full = Q
+        c_full = c_vec
+
+    return QPData(
+        Q=jnp.asarray(Q_full),
+        c=jnp.asarray(c_full),
+        A_eq=lp_data.A_eq,
+        b_eq=lp_data.b_eq,
+        x_l=lp_data.x_l,
+        x_u=lp_data.x_u,
+        obj_const=d,
+    )
+
+
 def extract_lp_data(model: Model) -> LPData:
     """Extract LP standard form from a model classified as LP.
 
-    Tries algebraic extraction first (fast, no JAX tracing), then falls
-    back to autodiff-based extraction if the DAG walk fails.
+    Tries Rust repr-based extraction first (for fast-API models), then
+    algebraic extraction (for expression-based), then falls back to
+    autodiff-based extraction if the DAG walk fails.
 
     Inequality constraints are converted to equalities with slacks:
       - body <= 0 becomes body + s = 0, s >= 0
@@ -690,6 +872,14 @@ def extract_lp_data(model: Model) -> LPData:
     Returns:
         LPData with c, A_eq, b_eq, x_l, x_u.
     """
+    # Try repr-based extraction first (works for fast-API models)
+    _builder = getattr(model, "_builder", None)
+    if _builder is not None:
+        try:
+            return _extract_lp_data_from_repr(model)
+        except Exception:
+            pass
+
     try:
         return extract_lp_data_algebraic(model)
     except (_NotLinearError, Exception):
@@ -790,8 +980,9 @@ def _extract_lp_data_autodiff(model: Model) -> LPData:
 def extract_qp_data(model: Model) -> QPData:
     """Extract QP standard form from a model classified as QP.
 
-    Tries algebraic extraction first (fast, no JAX tracing), then falls
-    back to autodiff-based extraction if the DAG walk fails.
+    Tries Rust repr-based extraction first (for fast-API models), then
+    algebraic extraction (for expression-based), then falls back to
+    autodiff-based extraction if the DAG walk fails.
 
     Args:
         model: A Model classified as ProblemClass.QP.
@@ -799,6 +990,13 @@ def extract_qp_data(model: Model) -> QPData:
     Returns:
         QPData with Q, c, A_eq, b_eq, x_l, x_u.
     """
+    _builder = getattr(model, "_builder", None)
+    if _builder is not None:
+        try:
+            return _extract_qp_data_from_repr(model)
+        except Exception:
+            pass
+
     try:
         return extract_qp_data_algebraic(model)
     except (_NotQuadraticError, _NotLinearError, Exception):

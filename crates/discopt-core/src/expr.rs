@@ -319,6 +319,342 @@ pub struct ModelRepr {
 }
 
 // ─────────────────────────────────────────────────────────────
+// ModelBuilder — fast construction without Python expression objects
+// ─────────────────────────────────────────────────────────────
+
+/// Incremental model builder for fast construction of linear/quadratic
+/// models without Python expression objects. Builds directly into the
+/// Rust ExprArena.
+pub struct ModelBuilder {
+    /// Expression arena holding all nodes.
+    pub arena: ExprArena,
+    /// Variable metadata blocks.
+    pub variables: Vec<VarInfo>,
+    /// Constraints built so far.
+    pub constraints: Vec<ConstraintRepr>,
+    /// Objective expression (if set).
+    pub objective: Option<ExprId>,
+    /// Optimization direction.
+    pub objective_sense: ObjectiveSense,
+    /// Total number of scalar variables.
+    pub n_vars: usize,
+    /// Block index → ExprId of the Variable node in the arena.
+    pub var_expr_ids: Vec<ExprId>,
+    /// Cache of Index nodes: (var_block_idx, column) → ExprId.
+    index_cache: std::collections::HashMap<(usize, usize), ExprId>,
+}
+
+impl ModelBuilder {
+    /// Create an empty builder.
+    pub fn new() -> Self {
+        Self {
+            arena: ExprArena::new(),
+            variables: Vec::new(),
+            constraints: Vec::new(),
+            objective: None,
+            objective_sense: ObjectiveSense::Minimize,
+            n_vars: 0,
+            var_expr_ids: Vec::new(),
+            index_cache: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Register a variable block. Returns the block index.
+    pub fn add_variable(
+        &mut self,
+        name: String,
+        var_type: VarType,
+        shape: Vec<usize>,
+        lb: Vec<f64>,
+        ub: Vec<f64>,
+    ) -> usize {
+        let size: usize = if shape.is_empty() { 1 } else { shape.iter().product() };
+        let offset = self.n_vars;
+        let block_idx = self.variables.len();
+
+        self.variables.push(VarInfo {
+            name: name.clone(),
+            var_type,
+            offset,
+            size,
+            shape: shape.clone(),
+            lb,
+            ub,
+        });
+
+        let expr_id = self.arena.add(ExprNode::Variable {
+            name,
+            index: block_idx,
+            size,
+            shape,
+        });
+        self.var_expr_ids.push(expr_id);
+
+        self.n_vars += size;
+        block_idx
+    }
+
+    /// Get or create an Index(var, Scalar(col)) node, caching to avoid duplicates.
+    fn get_index_node(&mut self, var_block_idx: usize, col: usize) -> ExprId {
+        let key = (var_block_idx, col);
+        if let Some(&id) = self.index_cache.get(&key) {
+            return id;
+        }
+        let var_id = self.var_expr_ids[var_block_idx];
+        let id = self.arena.add(ExprNode::Index {
+            base: var_id,
+            index: IndexSpec::Scalar(col),
+        });
+        self.index_cache.insert(key, id);
+        id
+    }
+
+    /// Add linear constraints from CSR sparse data: A[row] @ x[var_idx] sense rhs[row].
+    ///
+    /// # Arguments
+    /// * `indptr` — CSR row pointer array, length m+1
+    /// * `indices` — CSR column indices
+    /// * `data` — CSR nonzero values
+    /// * `var_idx` — Variable block index
+    /// * `sense` — Constraint sense (Le, Eq, Ge)
+    /// * `rhs` — Right-hand side vector, length m
+    /// * `name_prefix` — Optional name prefix for constraints
+    pub fn add_linear_constraints_csr(
+        &mut self,
+        indptr: &[usize],
+        indices: &[usize],
+        data: &[f64],
+        var_idx: usize,
+        sense: ConstraintSense,
+        rhs: &[f64],
+        name_prefix: Option<&str>,
+    ) {
+        let m = indptr.len() - 1; // number of rows
+
+        // Pre-allocate arena capacity: each nonzero needs a Constant + Mul node,
+        // each row needs a SumOver node.
+        let nnz = data.len();
+        self.arena.reserve(nnz * 2 + m);
+
+        for row in 0..m {
+            let row_start = indptr[row];
+            let row_end = indptr[row + 1];
+
+            let body = if row_start == row_end {
+                // Empty row → constant 0
+                self.arena.add(ExprNode::Constant(0.0))
+            } else {
+                let mut terms = Vec::with_capacity(row_end - row_start);
+                for k in row_start..row_end {
+                    let col = indices[k];
+                    let val = data[k];
+
+                    let idx_node = self.get_index_node(var_idx, col);
+
+                    if (val - 1.0).abs() < 1e-15 {
+                        // Coefficient is 1.0, skip multiplication
+                        terms.push(idx_node);
+                    } else {
+                        let const_node = self.arena.add(ExprNode::Constant(val));
+                        let mul_node = self.arena.add(ExprNode::BinaryOp {
+                            op: BinOp::Mul,
+                            left: const_node,
+                            right: idx_node,
+                        });
+                        terms.push(mul_node);
+                    }
+                }
+
+                if terms.len() == 1 {
+                    terms[0]
+                } else {
+                    self.arena.add(ExprNode::SumOver { terms })
+                }
+            };
+
+            let name = name_prefix.map(|p| format!("{}_{}", p, row));
+            self.constraints.push(ConstraintRepr {
+                body,
+                sense,
+                rhs: rhs[row],
+                name,
+            });
+        }
+    }
+
+    /// Set a linear objective: c'x + constant.
+    pub fn set_linear_objective(
+        &mut self,
+        c: &[f64],
+        var_idx: usize,
+        constant: f64,
+        sense: ObjectiveSense,
+    ) {
+        let mut terms = Vec::new();
+
+        for (j, &cj) in c.iter().enumerate() {
+            if cj.abs() < 1e-15 {
+                continue;
+            }
+            let idx_node = self.get_index_node(var_idx, j);
+            if (cj - 1.0).abs() < 1e-15 {
+                terms.push(idx_node);
+            } else {
+                let const_node = self.arena.add(ExprNode::Constant(cj));
+                let mul_node = self.arena.add(ExprNode::BinaryOp {
+                    op: BinOp::Mul,
+                    left: const_node,
+                    right: idx_node,
+                });
+                terms.push(mul_node);
+            }
+        }
+
+        let expr = if terms.is_empty() {
+            self.arena.add(ExprNode::Constant(constant))
+        } else {
+            let lin = if terms.len() == 1 {
+                terms[0]
+            } else {
+                self.arena.add(ExprNode::SumOver { terms })
+            };
+            if constant.abs() < 1e-15 {
+                lin
+            } else {
+                let c_node = self.arena.add(ExprNode::Constant(constant));
+                self.arena.add(ExprNode::BinaryOp {
+                    op: BinOp::Add,
+                    left: lin,
+                    right: c_node,
+                })
+            }
+        };
+
+        self.objective = Some(expr);
+        self.objective_sense = sense;
+    }
+
+    /// Set a quadratic objective: 0.5 x'Qx + c'x + constant.
+    ///
+    /// Q is provided in CSR format.
+    pub fn set_quadratic_objective(
+        &mut self,
+        q_indptr: &[usize],
+        q_indices: &[usize],
+        q_data: &[f64],
+        c: &[f64],
+        var_idx: usize,
+        constant: f64,
+        sense: ObjectiveSense,
+    ) {
+        let mut terms = Vec::new();
+
+        // Quadratic terms: 0.5 * sum_{i,j} Q[i,j] * x[i] * x[j]
+        let n_rows = q_indptr.len() - 1;
+        for i in 0..n_rows {
+            let row_start = q_indptr[i];
+            let row_end = q_indptr[i + 1];
+            for k in row_start..row_end {
+                let j = q_indices[k];
+                let qij = q_data[k];
+                if qij.abs() < 1e-15 {
+                    continue;
+                }
+                // Only process upper triangle (i <= j) to avoid double-counting
+                if i > j {
+                    continue;
+                }
+
+                let xi = self.get_index_node(var_idx, i);
+                let xj = self.get_index_node(var_idx, j);
+
+                let coeff = if i == j { 0.5 * qij } else { qij };
+                let prod = self.arena.add(ExprNode::BinaryOp {
+                    op: BinOp::Mul,
+                    left: xi,
+                    right: xj,
+                });
+                if (coeff - 1.0).abs() < 1e-15 {
+                    terms.push(prod);
+                } else {
+                    let c_node = self.arena.add(ExprNode::Constant(coeff));
+                    terms.push(self.arena.add(ExprNode::BinaryOp {
+                        op: BinOp::Mul,
+                        left: c_node,
+                        right: prod,
+                    }));
+                }
+            }
+        }
+
+        // Linear terms: c'x
+        for (j, &cj) in c.iter().enumerate() {
+            if cj.abs() < 1e-15 {
+                continue;
+            }
+            let idx_node = self.get_index_node(var_idx, j);
+            if (cj - 1.0).abs() < 1e-15 {
+                terms.push(idx_node);
+            } else {
+                let const_node = self.arena.add(ExprNode::Constant(cj));
+                terms.push(self.arena.add(ExprNode::BinaryOp {
+                    op: BinOp::Mul,
+                    left: const_node,
+                    right: idx_node,
+                }));
+            }
+        }
+
+        let expr = if terms.is_empty() {
+            self.arena.add(ExprNode::Constant(constant))
+        } else {
+            let body = if terms.len() == 1 {
+                terms[0]
+            } else {
+                self.arena.add(ExprNode::SumOver { terms })
+            };
+            if constant.abs() < 1e-15 {
+                body
+            } else {
+                let c_node = self.arena.add(ExprNode::Constant(constant));
+                self.arena.add(ExprNode::BinaryOp {
+                    op: BinOp::Add,
+                    left: body,
+                    right: c_node,
+                })
+            }
+        };
+
+        self.objective = Some(expr);
+        self.objective_sense = sense;
+    }
+
+    /// Consume the builder into a ModelRepr.
+    ///
+    /// Panics if no objective has been set.
+    pub fn build(self) -> ModelRepr {
+        let objective = self
+            .objective
+            .expect("ModelBuilder: no objective set. Call set_linear_objective() or set_quadratic_objective().");
+        ModelRepr {
+            arena: self.arena,
+            objective,
+            objective_sense: self.objective_sense,
+            constraints: self.constraints,
+            variables: self.variables,
+            n_vars: self.n_vars,
+        }
+    }
+}
+
+impl ExprArena {
+    /// Reserve additional capacity in the arena.
+    pub fn reserve(&mut self, additional: usize) {
+        self.nodes.reserve(additional);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 // Structure detection
 // ─────────────────────────────────────────────────────────────
 

@@ -940,6 +940,7 @@ class Model:
         self._parameters: list[Parameter] = []
         self._constraints: list[Constraint] = []
         self._objective: Optional[Objective] = None
+        self._builder = None  # Optional PyModelBuilder, lazy-initialized
 
     # ── Variable constructors ──
 
@@ -980,6 +981,14 @@ class Model:
         self._check_name(name)
         var = Variable(name, VarType.CONTINUOUS, shape, lb, ub, self)
         self._variables.append(var)
+        if self._builder is not None:
+            var._builder_idx = self._builder.add_variable(
+                var.name,
+                var.var_type.value,
+                list(var.shape),
+                var.lb.flatten().astype(np.float64),
+                var.ub.flatten().astype(np.float64),
+            )
         return var
 
     def binary(
@@ -1012,6 +1021,14 @@ class Model:
         self._check_name(name)
         var = Variable(name, VarType.BINARY, shape, 0.0, 1.0, self)
         self._variables.append(var)
+        if self._builder is not None:
+            var._builder_idx = self._builder.add_variable(
+                var.name,
+                var.var_type.value,
+                list(var.shape),
+                var.lb.flatten().astype(np.float64),
+                var.ub.flatten().astype(np.float64),
+            )
         return var
 
     def integer(
@@ -1050,6 +1067,14 @@ class Model:
         self._check_name(name)
         var = Variable(name, VarType.INTEGER, shape, lb, ub, self)
         self._variables.append(var)
+        if self._builder is not None:
+            var._builder_idx = self._builder.add_variable(
+                var.name,
+                var.var_type.value,
+                list(var.shape),
+                var.lb.flatten().astype(np.float64),
+                var.ub.flatten().astype(np.float64),
+            )
         return var
 
     def parameter(
@@ -1158,6 +1183,191 @@ class Model:
                 f"Expected Constraint (from <=, >=, == on expressions), "
                 f"got {type(constraint)}. Did you mean to compare expressions?"
             )
+
+    # ── Fast construction API (direct arena building) ──
+
+    def _get_builder(self):
+        """Lazily initialize the Rust model builder, registering all existing variables."""
+        if self._builder is None:
+            from discopt._rust import PyModelBuilder
+
+            self._builder = PyModelBuilder()
+            for var in self._variables:
+                var._builder_idx = self._builder.add_variable(
+                    var.name,
+                    var.var_type.value,
+                    list(var.shape),
+                    var.lb.flatten().astype(np.float64),
+                    var.ub.flatten().astype(np.float64),
+                )
+        return self._builder
+
+    def add_linear_constraints(
+        self,
+        A,
+        x: Variable,
+        sense: str,
+        b,
+        name: Optional[str] = None,
+    ):
+        """
+        Add linear constraints in bulk: each row of A defines one constraint.
+
+        Bypasses Python expression objects — builds directly into the Rust
+        expression arena via a single PyO3 call. For large models (1000+
+        constraints), this is orders of magnitude faster than operator
+        overloading.
+
+        Parameters
+        ----------
+        A : scipy.sparse matrix or numpy.ndarray
+            Constraint coefficient matrix, shape ``(m, n)`` where
+            ``n == x.size``. Any scipy sparse format (CSR, CSC, COO) or
+            dense array. Automatically converted to CSR internally.
+        x : Variable
+            Array variable whose size matches ``A.shape[1]``.
+        sense : str
+            ``"<="``, ``"=="``, or ``">="``. Applied to all rows.
+        b : numpy.ndarray or float
+            Right-hand side, shape ``(m,)`` or scalar (broadcast).
+        name : str, optional
+            Prefix for constraint names (``"{name}_0"``, ``"{name}_1"``, ...).
+
+        Raises
+        ------
+        ValueError
+            If dimensions don't match or sense is invalid.
+        """
+        import scipy.sparse as sp
+
+        if sense not in ("<=", "==", ">="):
+            raise ValueError(f"Invalid sense '{sense}'. Expected '<=', '==', or '>='.")
+
+        # Convert to CSR
+        if not sp.issparse(A):
+            A = sp.csr_matrix(np.asarray(A, dtype=np.float64))
+        elif not sp.isspmatrix_csr(A):
+            A = A.tocsr()
+        A = A.astype(np.float64)
+
+        m_rows, n_cols = A.shape
+        if n_cols != x.size:
+            raise ValueError(f"A has {n_cols} columns but variable '{x.name}' has size {x.size}.")
+
+        b = np.broadcast_to(np.asarray(b, dtype=np.float64), (m_rows,)).copy()
+
+        builder = self._get_builder()
+        if not hasattr(x, "_builder_idx"):
+            raise ValueError(
+                f"Variable '{x.name}' is not registered in the builder. "
+                "Ensure the variable was created via m.continuous/binary/integer."
+            )
+
+        builder.add_linear_constraints(
+            A.indptr.astype(np.int64),
+            A.indices.astype(np.int64),
+            A.data,
+            x._builder_idx,
+            sense,
+            b,
+            name,
+        )
+
+    def add_linear_objective(
+        self,
+        c,
+        x: Variable,
+        constant: float = 0.0,
+        sense: str = "minimize",
+    ):
+        """
+        Set a linear objective: ``c'x + constant``.
+
+        Parameters
+        ----------
+        c : numpy.ndarray
+            Cost vector, shape ``(n,)`` matching ``x.size``.
+        x : Variable
+            Variable reference.
+        constant : float, default 0.0
+            Scalar offset.
+        sense : str, default "minimize"
+            ``"minimize"`` or ``"maximize"``.
+        """
+        c = np.asarray(c, dtype=np.float64).flatten()
+        if c.shape[0] != x.size:
+            raise ValueError(
+                f"c has {c.shape[0]} elements but variable '{x.name}' has size {x.size}."
+            )
+        builder = self._get_builder()
+        if not hasattr(x, "_builder_idx"):
+            raise ValueError(f"Variable '{x.name}' is not registered in the builder.")
+        builder.set_linear_objective(c, x._builder_idx, constant, sense)
+        # Set a placeholder objective so validate() passes
+        self._objective = Objective(
+            Constant(np.float64(0.0)),
+            ObjectiveSense.MINIMIZE if sense == "minimize" else ObjectiveSense.MAXIMIZE,
+        )
+        self._objective._is_placeholder = True
+
+    def add_quadratic_objective(
+        self,
+        Q,
+        c,
+        x: Variable,
+        constant: float = 0.0,
+        sense: str = "minimize",
+    ):
+        """
+        Set a quadratic objective: ``0.5 x'Qx + c'x + constant``.
+
+        Parameters
+        ----------
+        Q : scipy.sparse matrix or numpy.ndarray
+            Symmetric quadratic coefficient matrix, shape ``(n, n)``.
+        c : numpy.ndarray
+            Linear coefficient vector, shape ``(n,)``.
+        x : Variable
+            Variable reference.
+        constant : float, default 0.0
+            Scalar offset.
+        sense : str, default "minimize"
+            ``"minimize"`` or ``"maximize"``.
+        """
+        import scipy.sparse as sp
+
+        n = x.size
+        c = np.asarray(c, dtype=np.float64).flatten()
+        if c.shape[0] != n:
+            raise ValueError(f"c has {c.shape[0]} elements but variable '{x.name}' has size {n}.")
+
+        if not sp.issparse(Q):
+            Q = sp.csr_matrix(np.asarray(Q, dtype=np.float64))
+        elif not sp.isspmatrix_csr(Q):
+            Q = Q.tocsr()
+        Q = Q.astype(np.float64)
+
+        if Q.shape != (n, n):
+            raise ValueError(f"Q has shape {Q.shape} but expected ({n}, {n}).")
+
+        builder = self._get_builder()
+        if not hasattr(x, "_builder_idx"):
+            raise ValueError(f"Variable '{x.name}' is not registered in the builder.")
+        builder.set_quadratic_objective(
+            Q.indptr.astype(np.int64),
+            Q.indices.astype(np.int64),
+            Q.data,
+            c,
+            x._builder_idx,
+            constant,
+            sense,
+        )
+        # Set a placeholder objective so validate() passes
+        self._objective = Objective(
+            Constant(np.float64(0.0)),
+            ObjectiveSense.MINIMIZE if sense == "minimize" else ObjectiveSense.MAXIMIZE,
+        )
+        self._objective._is_placeholder = True
 
     # ── Logical constraints (GDP) ──
 

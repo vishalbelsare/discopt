@@ -814,7 +814,8 @@ def solve_model(
     try:
         from discopt._rust import model_to_repr
 
-        _model_repr = model_to_repr(model)
+        _builder = getattr(model, "_builder", None)
+        _model_repr = model_to_repr(model, _builder)
     except Exception:
         pass  # FBBT bindings unavailable; skip
 
