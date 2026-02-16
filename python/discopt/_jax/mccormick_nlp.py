@@ -75,6 +75,49 @@ def evaluate_midpoint_bound_batch(
     return jnp.asarray(cv_batch)
 
 
+def _filter_well_behaved_constraints(
+    con_relax_fns: list[Callable],
+    con_senses: list[str],
+    lb: jnp.ndarray,
+    ub: jnp.ndarray,
+) -> tuple[list[Callable], list[str]]:
+    """Filter out constraints whose McCormick relaxation produces inf/NaN.
+
+    Constraints involving singularities (e.g. 1/(x^3 * sin(x))) can produce
+    inf/NaN in their McCormick relaxation at wide bounds. Dropping these
+    constraints weakens the relaxation but keeps the NLP well-conditioned.
+    The resulting lower bound is still valid (just weaker).
+    """
+    good_fns = []
+    good_senses = []
+
+    # Test at several points to see if the relaxation is well-behaved
+    test_points = [
+        0.5 * (lb + ub),
+        lb + 0.25 * (ub - lb),
+        lb + 0.75 * (ub - lb),
+    ]
+
+    for fn, sense in zip(con_relax_fns, con_senses):
+        is_ok = False
+        for pt in test_points:
+            try:
+                cv, cc = fn(pt, pt, lb, ub)
+                cv_val = float(cv)
+                cc_val = float(cc)
+                if np.isfinite(cv_val) and np.isfinite(cc_val):
+                    if abs(cv_val) < 1e12 and abs(cc_val) < 1e12:
+                        is_ok = True
+                        break
+            except Exception:
+                continue
+        if is_ok:
+            good_fns.append(fn)
+            good_senses.append(sense)
+
+    return good_fns, good_senses
+
+
 def solve_mccormick_relaxation_nlp(
     obj_relax_fn: Callable,
     con_relax_fns: Optional[list[Callable]],
@@ -106,6 +149,15 @@ def solve_mccormick_relaxation_nlp(
     lb = jnp.asarray(node_lb, dtype=jnp.float64)
     ub = jnp.asarray(node_ub, dtype=jnp.float64)
 
+    # Check objective relaxation is well-behaved
+    mid = 0.5 * (lb + ub)
+    try:
+        cv_test, cc_test = obj_relax_fn(mid, mid, lb, ub)
+        if not np.isfinite(float(cv_test)) or not np.isfinite(float(cc_test)):
+            return -np.inf
+    except Exception:
+        return -np.inf
+
     # Build convex objective: minimize cv(x) for minimization
     def obj_fn(x):
         cv, cc = obj_relax_fn(x, x, lb, ub)
@@ -119,49 +171,49 @@ def solve_mccormick_relaxation_nlp(
     con_fn = None
 
     if con_relax_fns and con_senses:
-        g_l_list = []
-        g_u_list = []
+        # Filter out constraints that produce inf/NaN at wide bounds
+        good_fns, good_senses = _filter_well_behaved_constraints(con_relax_fns, con_senses, lb, ub)
 
-        for sense in con_senses:
-            if sense == "<=":
-                # cv ≤ 0 is a valid relaxation of body ≤ 0
-                g_l_list.append(-1e20)
-                g_u_list.append(0.0)
-            elif sense == ">=":
-                # -cc ≤ 0 is a valid relaxation of body ≥ 0
-                # (cc ≥ body, so -cc ≤ -body ≤ 0)
-                g_l_list.append(-1e20)
-                g_u_list.append(0.0)
-            elif sense == "==":
-                # For equality: cv ≤ 0 (one-sided relaxation)
-                g_l_list.append(-1e20)
-                g_u_list.append(0.0)
+        if good_fns:
+            g_l_list = []
+            g_u_list = []
 
-        g_l = jnp.array(g_l_list, dtype=jnp.float64)
-        g_u = jnp.array(g_u_list, dtype=jnp.float64)
-
-        def con_fn(x, _lb=lb, _ub=ub, _fns=con_relax_fns, _senses=con_senses):
-            vals = []
-            for fn, sense in zip(_fns, _senses):
-                cv, cc = fn(x, x, _lb, _ub)
+            for sense in good_senses:
                 if sense == "<=":
-                    vals.append(cv)
+                    g_l_list.append(-1e20)
+                    g_u_list.append(0.0)
                 elif sense == ">=":
-                    vals.append(-cc)
+                    g_l_list.append(-1e20)
+                    g_u_list.append(0.0)
                 elif sense == "==":
-                    vals.append(cv)
-            return jnp.stack(vals)
+                    g_l_list.append(-1e20)
+                    g_u_list.append(0.0)
 
-    x0 = 0.5 * (lb + ub)
-    x0 = jnp.clip(x0, lb, ub)
+            g_l = jnp.array(g_l_list, dtype=jnp.float64)
+            g_u = jnp.array(g_u_list, dtype=jnp.float64)
+
+            def con_fn(x, _lb=lb, _ub=ub, _fns=good_fns, _senses=good_senses):
+                vals = []
+                for fn, sense in zip(_fns, _senses):
+                    cv, cc = fn(x, x, _lb, _ub)
+                    if sense == "<=":
+                        vals.append(cv)
+                    elif sense == ">=":
+                        vals.append(-cc)
+                    elif sense == "==":
+                        vals.append(cv)
+                return jnp.stack(vals)
 
     opts = IPMOptions(max_iter=max_iter)
+    x0 = jnp.clip(0.5 * (lb + ub), lb, ub)
 
     try:
         state = ipm_solve(obj_fn, con_fn, x0, lb, ub, g_l, g_u, opts)
         conv = int(state.converged)
         if conv in (1, 2, 3):
-            return float(state.obj)
+            obj_val = float(state.obj)
+            if np.isfinite(obj_val):
+                return obj_val
     except Exception:
         pass
 

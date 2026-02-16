@@ -272,7 +272,7 @@ def _extract_variable_info(model: Model):
     return n_vars, lb, ub, int_var_offsets, int_var_sizes
 
 
-def _check_constraint_feasibility(evaluator, x, cl_list, cu_list, tol=1e-6):
+def _check_constraint_feasibility(evaluator, x, cl_list, cu_list, tol=1e-4):
     """Return True if x satisfies all constraints within tolerance.
 
     Parameters
@@ -464,6 +464,87 @@ def _solve_root_node_multistart_ipm(
         )
 
 
+def _solve_node_multistart_ipm(
+    evaluator,
+    x0,
+    node_lb,
+    node_ub,
+    constraint_bounds,
+    g_l_jax,
+    g_u_jax,
+    options,
+    n_extra=2,
+):
+    """Multistart NLP at a child node: parent warm-start + diverse points.
+
+    Uses parent warm-start as primary starting point, plus midpoint and
+    random points within the node bounds. All points are solved in parallel
+    via vmap'd IPM, and the best converged solution is returned.
+    """
+    import jax.numpy as jnp
+
+    from discopt._jax.ipm import IPMOptions, solve_nlp_batch
+    from discopt.solvers import NLPResult
+
+    n_vars = len(node_lb)
+    lb_clipped = np.clip(node_lb, -_SPC, _SPC)
+    ub_clipped = np.clip(node_ub, -_SPC, _SPC)
+
+    # Starting points: parent warm-start + midpoint + random
+    starts = [np.asarray(x0, dtype=np.float64)]
+    span = np.maximum(ub_clipped - lb_clipped, 0.0)
+    starts.append(0.5 * (lb_clipped + ub_clipped))  # midpoint
+
+    # Deterministic seed from node bounds for reproducibility
+    seed = int(abs(hash(tuple(node_lb[:4].tolist()) + tuple(node_ub[:4].tolist())))) % (2**31)
+    rng = np.random.RandomState(seed)
+    starts.append(lb_clipped + rng.uniform(size=n_vars) * span)
+
+    n_starts = len(starts)
+    obj_fn = evaluator._obj_fn
+    m = evaluator.n_constraints
+    con_fn = evaluator._cons_fn if m > 0 else None
+
+    x0_batch = jnp.array(np.stack(starts), dtype=jnp.float64)
+    xl_batch = jnp.broadcast_to(jnp.array(node_lb, dtype=jnp.float64), (n_starts, n_vars))
+    xu_batch = jnp.broadcast_to(jnp.array(node_ub, dtype=jnp.float64), (n_starts, n_vars))
+
+    ipm_opts = IPMOptions(max_iter=int(options.get("max_iter", 200)))
+
+    try:
+        state = solve_nlp_batch(
+            obj_fn, con_fn, x0_batch, xl_batch, xu_batch, g_l_jax, g_u_jax, ipm_opts
+        )
+    except Exception as e:
+        logger.debug("Node multistart batch IPM failed: %s", e)
+        return NLPResult(
+            status=SolveStatus.ERROR,
+            x=np.asarray(x0),
+            objective=_INFEASIBILITY_SENTINEL,
+        )
+
+    converged = np.asarray(state.converged)
+    obj_vals = np.asarray(state.obj)
+    x_vals = np.asarray(state.x)
+
+    feasible_mask = (converged == 1) | (converged == 2) | (converged == 3)
+
+    if np.any(feasible_mask):
+        masked_obj = np.where(feasible_mask, obj_vals, np.inf)
+        best_idx = int(np.argmin(masked_obj))
+        return NLPResult(
+            status=SolveStatus.OPTIMAL,
+            x=x_vals[best_idx],
+            objective=float(obj_vals[best_idx]),
+        )
+    else:
+        return NLPResult(
+            status=SolveStatus.ERROR,
+            x=x_vals[0],
+            objective=_INFEASIBILITY_SENTINEL,
+        )
+
+
 def _unpack_solution(model: Model, x_flat: np.ndarray):
     """Convert flat solution vector to {var_name: array} dict."""
     result = {}
@@ -635,7 +716,7 @@ def solve_model(
     partitions: int = 0,
     branching_policy: str = "fractional",
     use_learned_relaxations: bool = False,
-    mccormick_bounds: str = "none",
+    mccormick_bounds: str = "auto",
     gdp_method: str = "big-m",
 ) -> SolveResult:
     """
@@ -964,7 +1045,7 @@ def solve_model(
                         )
                         _mc_con_senses.append(c.sense)
         except Exception as e:
-            logger.debug("McCormick relaxation setup failed: %s", e)
+            logger.warning("McCormick relaxation setup failed: %s", e)
             _mc_obj_eval = None
             _mc_obj_relax_fn = None
 
@@ -973,6 +1054,9 @@ def solve_model(
     _fp_ran = False
 
     # --- B&B loop ---
+    # McCormick NLP is expensive (one IPM per node). Run it every N iterations
+    # and use cheap midpoint bounds in between. Period=1 means every iteration.
+    _mc_nlp_period = 5  # run McCormick NLP every 5th iteration
     iteration = 0
     while True:
         elapsed = time.perf_counter() - t_start
@@ -1018,6 +1102,7 @@ def solve_model(
                 _active_gl,
                 _active_gu,
                 batch_psols=batch_psols,
+                multistart=not _model_is_convex,
             )
             # Constraint feasibility post-check for batch IPM results
             if cl_list:
@@ -1035,10 +1120,31 @@ def solve_model(
                                 "constraints, marking infeasible",
                                 int(batch_ids[i]),
                             )
+            # For nonconvex problems, NLP objective is NOT a valid lower
+            # bound (local minima can exceed the global optimum). Reset
+            # non-integer-feasible nodes to -inf so only convex bounds are
+            # used. Keep NLP objective for integer-feasible nodes (the Rust
+            # tree uses result_lbs for incumbent values).
+            _int_feas_mask = np.zeros(n_batch, dtype=bool)
+            if not _model_is_convex:
+                _nlp_obj_backup = result_lbs.copy()
+                for i in range(n_batch):
+                    if result_lbs[i] < _SENTINEL_THRESHOLD:
+                        sol_is_int_feas = True
+                        for off, sz in zip(int_offsets, int_sizes):
+                            for j in range(off, off + sz):
+                                if abs(result_sols[i, j] - round(result_sols[i, j])) > 1e-5:
+                                    sol_is_int_feas = False
+                                    break
+                            if not sol_is_int_feas:
+                                break
+                        _int_feas_mask[i] = sol_is_int_feas
+                        if not sol_is_int_feas:
+                            result_lbs[i] = -np.inf
             # Tighten lower bounds with alphaBB underestimator
             if _use_alphabb:
                 for i in range(n_batch):
-                    if result_lbs[i] < _SENTINEL_THRESHOLD:
+                    if result_lbs[i] < _SENTINEL_THRESHOLD and not _int_feas_mask[i]:
                         try:
                             node_lb_i = np.array(batch_lb[i])
                             node_ub_i = np.array(batch_ub[i])
@@ -1055,9 +1161,18 @@ def solve_model(
 
                     lb_jax = jnp.array(batch_lb, dtype=jnp.float64)
                     ub_jax = jnp.array(batch_ub, dtype=jnp.float64)
-                    if _mc_mode == "nlp" and _mc_obj_relax_fn is not None:
+                    # Use NLP mode only periodically to avoid per-node IPM overhead.
+                    # Midpoint mode is NOT a valid lower bound (cv(mid) >= min f(x)
+                    # is not guaranteed), so skip McCormick on non-NLP iterations.
+                    _use_mc_nlp = (
+                        _mc_mode == "nlp"
+                        and _mc_obj_relax_fn is not None
+                        and (iteration == 0 or iteration % _mc_nlp_period == 0)
+                    )
+                    if _use_mc_nlp:
                         from discopt._jax.mccormick_nlp import solve_mccormick_batch
 
+                        assert _mc_obj_relax_fn is not None
                         mc_lbs = np.asarray(
                             solve_mccormick_batch(
                                 _mc_obj_relax_fn,
@@ -1068,7 +1183,7 @@ def solve_model(
                                 negate=_mc_negate,
                             )
                         )
-                    else:
+                    elif _mc_mode != "nlp":
                         from discopt._jax.mccormick_nlp import (
                             evaluate_midpoint_bound_batch,
                         )
@@ -1082,11 +1197,24 @@ def solve_model(
                                 negate=_mc_negate,
                             )
                         )
-                    for i in range(n_batch):
-                        if result_lbs[i] < _SENTINEL_THRESHOLD and np.isfinite(mc_lbs[i]):
-                            result_lbs[i] = max(result_lbs[i], float(mc_lbs[i]))
+                    else:
+                        mc_lbs = None
+                    if mc_lbs is not None:
+                        for i in range(n_batch):
+                            if (
+                                result_lbs[i] < _SENTINEL_THRESHOLD
+                                and np.isfinite(mc_lbs[i])
+                                and not _int_feas_mask[i]
+                            ):
+                                result_lbs[i] = max(result_lbs[i], float(mc_lbs[i]))
                 except (ValueError, ArithmeticError, RuntimeError) as e:
                     logger.debug("Batch McCormick bound failed: %s", e)
+            # For nonconvex problems with no convex relaxation available,
+            # fall back to NLP objective as best-effort bound.
+            if not _model_is_convex:
+                for i in range(n_batch):
+                    if result_lbs[i] == -np.inf and _nlp_obj_backup[i] < _SENTINEL_THRESHOLD:
+                        result_lbs[i] = _nlp_obj_backup[i]
         else:
             result_ids = np.empty(n_batch, dtype=np.int64)
             result_lbs = np.empty(n_batch, dtype=np.float64)
@@ -1099,6 +1227,8 @@ def solve_model(
 
                 if iteration == 0:
                     if _use_ipm_batch:
+                        # More random starts for nonconvex problems
+                        _root_n_random = 5 if not _model_is_convex else 2
                         nlp_result = _solve_root_node_multistart_ipm(
                             _active_evaluator,
                             node_lb,
@@ -1107,6 +1237,7 @@ def solve_model(
                             _active_gl,
                             _active_gu,
                             opts,
+                            n_random=_root_n_random,
                         )
                     else:
                         nlp_result = _solve_root_node_multistart(
@@ -1127,26 +1258,41 @@ def solve_model(
                         lb_clipped = np.clip(node_lb, -_SPC, _SPC)
                         ub_clipped = np.clip(node_ub, -_SPC, _SPC)
                         x0 = 0.5 * (lb_clipped + ub_clipped)
-                    nlp_result = _solve_node_nlp(
-                        _active_evaluator,
-                        x0,
-                        node_lb,
-                        node_ub,
-                        _active_cb,
-                        opts,
-                        nlp_solver=nlp_solver,
-                    )
+                    if not _model_is_convex and _use_ipm_batch:
+                        nlp_result = _solve_node_multistart_ipm(
+                            _active_evaluator,
+                            x0,
+                            node_lb,
+                            node_ub,
+                            _active_cb,
+                            _active_gl,
+                            _active_gu,
+                            opts,
+                        )
+                    else:
+                        nlp_result = _solve_node_nlp(
+                            _active_evaluator,
+                            x0,
+                            node_lb,
+                            node_ub,
+                            _active_cb,
+                            opts,
+                            nlp_solver=nlp_solver,
+                        )
 
                 result_ids[i] = int(batch_ids[i])
 
                 if nlp_result.status in (SolveStatus.OPTIMAL, SolveStatus.ITERATION_LIMIT):
                     nlp_lb = nlp_result.objective
+                    convex_lb = -np.inf  # accumulate valid convex lower bound
+
                     if _use_alphabb:
                         try:
                             relax_lb = _compute_alphabb_bound(
                                 evaluator, node_lb, node_ub, _alphabb_alpha
                             )
                             nlp_lb = max(nlp_lb, relax_lb)
+                            convex_lb = max(convex_lb, relax_lb)
                         except (ValueError, ArithmeticError, RuntimeError) as e:
                             logger.debug("alphaBB bound failed: %s", e)
                     # McCormick relaxation bound
@@ -1156,7 +1302,10 @@ def solve_model(
 
                             lb_j = jnp.array(node_lb, dtype=jnp.float64)
                             ub_j = jnp.array(node_ub, dtype=jnp.float64)
-                            if _mc_mode == "nlp":
+                            _use_mc_nlp_serial = _mc_mode == "nlp" and (
+                                iteration == 0 or iteration % _mc_nlp_period == 0
+                            )
+                            if _use_mc_nlp_serial:
                                 from discopt._jax.mccormick_nlp import (
                                     solve_mccormick_relaxation_nlp,
                                 )
@@ -1169,7 +1318,7 @@ def solve_model(
                                     ub_j,
                                     negate=_mc_negate,
                                 )
-                            else:
+                            elif _mc_mode != "nlp":
                                 from discopt._jax.mccormick_nlp import (
                                     evaluate_midpoint_bound,
                                 )
@@ -1180,10 +1329,31 @@ def solve_model(
                                     ub_j,
                                     negate=_mc_negate,
                                 )
+                            else:
+                                mc_lb = -np.inf
                             if np.isfinite(mc_lb):
                                 nlp_lb = max(nlp_lb, mc_lb)
+                                convex_lb = max(convex_lb, mc_lb)
                         except (ValueError, ArithmeticError, RuntimeError) as e:
                             logger.debug("McCormick bound failed: %s", e)
+
+                    # For nonconvex problems: NLP local min is NOT a valid
+                    # lower bound (can exceed global opt → premature pruning).
+                    # Use convex relaxation bound for non-integer-feasible
+                    # nodes, but keep NLP objective for integer-feasible ones
+                    # (the Rust tree uses result_lbs for incumbent values).
+                    if not _model_is_convex and convex_lb > -np.inf:
+                        sol_is_int_feas = True
+                        for off, sz in zip(int_offsets, int_sizes):
+                            for j in range(off, off + sz):
+                                if abs(nlp_result.x[j] - round(nlp_result.x[j])) > 1e-5:
+                                    sol_is_int_feas = False
+                                    break
+                            if not sol_is_int_feas:
+                                break
+                        if not sol_is_int_feas:
+                            nlp_lb = convex_lb
+
                     # Constraint feasibility post-check: reject NLP solutions
                     # that violate constraints (the Rust B&B tree only checks
                     # integrality, not constraint satisfaction).
@@ -1664,8 +1834,14 @@ def _solve_batch_ipm(
     g_l_jax,
     g_u_jax,
     batch_psols=None,
+    multistart=False,
 ):
-    """Solve a batch of NLP relaxations simultaneously via vmap'd IPM."""
+    """Solve a batch of NLP relaxations simultaneously via vmap'd IPM.
+
+    When multistart=True, each node gets 3 starting points (warm-start,
+    midpoint, random) solved in parallel, with the best converged solution
+    selected per node.
+    """
     import jax.numpy as jnp
 
     from discopt._jax.ipm import IPMOptions, solve_nlp_batch
@@ -1680,18 +1856,41 @@ def _solve_batch_ipm(
     xu_batch = jnp.array(batch_ub, dtype=jnp.float64)
 
     # Warm-start: use parent solutions clipped to child bounds, fall back to midpoint
+    lb_clipped = jnp.clip(xl_batch, -_SPC, _SPC)
+    ub_clipped = jnp.clip(xu_batch, -_SPC, _SPC)
+    midpoint_x0 = 0.5 * (lb_clipped + ub_clipped)
+
     if batch_psols is not None:
         psols_jax = jnp.array(batch_psols, dtype=jnp.float64)
         has_parent = ~jnp.any(jnp.isnan(psols_jax), axis=1, keepdims=True)
         warm_x0 = jnp.clip(psols_jax, xl_batch, xu_batch)
-        lb_clipped = jnp.clip(xl_batch, -_SPC, _SPC)
-        ub_clipped = jnp.clip(xu_batch, -_SPC, _SPC)
-        midpoint_x0 = 0.5 * (lb_clipped + ub_clipped)
         x0_batch = jnp.where(has_parent, warm_x0, midpoint_x0)
     else:
-        lb_clipped = jnp.clip(xl_batch, -_SPC, _SPC)
-        ub_clipped = jnp.clip(xu_batch, -_SPC, _SPC)
-        x0_batch = 0.5 * (lb_clipped + ub_clipped)
+        x0_batch = midpoint_x0
+
+    n_starts = 1
+    if multistart:
+        # Expand: 3 starting points per node (warm-start, midpoint, random)
+        # More starts give better solutions but 3x cost per node.
+        n_starts = 3
+        span = jnp.maximum(ub_clipped - lb_clipped, 0.0)
+        # Random starting point (deterministic seed)
+        rng = np.random.RandomState(42)
+        rand_offsets = jnp.array(rng.uniform(size=(n_batch, n_vars)), dtype=jnp.float64)
+        rand_x0 = lb_clipped + rand_offsets * span
+
+        # Stack: (n_batch, 3, n_vars) then reshape to (n_batch*3, n_vars)
+        x0_expanded = jnp.stack([x0_batch, midpoint_x0, rand_x0], axis=1)
+        x0_batch = x0_expanded.reshape(n_batch * n_starts, n_vars)
+        # Repeat bounds to match interleaved order
+        xl_expanded = jnp.broadcast_to(xl_batch[:, None, :], (n_batch, n_starts, n_vars)).reshape(
+            n_batch * n_starts, n_vars
+        )
+        xu_expanded = jnp.broadcast_to(xu_batch[:, None, :], (n_batch, n_starts, n_vars)).reshape(
+            n_batch * n_starts, n_vars
+        )
+        xl_batch = xl_expanded
+        xu_batch = xu_expanded
 
     ipm_opts = IPMOptions(max_iter=int(options.get("max_iter", 200)))
 
@@ -1703,24 +1902,44 @@ def _solve_batch_ipm(
         logger.debug("Batch IPM failed: %s", e)
         # Fallback: mark all as infeasible
         result_ids = np.array(batch_ids, dtype=np.int64)
-        x0_np = np.asarray(x0_batch)
         result_lbs = np.full(n_batch, _INFEASIBILITY_SENTINEL, dtype=np.float64)
-        result_sols = x0_np
+        result_sols = np.asarray(midpoint_x0 if not multistart else x0_expanded[:, 0, :])
         result_feas = np.zeros(n_batch, dtype=bool)
         return result_ids, result_lbs, result_sols, result_feas
 
     # Unpack batched IPMState → numpy arrays
-    converged = np.asarray(state.converged)  # (batch,)
-    obj_vals = np.asarray(state.obj)  # (batch,)
-    x_vals = np.asarray(state.x)  # (batch, n)
+    converged = np.asarray(state.converged)
+    obj_vals = np.asarray(state.obj)
+    x_vals = np.asarray(state.x)
+
+    if multistart:
+        # Reshape (n_batch*n_starts,) → (n_batch, n_starts), pick best per node
+        converged = converged.reshape(n_batch, n_starts)
+        obj_vals = obj_vals.reshape(n_batch, n_starts)
+        x_vals = x_vals.reshape(n_batch, n_starts, n_vars)
+
+        # Require convergence AND finite objective
+        feasible_mask = ((converged == 1) | (converged == 2) | (converged == 3)) & np.isfinite(
+            obj_vals
+        )
+        masked_obj = np.where(feasible_mask, obj_vals, np.inf)
+        best_per_node = np.argmin(masked_obj, axis=1)  # (n_batch,)
+
+        result_obj = np.array([obj_vals[i, best_per_node[i]] for i in range(n_batch)])
+        result_x = np.array([x_vals[i, best_per_node[i]] for i in range(n_batch)])
+        any_feasible = np.any(feasible_mask, axis=1)
+        result_lbs = np.where(any_feasible, result_obj, _INFEASIBILITY_SENTINEL)
+        result_sols = result_x
+    else:
+        conv_mask = (converged == 1) | (converged == 2) | (converged == 3)
+        result_lbs = np.where(
+            conv_mask & np.isfinite(obj_vals),
+            obj_vals,
+            _INFEASIBILITY_SENTINEL,
+        )
+        result_sols = x_vals
 
     result_ids = np.array(batch_ids, dtype=np.int64)
-    result_lbs = np.where(
-        (converged == 1) | (converged == 2) | (converged == 3),
-        obj_vals,
-        _INFEASIBILITY_SENTINEL,
-    )
-    result_sols = x_vals
     result_feas = np.zeros(n_batch, dtype=bool)  # Let Rust check integrality
 
     return result_ids, result_lbs, result_sols, result_feas

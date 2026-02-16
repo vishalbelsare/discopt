@@ -1012,8 +1012,9 @@ def solve_nlp_ipm(
 
     m = evaluator.n_constraints
     lb, ub = evaluator.variable_bounds
-    x_l = jnp.array(lb, dtype=jnp.float64)
-    x_u = jnp.array(ub, dtype=jnp.float64)
+    # Clamp infinite bounds to large finite values for IPM barrier terms
+    x_l = jnp.array(np.clip(lb, -1e20, 1e20), dtype=jnp.float64)
+    x_u = jnp.array(np.clip(ub, -1e20, 1e20), dtype=jnp.float64)
 
     if x0 is None:
         lb_c = np.clip(lb, -100.0, 100.0)

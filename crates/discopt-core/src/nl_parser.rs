@@ -587,10 +587,44 @@ pub fn parse_nl(content: &str) -> Result<ModelRepr, NlParseError> {
     }
 
     // Mark nonlinear integer vars (from line 6 extended format).
-    // These are the first n_nl_integer_vars among the nonlinear vars.
-    if n_total_nl_int > 0 {
-        for vt in var_types.iter_mut().take(n_total_nl_int.min(n_vars)) {
-            if *vt == VarType::Continuous {
+    // Per the AMPL .nl spec, nonlinear integer variables are the LAST
+    // ones in each variable group:
+    //   - Last nlvbi of the nlvb group (vars in both cons + objs)
+    //   - Last nlvci of the (nlvc - nlvb) group (vars in cons only)
+    //   - Last nlvoi of the (nlvo - nlvb) group (vars in objs only)
+    let nlvb = header.n_nl_vars_in_both;
+    let nlvc = header.n_nl_vars_in_cons;
+    let nlvo = header.n_nl_vars_in_objs;
+    let nlvbi = header.n_nl_integer_vars_in_both;
+    let nlvci = header.n_nl_integer_vars_in_cons;
+    let nlvoi = header.n_nl_integer_vars_in_objs;
+
+    // Last nlvbi of the nlvb group
+    if nlvbi > 0 && nlvb >= nlvbi {
+        let start = nlvb - nlvbi;
+        for vt in var_types.iter_mut().skip(start).take(nlvbi) {
+            *vt = VarType::Integer;
+        }
+    }
+
+    // Last nlvci of the (nlvc - nlvb) group (starts at nlvb)
+    if nlvci > 0 && nlvc > nlvb {
+        let group_size = nlvc - nlvb;
+        if group_size >= nlvci {
+            let start = nlvb + group_size - nlvci;
+            for vt in var_types.iter_mut().skip(start).take(nlvci) {
+                *vt = VarType::Integer;
+            }
+        }
+    }
+
+    // Last nlvoi of the (nlvo - nlvb) group (starts at max(nlvc, nlvb))
+    if nlvoi > 0 && nlvo > nlvb {
+        let obj_start = std::cmp::max(nlvc, nlvb);
+        let group_size = nlvo - nlvb;
+        if group_size >= nlvoi {
+            let start = obj_start + group_size - nlvoi;
+            for vt in var_types.iter_mut().skip(start).take(nlvoi) {
                 *vt = VarType::Integer;
             }
         }
