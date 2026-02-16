@@ -344,6 +344,12 @@ pub struct ModelBuilder {
     index_cache: std::collections::HashMap<(usize, usize), ExprId>,
 }
 
+impl Default for ModelBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModelBuilder {
     /// Create an empty builder.
     pub fn new() -> Self {
@@ -419,6 +425,7 @@ impl ModelBuilder {
     /// * `sense` — Constraint sense (Le, Eq, Ge)
     /// * `rhs` — Right-hand side vector, length m
     /// * `name_prefix` — Optional name prefix for constraints
+    #[allow(clippy::too_many_arguments)]
     pub fn add_linear_constraints_csr(
         &mut self,
         indptr: &[usize],
@@ -537,6 +544,7 @@ impl ModelBuilder {
     /// Set a quadratic objective: 0.5 x'Qx + c'x + constant.
     ///
     /// Q is provided in CSR format.
+    #[allow(clippy::too_many_arguments)]
     pub fn set_quadratic_objective(
         &mut self,
         q_indptr: &[usize],

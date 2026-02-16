@@ -567,7 +567,7 @@ pub fn parse_nl(content: &str) -> Result<ModelRepr, NlParseError> {
     //   [arcs | other linear | linear binary | linear integer]
     // The integer/binary counts in header line 6 refer to linear discrete vars
     // located at the end of the variable ordering.
-    let n_total_nl_int = header.n_nl_integer_vars_in_both
+    let _n_total_nl_int = header.n_nl_integer_vars_in_both
         + header.n_nl_integer_vars_in_cons
         + header.n_nl_integer_vars_in_objs;
     let mut var_types = vec![VarType::Continuous; n_vars];
