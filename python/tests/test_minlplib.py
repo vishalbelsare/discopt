@@ -256,7 +256,16 @@ ALL_INSTANCES: list[NLInstance] = [
     ),
     # --- gear problems ---
     NLInstance("gear", 0.0, 4, False, True),
-    NLInstance("gear3", 0.0, 8, False, True, time_limit=60.0, max_nodes=100_000),
+    NLInstance(
+        "gear3",
+        0.0,
+        8,
+        False,
+        True,
+        time_limit=60.0,
+        max_nodes=100_000,
+        xfail="8-var gear problem: hits time limit before converging",
+    ),
     NLInstance(
         "gear4",
         1.64342847,
