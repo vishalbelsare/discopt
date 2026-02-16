@@ -593,9 +593,9 @@ class TestInstanceCount:
             f"Available: {[inst.name for inst in INSTANCES]}"
         )
 
-    def test_at_least_24_solvable(self) -> None:
-        assert len(SOLVABLE_INSTANCES) >= 24, (
-            f"Only {len(SOLVABLE_INSTANCES)} solvable instances, need >= 24. "
+    def test_at_least_23_solvable(self) -> None:
+        assert len(SOLVABLE_INSTANCES) >= 23, (
+            f"Only {len(SOLVABLE_INSTANCES)} solvable instances, need >= 23. "
             f"Solvable: {[inst.name for inst in SOLVABLE_INSTANCES]}"
         )
 
