@@ -18,6 +18,7 @@ parts:
   - caption: Tutorials
     chapters:
       - file: notebooks/quickstart
+      - file: notebooks/modeling_guide
       - file: notebooks/minlp_examples
       - file: notebooks/problem_classes
   - caption: Advanced Features
