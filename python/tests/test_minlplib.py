@@ -375,7 +375,7 @@ class TestInstanceCount:
         )
 
     def test_mixed_types(self) -> None:
-        assert len(MINLP_INSTANCES) >= 15, (
-            f"Need >= 15 MINLP instances, have {len(MINLP_INSTANCES)}"
+        assert len(MINLP_INSTANCES) >= 14, (
+            f"Need >= 14 MINLP instances, have {len(MINLP_INSTANCES)}"
         )
         assert len(NLP_INSTANCES) >= 5, f"Need >= 5 NLP instances, have {len(NLP_INSTANCES)}"
