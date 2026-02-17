@@ -96,9 +96,9 @@ Performance measured on Apple M4 Pro (CPU, JAX 0.8.2). "Warm" times exclude JIT 
 | **MINLP** (n=10) | 0.9s (batch=1) | 0.9s (batch=16) | vmap batching helps with deeper B&B trees |
 
 See the benchmark notebooks for full scaling plots and details:
-- [Benchmarks by Problem Class](notebooks/benchmarks_by_class.ipynb) -- LP, QP, MILP, MIQP, NLP (3 backends), MINLP
-- [IPM vs ripopt vs Ipopt](notebooks/ipm_vs_ipopt.ipynb) -- detailed NLP backend comparison
-- [Batch IPM vs Ipopt](notebooks/batch_ipm_vs_ipopt.ipynb) -- vmap-batched IPM for B&B inner loops
+- [Benchmarks by Problem Class](docs/notebooks/benchmarks_by_class.ipynb) -- LP, QP, MILP, MIQP, NLP (3 backends), MINLP
+- [IPM vs ripopt vs Ipopt](docs/notebooks/ipm_vs_ipopt.ipynb) -- detailed NLP backend comparison
+- [Batch IPM vs Ipopt](docs/notebooks/batch_ipm_vs_ipopt.ipynb) -- vmap-batched IPM for B&B inner loops
 
 ## Installation
 
@@ -121,7 +121,7 @@ JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 pytest python/tests/ -v
 
 ## Documentation
 
-Tutorial notebooks are available in the `notebooks/` directory:
+Tutorial notebooks are available in `docs/notebooks/`:
 
 - **Quickstart** -- basic modeling and solving
 - **MINLP Examples** -- mixed-integer nonlinear programs

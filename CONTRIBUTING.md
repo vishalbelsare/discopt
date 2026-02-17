@@ -82,8 +82,7 @@ pre-commit install
 - `crates/discopt-python/` -- PyO3 bindings
 - `python/discopt/` -- Python package (modeling API, JAX layer, solver orchestrator)
 - `python/tests/` -- Python test suite
-- `notebooks/` -- Tutorial Jupyter notebooks
-- `docs/` -- Jupyter Book documentation
+- `docs/` -- Jupyter Book documentation (notebooks live in `docs/notebooks/`)
 
 ## Reporting Issues
 

@@ -29,7 +29,7 @@ JUPYTER     ?= jupyter
 
 PROJECT_DIR := $(shell pwd)
 RESULTS_DIR := $(PROJECT_DIR)/results
-NOTEBOOK    := notebooks/benchmarks_by_class.ipynb
+NOTEBOOK    := docs/notebooks/benchmarks_by_class.ipynb
 SO_TARGET   := python/discopt/_rust.cpython-312-darwin.so
 
 # Timestamp for output files
@@ -58,7 +58,7 @@ CUTEST_ENV      := $(CUTEST_PREFIX)/env.sh
 .PHONY: all benchmarks build test lint clean help \
         bench-notebook bench-smoke bench-phase3-gate bench-tests \
         bench-cutest bench-cutest-smoke setup-cutest check-cutest \
-        docs docs-open
+        docs docs-open notebooks
 
 all: benchmarks
 
@@ -76,6 +76,7 @@ help:
 	@echo "  make bench-cutest       Full CUTEst suite (n<=$(CUTEST_MAX_N), override with CUTEST_MAX_N=N)"
 	@echo "  make bench-cutest-smoke Quick CUTEst smoke test (10 problems)"
 	@echo "  make setup-cutest       Install CUTEst/SIFDecode/SIF (one-time setup)"
+	@echo "  make notebooks          Execute all notebooks in place (docs/notebooks/ + manuscript/)"
 	@echo "  make docs               Build Jupyter Book documentation"
 	@echo "  make docs-open          Build and open Jupyter Book in browser"
 	@echo "  make clean              Remove build artifacts"
@@ -252,6 +253,25 @@ benchmarks: build lint test bench-notebook bench-smoke
 	@echo "  Timestamp: $(TS)"
 	@echo "============================================================"
 	@ls -lh $(RESULTS_DIR)/*$(TS)* 2>/dev/null
+
+# --- Notebooks (run in place) ------------------------------------------------
+
+# Source notebooks (docs + manuscript, excluding build artifacts)
+NB_SOURCES := $(wildcard docs/notebooks/*.ipynb) $(wildcard manuscript/*.ipynb)
+
+notebooks: build
+	@echo "==> Running $(words $(NB_SOURCES)) notebooks in place..."
+	@failed=0; \
+	for nb in $(NB_SOURCES); do \
+		echo "  -> $$nb"; \
+		$(JUPYTER) nbconvert --to notebook --execute --inplace \
+			--ExecutePreprocessor.timeout=600 \
+			"$$nb" || { echo "  !! FAILED: $$nb"; failed=$$((failed + 1)); }; \
+	done; \
+	if [ $$failed -gt 0 ]; then \
+		echo "==> $$failed notebook(s) failed"; exit 1; \
+	fi
+	@echo "==> All notebooks executed successfully"
 
 # --- Documentation -----------------------------------------------------------
 

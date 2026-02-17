@@ -298,7 +298,14 @@ def _check_constraint_feasibility(evaluator, x, cl_list, cu_list, tol=1e-4):
     cons = evaluator.evaluate_constraints(np.asarray(x, dtype=np.float64))
     cl = np.array(cl_list, dtype=np.float64)
     cu = np.array(cu_list, dtype=np.float64)
-    max_viol = max(float(np.max(cons - cu)), float(np.max(cl - cons)))
+    # The evaluator may have more constraints than cl/cu (e.g., augmented with
+    # cutting planes).  Only check the original constraints.
+    n_check = min(len(cons), len(cl))
+    if n_check == 0:
+        return True
+    max_viol = max(
+        float(np.max(cons[:n_check] - cu[:n_check])), float(np.max(cl[:n_check] - cons[:n_check]))
+    )
     return max_viol <= tol
 
 

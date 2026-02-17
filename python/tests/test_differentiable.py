@@ -119,7 +119,8 @@ class TestParametricCompiler:
 class TestDifferentiableSolve:
     """Test differentiable_solve returns correct solutions and gradients."""
 
-    def test_simple_parametric_lp(self):
+    @pytest.mark.parametrize("nlp_solver", ["ipm", "ipopt"])
+    def test_simple_parametric_lp(self, nlp_solver):
         """min p*x s.t. x >= 1, x <= 5, p > 0.
 
         Optimal: x* = 1 (for p > 0), obj* = p.
@@ -131,7 +132,7 @@ class TestDifferentiableSolve:
         x = m.continuous("x", lb=1, ub=5)
         m.minimize(p * x)
 
-        result = differentiable_solve(m)
+        result = differentiable_solve(m, nlp_solver=nlp_solver)
         assert isinstance(result, DiffSolveResult)
         assert result.status == "optimal"
         assert result.objective == pytest.approx(3.0, abs=1e-4)
@@ -140,7 +141,8 @@ class TestDifferentiableSolve:
         # d(obj*)/dp = x* = 1.0
         assert float(grad) == pytest.approx(1.0, abs=1e-3)
 
-    def test_parametric_rhs(self):
+    @pytest.mark.parametrize("nlp_solver", ["ipm", "ipopt"])
+    def test_parametric_rhs(self, nlp_solver):
         """min x s.t. x >= b, x <= 10.
 
         Optimal: x* = b, obj* = b.
@@ -154,7 +156,7 @@ class TestDifferentiableSolve:
         m.minimize(x)
         m.subject_to(x >= b)
 
-        result = differentiable_solve(m)
+        result = differentiable_solve(m, nlp_solver=nlp_solver)
         assert result.status == "optimal"
         assert result.objective == pytest.approx(2.0, abs=1e-3)
 
@@ -203,7 +205,8 @@ class TestDifferentiableSolve:
         assert grad[0] == pytest.approx(1.0, abs=1e-2)
         assert grad[1] == pytest.approx(0.0, abs=1e-2)
 
-    def test_parametric_nlp(self):
+    @pytest.mark.parametrize("nlp_solver", ["ipm", "ipopt"])
+    def test_parametric_nlp(self, nlp_solver):
         """min x^2 + p*x s.t. x >= 0.
 
         For p >= 0: x* = 0, obj* = 0.
@@ -215,7 +218,7 @@ class TestDifferentiableSolve:
         x = m.continuous("x", lb=0, ub=100)
         m.minimize(x**2 + p * x)
 
-        result = differentiable_solve(m)
+        result = differentiable_solve(m, nlp_solver=nlp_solver)
         assert result.status == "optimal"
         # x* = 2.0, obj* = 4 - 8 = -4
         assert result.objective == pytest.approx(-4.0, abs=1e-3)
@@ -608,14 +611,15 @@ class TestActiveSetFinder:
 class TestImplicitDifferentiation:
     """Test implicit differentiation via KKT system."""
 
-    def test_unconstrained_quadratic(self):
+    @pytest.mark.parametrize("nlp_solver", ["ipm", "ipopt"])
+    def test_unconstrained_quadratic(self, nlp_solver):
         """min (x - p)^2, unconstrained: x* = p, dx/dp = 1, dobj/dp = 0."""
         m = dm.Model("imp_unconstrained")
         p = m.parameter("p", value=3.0)
         x = m.continuous("x", lb=-10, ub=10)
         m.minimize((x - p) ** 2)
 
-        result = differentiable_solve_l3(m)
+        result = differentiable_solve_l3(m, nlp_solver=nlp_solver)
         assert result.status == "optimal"
         assert result.objective == pytest.approx(0.0, abs=1e-4)
 
@@ -628,7 +632,8 @@ class TestImplicitDifferentiation:
         assert sens is not None
         assert float(sens[0, 0]) == pytest.approx(1.0, abs=1e-2)
 
-    def test_constrained_active(self):
+    @pytest.mark.parametrize("nlp_solver", ["ipm", "ipopt"])
+    def test_constrained_active(self, nlp_solver):
         """min x^2 s.t. x >= p. At optimum x* = p, dobj/dp = 2p."""
         m = dm.Model("imp_constrained")
         p = m.parameter("p", value=2.0)
@@ -636,7 +641,7 @@ class TestImplicitDifferentiation:
         m.minimize(x**2)
         m.subject_to(x >= p)
 
-        result = differentiable_solve_l3(m)
+        result = differentiable_solve_l3(m, nlp_solver=nlp_solver)
         assert result.status == "optimal"
         assert result.objective == pytest.approx(4.0, abs=1e-3)
 
@@ -900,7 +905,11 @@ class TestL3VsL1Comparison:
         assert abs(l3 - fd) <= abs(l1 - fd) + 0.5
 
     def test_sensitivity_matrix_shape(self):
-        """Sensitivity matrix should have shape (n_vars, n_params)."""
+        """Sensitivity matrix should have shape (n_vars, n_params).
+
+        Uses ipopt for this LP since IPM can struggle with zero-Hessian
+        objectives, causing the KKT system to be singular.
+        """
         m = dm.Model("l3_sens_shape")
         m.parameter("a", value=1.0)
         m.parameter("b", value=2.0)
@@ -909,7 +918,7 @@ class TestL3VsL1Comparison:
         m.minimize(m._parameters[0] * x1 + m._parameters[1] * x2)
         m.subject_to(x1 + x2 >= 1)
 
-        result = differentiable_solve_l3(m)
+        result = differentiable_solve_l3(m, nlp_solver="ipopt")
         sens = result.sensitivity_matrix()
         assert sens is not None
         assert sens.shape == (2, 2)

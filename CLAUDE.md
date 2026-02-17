@@ -57,13 +57,15 @@ mypy python/discopt/
 The `docs/` directory contains a Jupyter Book site built with `jupyter-book build docs/`.
 
 - **Config**: `docs/_config.yml`, `docs/_toc.yml`
-- **Notebooks**: `docs/notebooks/` (copies from `notebooks/` with added citations)
+- **Notebooks**: `docs/notebooks/` (single source of truth for all notebooks)
 - **Bibliography**: `docs/references.bib` (BibTeX entries), `docs/references.md` (rendered bibliography page)
 - **Landing page**: `docs/intro.md`
 
+All notebooks live in `docs/notebooks/` and should always include relevant `{cite:p}` / `{cite:t}` MyST citations (keys from `docs/references.bib`). There is no separate `notebooks/` directory.
+
 **When adding a new notebook**, you must:
-1. Copy the notebook into `docs/notebooks/`
-2. Add `{cite:p}` / `{cite:t}` MyST citations to relevant markdown cells (keys from `docs/references.bib`)
+1. Create the notebook in `docs/notebooks/`
+2. Add `{cite:p}` / `{cite:t}` MyST citations to relevant markdown cells
 3. Add any new BibTeX entries to `docs/references.bib`
 4. Add the notebook to `docs/_toc.yml` under the appropriate `parts` section
 5. Rebuild with `jupyter-book build docs/` and verify zero warnings

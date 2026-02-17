@@ -7,10 +7,14 @@ Level 1 implementation uses the envelope theorem:
              = df/dp |_{x*} + lambda*^T dg/dp |_{x*}
 
 where L is the Lagrangian, x* is the optimal primal, and lambda* are the
-optimal dual variables (constraint multipliers) returned by Ipopt.
+optimal dual variables (constraint multipliers) returned by the NLP solver.
 
 This avoids solving any linear system -- the duals from the NLP solve
 directly provide the sensitivity information we need.
+
+The default NLP backend is the pure-JAX IPM (``solve_nlp_ipm``), which keeps
+the entire pipeline in JAX and requires no external C dependencies. Pass
+``nlp_solver="ipopt"`` to use cyipopt instead.
 """
 
 from __future__ import annotations
@@ -300,6 +304,25 @@ def _get_param_slice(param: Parameter, model: Model) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
+# NLP dispatch helper
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_nlp_solve(nlp_solver: str, evaluator, x0, options: dict):
+    """Dispatch NLP solve to the selected backend."""
+    if nlp_solver == "ipm":
+        from discopt._jax.ipm import solve_nlp_ipm
+
+        return solve_nlp_ipm(evaluator, x0, constraint_bounds=None, options=options)
+    elif nlp_solver == "ipopt":
+        from discopt.solvers.nlp_ipopt import solve_nlp
+
+        return solve_nlp(evaluator, x0, options=options)
+    else:
+        raise ValueError(f"Unknown nlp_solver: {nlp_solver!r}. Use 'ipm' or 'ipopt'.")
+
+
+# ---------------------------------------------------------------------------
 # Differentiable solve
 # ---------------------------------------------------------------------------
 
@@ -307,19 +330,26 @@ def _get_param_slice(param: Parameter, model: Model) -> tuple[int, int]:
 def differentiable_solve(
     model: Model,
     ipopt_options: Optional[dict] = None,
+    *,
+    nlp_solver: str = "ipm",
+    solver_options: Optional[dict] = None,
 ) -> "DiffSolveResult":
     """Solve a continuous model and return a result with parameter sensitivities.
 
     Uses the envelope theorem to compute d(obj*)/dp without solving any
     additional linear systems. The optimal dual variables (Lagrange
-    multipliers) from Ipopt directly provide the sensitivity information.
+    multipliers) from the NLP solver directly provide the sensitivity information.
 
     This function only works for purely continuous models (no integer variables).
     The model must have at least one Parameter for differentiation to be useful.
 
     Args:
         model: A Model with objective, constraints, and parameters.
-        ipopt_options: Options dict passed to cyipopt.
+        ipopt_options: Deprecated alias for solver_options. Options dict passed
+            to the NLP solver.
+        nlp_solver: NLP backend to use: ``"ipm"`` (default, pure-JAX) or
+            ``"ipopt"`` (cyipopt).
+        solver_options: Options dict passed to the NLP solver.
 
     Returns:
         DiffSolveResult with solution and .gradient(param) method.
@@ -327,7 +357,9 @@ def differentiable_solve(
     from discopt._jax.nlp_evaluator import NLPEvaluator
     from discopt.modeling.core import VarType
     from discopt.solvers import SolveStatus
-    from discopt.solvers.nlp_ipopt import solve_nlp
+
+    # Merge ipopt_options (deprecated) with solver_options
+    opts = dict(solver_options or ipopt_options or {})
 
     model.validate()
 
@@ -346,10 +378,9 @@ def differentiable_solve(
     ub_clipped = np.clip(ub, -100.0, 100.0)
     x0 = 0.5 * (lb_clipped + ub_clipped)
 
-    opts = dict(ipopt_options) if ipopt_options else {}
     opts.setdefault("print_level", 0)
 
-    nlp_result = solve_nlp(evaluator, x0, options=opts)
+    nlp_result = _dispatch_nlp_solve(nlp_solver, evaluator, x0, opts)
 
     if nlp_result.status != SolveStatus.OPTIMAL:
         raise RuntimeError(f"NLP solve did not converge to optimal: {nlp_result.status.value}")
@@ -468,7 +499,13 @@ class DiffSolveResult:
 # ---------------------------------------------------------------------------
 
 
-def _make_jax_differentiable_solve(model: Model, ipopt_options: Optional[dict] = None):
+def _make_jax_differentiable_solve(
+    model: Model,
+    ipopt_options: Optional[dict] = None,
+    *,
+    nlp_solver: str = "ipm",
+    solver_options: Optional[dict] = None,
+):
     """Create a JAX-differentiable function p_flat -> obj* for the model.
 
     Returns a function that maps parameter values to optimal objective value,
@@ -476,14 +513,15 @@ def _make_jax_differentiable_solve(model: Model, ipopt_options: Optional[dict] =
 
     Args:
         model: A Model with objective, constraints, and parameters.
-        ipopt_options: Options dict passed to cyipopt.
+        ipopt_options: Deprecated alias for solver_options.
+        nlp_solver: NLP backend: ``"ipm"`` (default) or ``"ipopt"``.
+        solver_options: Options dict passed to the NLP solver.
 
     Returns:
         A function solve_fn(p_flat) -> scalar that supports jax.grad.
     """
     from discopt._jax.nlp_evaluator import NLPEvaluator
     from discopt.modeling.core import VarType
-    from discopt.solvers.nlp_ipopt import solve_nlp
 
     model.validate()
 
@@ -500,8 +538,9 @@ def _make_jax_differentiable_solve(model: Model, ipopt_options: Optional[dict] =
     ub_clipped = np.clip(ub, -100.0, 100.0)
     x0_default = 0.5 * (lb_clipped + ub_clipped)
 
-    opts = dict(ipopt_options) if ipopt_options else {}
+    opts = dict(solver_options or ipopt_options or {})
     opts.setdefault("print_level", 0)
+    _nlp_solver = nlp_solver
 
     n_vars = evaluator.n_variables
     n_constraints = evaluator.n_constraints
@@ -527,7 +566,7 @@ def _make_jax_differentiable_solve(model: Model, ipopt_options: Optional[dict] =
         ev = NLPEvaluator(model)
 
         def _solve(p_np):
-            result = solve_nlp(ev, x0_default, options=opts)
+            result = _dispatch_nlp_solve(_nlp_solver, ev, x0_default, opts)
             x_sol = result.x if result.x is not None else x0_default
             mults = result.multipliers
             obj = result.objective if result.objective is not None else 0.0
@@ -560,7 +599,7 @@ def _make_jax_differentiable_solve(model: Model, ipopt_options: Optional[dict] =
         ev = NLPEvaluator(model)
 
         def _solve_full(p_np):
-            result = solve_nlp(ev, x0_default, options=opts)
+            result = _dispatch_nlp_solve(_nlp_solver, ev, x0_default, opts)
             x_sol = result.x if result.x is not None else x0_default
             mults = result.multipliers
             obj = result.objective if result.objective is not None else 0.0
@@ -830,6 +869,8 @@ def _perturbation_gradient(
     p_flat: jnp.ndarray,
     ipopt_options: Optional[dict],
     eps: float = 1e-5,
+    nlp_solver: str = "ipm",
+    solver_options: Optional[dict] = None,
 ) -> np.ndarray:
     """Fallback: compute gradient via finite perturbation of the solve.
 
@@ -838,12 +879,15 @@ def _perturbation_gradient(
     Args:
         model: The optimization model.
         p_flat: Flat parameter vector.
-        ipopt_options: Options for the NLP solver.
+        ipopt_options: Deprecated alias for solver_options.
         eps: Perturbation size.
+        nlp_solver: NLP backend: ``"ipm"`` (default) or ``"ipopt"``.
+        solver_options: Options dict passed to the NLP solver.
 
     Returns:
         Gradient array of shape (n_params,).
     """
+    opts = solver_options or ipopt_options
     n_params = len(p_flat)
     grad = np.zeros(n_params, dtype=np.float64)
 
@@ -855,11 +899,11 @@ def _perturbation_gradient(
 
         # Set params and solve at p + eps
         _set_model_params(model, p_plus)
-        r_plus = _solve_model_nlp(model, ipopt_options)
+        r_plus = _solve_model_nlp(model, opts, nlp_solver=nlp_solver)
 
         # Set params and solve at p - eps
         _set_model_params(model, p_minus)
-        r_minus = _solve_model_nlp(model, ipopt_options)
+        r_minus = _solve_model_nlp(model, opts, nlp_solver=nlp_solver)
 
         if r_plus is not None and r_minus is not None:
             grad[i] = (r_plus - r_minus) / (2 * eps)
@@ -881,11 +925,12 @@ def _set_model_params(model: Model, p_flat: np.ndarray) -> None:
 def _solve_model_nlp(
     model: Model,
     ipopt_options: Optional[dict],
+    *,
+    nlp_solver: str = "ipm",
 ) -> Optional[float]:
     """Solve the model NLP and return the objective value, or None on failure."""
     from discopt._jax.nlp_evaluator import NLPEvaluator
     from discopt.solvers import SolveStatus
-    from discopt.solvers.nlp_ipopt import solve_nlp
 
     evaluator = NLPEvaluator(model)
     lb, ub = evaluator.variable_bounds
@@ -895,7 +940,7 @@ def _solve_model_nlp(
 
     opts = dict(ipopt_options) if ipopt_options else {}
     opts.setdefault("print_level", 0)
-    result = solve_nlp(evaluator, x0, options=opts)
+    result = _dispatch_nlp_solve(nlp_solver, evaluator, x0, opts)
     if result.status == SolveStatus.OPTIMAL:
         return result.objective
     return None
@@ -1130,7 +1175,10 @@ class DiffSolveResultL3(DiffSolveResult):
 def differentiable_solve_l3(
     model: Model,
     ipopt_options: Optional[dict] = None,
-    active_tol: float = 1e-6,
+    active_tol: float = 1e-3,
+    *,
+    nlp_solver: str = "ipm",
+    solver_options: Optional[dict] = None,
 ) -> DiffSolveResultL3:
     """Solve a continuous model with L3 implicit differentiation sensitivities.
 
@@ -1141,8 +1189,10 @@ def differentiable_solve_l3(
 
     Args:
         model: A Model with objective, constraints, and parameters.
-        ipopt_options: Options dict passed to cyipopt.
+        ipopt_options: Deprecated alias for solver_options.
         active_tol: Tolerance for active set detection.
+        nlp_solver: NLP backend: ``"ipm"`` (default) or ``"ipopt"``.
+        solver_options: Options dict passed to the NLP solver.
 
     Returns:
         DiffSolveResultL3 with solution and both L1 and L3 gradients.
@@ -1150,7 +1200,8 @@ def differentiable_solve_l3(
     from discopt._jax.nlp_evaluator import NLPEvaluator
     from discopt.modeling.core import VarType
     from discopt.solvers import SolveStatus
-    from discopt.solvers.nlp_ipopt import solve_nlp
+
+    opts = dict(solver_options or ipopt_options or {})
 
     model.validate()
 
@@ -1168,10 +1219,9 @@ def differentiable_solve_l3(
     ub_clipped = np.clip(ub, -100.0, 100.0)
     x0 = 0.5 * (lb_clipped + ub_clipped)
 
-    opts = dict(ipopt_options) if ipopt_options else {}
     opts.setdefault("print_level", 0)
 
-    nlp_result = solve_nlp(evaluator, x0, options=opts)
+    nlp_result = _dispatch_nlp_solve(nlp_solver, evaluator, x0, opts)
     if nlp_result.status != SolveStatus.OPTIMAL:
         raise RuntimeError(f"NLP solve did not converge to optimal: {nlp_result.status.value}")
 
@@ -1221,7 +1271,9 @@ def differentiable_solve_l3(
         if dx_dp is not None and jnp.any(jnp.isnan(dx_dp)) or jnp.any(jnp.isinf(dx_dp)):
             l3_failed = True
             # Fall back to perturbation smoothing
-            l1_sensitivity = _perturbation_gradient(model, p_flat, ipopt_options)
+            l1_sensitivity = _perturbation_gradient(
+                model, p_flat, None, nlp_solver=nlp_solver, solver_options=opts
+            )
             dx_dp = None
             sens_info = None
 
