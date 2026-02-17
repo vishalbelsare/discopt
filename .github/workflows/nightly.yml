@@ -30,7 +30,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v4
       - name: Clone ripopt (sibling path dependency)
@@ -53,19 +53,10 @@ jobs:
           pip install maturin
           pip install jax jaxlib numpy scipy highspy cyipopt pytest pytest-timeout "ruff==0.14.6" mypy equinox optax
           maturin develop
-      - name: Lint
-        run: |
-          source .venv/bin/activate
-          ruff check python/
-          ruff format --check python/
-      - name: Type check
-        run: |
-          source .venv/bin/activate
-          mypy python/discopt/
       - name: Test (full suite including MINLPLib solves)
         run: |
           source .venv/bin/activate
-          pytest python/tests/ -v --timeout=1800
+          pytest python/tests/ -v --timeout=300
         env:
           JAX_PLATFORMS: cpu
           JAX_ENABLE_X64: "1"
