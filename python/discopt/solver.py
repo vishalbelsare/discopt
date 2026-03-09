@@ -272,6 +272,19 @@ def _extract_variable_info(model: Model):
     return n_vars, lb, ub, int_var_offsets, int_var_sizes
 
 
+def _check_lp_solution_feasibility(A_eq, b_eq, x_full, tol=1e-4):
+    """Check that an LP/QP solution satisfies A_eq @ x = b_eq within tolerance.
+
+    Returns True if the maximum absolute constraint residual is within *tol*.
+    Used by MILP/MIQP B&B to reject LP/QP relaxation solutions where the IPM
+    converged to a constraint-violating point.
+    """
+    if A_eq.shape[0] == 0:
+        return True
+    residual = np.asarray(A_eq) @ np.asarray(x_full) - np.asarray(b_eq)
+    return float(np.max(np.abs(residual))) <= tol
+
+
 def _check_constraint_feasibility(evaluator, x, cl_list, cu_list, tol=1e-4):
     """Return True if x satisfies all constraints within tolerance.
 
@@ -2203,6 +2216,14 @@ def _solve_milp_bb(
                 for i in range(n_batch):
                     if ok[i]:
                         result_sols[i] = x_vals[i, :n_vars]
+                        # Reject LP solutions that violate constraints
+                        if not _check_lp_solution_feasibility(
+                            lp_data.A_eq, lp_data.b_eq, x_vals[i]
+                        ):
+                            result_lbs[i] = _INFEASIBILITY_SENTINEL
+                            lb_c = np.clip(np.array(batch_lb[i]), -_SPC, _SPC)
+                            ub_c = np.clip(np.array(batch_ub[i]), -_SPC, _SPC)
+                            result_sols[i] = 0.5 * (lb_c + ub_c)
                     else:
                         lb_c = np.clip(np.array(batch_lb[i]), -_SPC, _SPC)
                         ub_c = np.clip(np.array(batch_ub[i]), -_SPC, _SPC)
@@ -2235,8 +2256,15 @@ def _solve_milp_bb(
                     state = lp_ipm_solve(lp_data.c, lp_data.A_eq, lp_data.b_eq, x_l_full, x_u_full)
                     conv = int(state.converged)
                     if conv in (1, 2, 3):
-                        result_lbs[i] = float(state.obj) + lp_data.obj_const
-                        result_sols[i] = np.asarray(state.x[:n_vars])
+                        # Reject LP solutions that violate constraints
+                        if _check_lp_solution_feasibility(lp_data.A_eq, lp_data.b_eq, state.x):
+                            result_lbs[i] = float(state.obj) + lp_data.obj_const
+                            result_sols[i] = np.asarray(state.x[:n_vars])
+                        else:
+                            result_lbs[i] = _INFEASIBILITY_SENTINEL
+                            lb_c = np.clip(node_lb, -_SPC, _SPC)
+                            ub_c = np.clip(node_ub, -_SPC, _SPC)
+                            result_sols[i] = 0.5 * (lb_c + ub_c)
                     else:
                         result_lbs[i] = _INFEASIBILITY_SENTINEL
                         lb_c = np.clip(node_lb, -_SPC, _SPC)
@@ -2400,6 +2428,14 @@ def _solve_miqp_bb(
                 for i in range(n_batch):
                     if ok[i]:
                         result_sols[i] = x_vals[i, :n_vars]
+                        # Reject QP solutions that violate constraints
+                        if not _check_lp_solution_feasibility(
+                            qp_data.A_eq, qp_data.b_eq, x_vals[i]
+                        ):
+                            result_lbs[i] = _INFEASIBILITY_SENTINEL
+                            lb_c = np.clip(np.array(batch_lb[i]), -_SPC, _SPC)
+                            ub_c = np.clip(np.array(batch_lb[i]), -_SPC, _SPC)
+                            result_sols[i] = 0.5 * (lb_c + ub_c)
                     else:
                         lb_c = np.clip(np.array(batch_ub[i]), -_SPC, _SPC)
                         ub_c = np.clip(np.array(batch_ub[i]), -_SPC, _SPC)
@@ -2439,8 +2475,15 @@ def _solve_miqp_bb(
                     )
                     conv = int(state.converged)
                     if conv in (1, 2, 3):
-                        result_lbs[i] = float(state.obj) + qp_data.obj_const
-                        result_sols[i] = np.asarray(state.x[:n_vars])
+                        # Reject QP solutions that violate constraints
+                        if _check_lp_solution_feasibility(qp_data.A_eq, qp_data.b_eq, state.x):
+                            result_lbs[i] = float(state.obj) + qp_data.obj_const
+                            result_sols[i] = np.asarray(state.x[:n_vars])
+                        else:
+                            result_lbs[i] = _INFEASIBILITY_SENTINEL
+                            lb_c = np.clip(node_lb, -_SPC, _SPC)
+                            ub_c = np.clip(node_ub, -_SPC, _SPC)
+                            result_sols[i] = 0.5 * (lb_c + ub_c)
                     else:
                         result_lbs[i] = _INFEASIBILITY_SENTINEL
                         lb_c = np.clip(node_lb, -_SPC, _SPC)
