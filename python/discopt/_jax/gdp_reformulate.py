@@ -14,17 +14,28 @@ import numpy as np
 
 from discopt.modeling.core import (
     BinaryOp,
+    BooleanVar,
     Constant,
     Constraint,
     Expression,
     FunctionCall,
     IndexExpression,
+    LogicalAnd,
+    LogicalAtLeast,
+    LogicalAtMost,
+    LogicalEquivalent,
+    LogicalExactly,
+    LogicalExpression,
+    LogicalImplies,
+    LogicalNot,
+    LogicalOr,
     Model,
     UnaryOp,
     Variable,
     VarType,
     _DisjunctiveConstraint,
     _IndicatorConstraint,
+    _LogicalConstraint,
     _SOSConstraint,
     _wrap,
 )
@@ -42,7 +53,8 @@ def reformulate_gdp(model: Model, method: str = "big-m") -> Model:
         constraints.
     method : str, default "big-m"
         Reformulation method for disjunctive constraints:
-        ``"big-m"`` (default) or ``"hull"`` (convex hull).
+        ``"big-m"`` (default), ``"hull"`` (convex hull), or
+        ``"mbigm"`` (multiple big-M with LP-based tightening).
         Indicator and SOS constraints always use big-M regardless.
 
     Returns
@@ -53,7 +65,10 @@ def reformulate_gdp(model: Model, method: str = "big-m") -> Model:
         model unchanged.
     """
     has_gdp = any(
-        isinstance(c, (_IndicatorConstraint, _DisjunctiveConstraint, _SOSConstraint))
+        isinstance(
+            c,
+            (_IndicatorConstraint, _DisjunctiveConstraint, _SOSConstraint, _LogicalConstraint),
+        )
         for c in model._constraints
     )
     if not has_gdp:
@@ -82,18 +97,28 @@ def reformulate_gdp(model: Model, method: str = "big-m") -> Model:
         new_model._variables.append(var)
         return var
 
+    # Precompute LP relaxation for MBM
+    lp_data = None
+    if method == "mbigm":
+        lp_data = _precompute_lp_relaxation(model)
+
     for c in model._constraints:
         if isinstance(c, _IndicatorConstraint):
-            new_cons = _reformulate_indicator(c, new_model)
+            new_cons = _reformulate_indicator(c, new_model, lp_data=lp_data)
             new_model._constraints.extend(new_cons)
         elif isinstance(c, _DisjunctiveConstraint):
             if method == "hull":
                 new_vars, new_cons = _reformulate_disjunction_hull(c, new_model, _add_aux_binary)
             else:
-                new_vars, new_cons = _reformulate_disjunction(c, new_model, _add_aux_binary)
+                new_vars, new_cons = _reformulate_disjunction(
+                    c, new_model, _add_aux_binary, lp_data=lp_data
+                )
             new_model._constraints.extend(new_cons)
         elif isinstance(c, _SOSConstraint):
             new_cons = _reformulate_sos(c, new_model, _add_aux_binary)
+            new_model._constraints.extend(new_cons)
+        elif isinstance(c, _LogicalConstraint):
+            new_cons = _logical_to_linear(c, new_model, _add_aux_binary)
             new_model._constraints.extend(new_cons)
         else:
             # Regular Constraint -- keep as-is
@@ -152,6 +177,209 @@ def _compute_big_m(
 
     # Ensure M is positive and add small safety margin
     return max(abs(M), 1e-8) * 1.01
+
+
+def _compute_big_m_lp(
+    constraint: Constraint,
+    model: Model,
+    lp_data: tuple,
+    default: float = _DEFAULT_BIG_M,
+) -> float:
+    """Compute big-M via LP solve for tighter bounds (Multiple Big-M).
+
+    Solves LP relaxation to maximize/minimize the constraint body expression.
+    Falls back to interval arithmetic when the body is nonlinear or LP fails.
+
+    Parameters
+    ----------
+    constraint : Constraint
+        The constraint whose body needs a big-M.
+    model : Model
+        Model containing variable information.
+    lp_data : tuple
+        Precomputed LP data: (A_ub, b_ub, A_eq, b_eq, bounds, n_vars).
+    default : float
+        Fallback M value.
+    """
+    try:
+        from discopt.solvers.lp_highs import solve_lp
+    except ImportError:
+        return _compute_big_m(constraint, model, default)
+
+    A_ub, b_ub, A_eq, b_eq, n_vars = lp_data
+
+    # Extract linear coefficients from constraint body
+    # Reuse the same coefficient extraction logic from obbt
+    coeffs = _extract_body_coeffs(constraint.body, model, n_vars)
+    if coeffs is None:
+        # Nonlinear body: fall back to interval arithmetic
+        return _compute_big_m(constraint, model, default)
+
+    c_vec, offset = coeffs
+
+    # Build variable bounds
+    bounds_list = []
+    for v in model._variables:
+        lb_val = float(np.asarray(v.lb, dtype=np.float64).flat[0])
+        ub_val = float(np.asarray(v.ub, dtype=np.float64).flat[0])
+        for _ in range(v.size):
+            bounds_list.append((lb_val, ub_val))
+
+    _INF_THRESH = 1e15
+
+    def _solve_bound(maximize: bool) -> float | None:
+        """Solve LP to get bound. Returns None if LP fails."""
+        obj = -c_vec if maximize else c_vec
+        try:
+            result = solve_lp(
+                c=obj,
+                A_ub=A_ub,
+                b_ub=b_ub,
+                A_eq=A_eq,
+                b_eq=b_eq,
+                bounds=bounds_list,
+            )
+            if result.status in ("optimal",) and result.objective is not None:
+                val = -result.objective if maximize else result.objective
+                return float(val) + offset
+        except Exception:
+            pass
+        return None
+
+    if constraint.sense == "<=":
+        hi = _solve_bound(maximize=True)
+        if hi is not None and abs(hi) < _INF_THRESH:
+            return max(abs(hi), 1e-8) * 1.01
+    elif constraint.sense == ">=":
+        lo = _solve_bound(maximize=False)
+        if lo is not None and abs(lo) < _INF_THRESH:
+            return max(abs(-lo), 1e-8) * 1.01
+    elif constraint.sense == "==":
+        hi = _solve_bound(maximize=True)
+        lo = _solve_bound(maximize=False)
+        if hi is not None and lo is not None:
+            M = max(abs(hi), abs(lo))
+            if M < _INF_THRESH:
+                return max(M, 1e-8) * 1.01
+
+    # Fall back to interval arithmetic
+    return _compute_big_m(constraint, model, default)
+
+
+def _extract_body_coeffs(
+    expr: Expression,
+    model: Model,
+    n_vars: int,
+) -> tuple[np.ndarray, float] | None:
+    """Extract linear coefficient vector from an expression.
+
+    Returns (c_vec, offset) where body(x) = c_vec @ x + offset,
+    or None if the expression is nonlinear.
+    """
+    from discopt.modeling.core import (
+        BinaryOp,
+        Constant,
+        IndexExpression,
+        Parameter,
+        SumExpression,
+        SumOverExpression,
+        UnaryOp,
+    )
+
+    def _var_offset(var: Variable) -> int:
+        off = 0
+        for v in model._variables:
+            if v is var or v.name == var.name:
+                return off
+            off += v.size
+        return off
+
+    def _extract(e) -> tuple[dict, float] | None:
+        if isinstance(e, Constant):
+            return {}, float(np.sum(e.value))
+        if isinstance(e, Parameter):
+            return {}, float(np.sum(e.value))
+        if isinstance(e, Variable):
+            off = _var_offset(e)
+            if e.size == 1:
+                return {off: 1.0}, 0.0
+            return None
+        if isinstance(e, IndexExpression):
+            base = e.base
+            if isinstance(base, Variable):
+                idx = e.index if isinstance(e.index, int) else int(e.index)
+                off = _var_offset(base) + idx
+                return {off: 1.0}, 0.0
+            return None
+        if isinstance(e, UnaryOp) and e.op == "neg":
+            inner = _extract(e.operand)
+            if inner is None:
+                return None
+            neg_coeffs, neg_off = inner
+            return {k: -v for k, v in neg_coeffs.items()}, -neg_off
+        if isinstance(e, BinaryOp):
+            if e.op == "+":
+                le, ri = _extract(e.left), _extract(e.right)
+                if le is None or ri is None:
+                    return None
+                lc, lo = le
+                rc, ro = ri
+                merged = dict(lc)
+                for k, v in rc.items():
+                    merged[k] = merged.get(k, 0.0) + v
+                return merged, lo + ro
+            if e.op == "-":
+                le, ri = _extract(e.left), _extract(e.right)
+                if le is None or ri is None:
+                    return None
+                lc, lo = le
+                rc, ro = ri
+                merged = dict(lc)
+                for k, v in rc.items():
+                    merged[k] = merged.get(k, 0.0) - v
+                return merged, lo - ro
+            if e.op == "*":
+                le, ri = _extract(e.left), _extract(e.right)
+                if le is not None and ri is not None:
+                    lc, lo = le
+                    rc, ro = ri
+                    # Constant * linear or linear * constant
+                    if not lc and not rc:
+                        return {}, lo * ro
+                    if not lc:
+                        return {k: lo * v for k, v in rc.items()}, lo * ro
+                    if not rc:
+                        return {k: ro * v for k, v in lc.items()}, lo * ro
+                return None
+        if isinstance(e, (SumExpression, SumOverExpression)):
+            # Skip complex sum forms
+            return None
+        return None
+
+    result = _extract(expr)
+    if result is None:
+        return None
+
+    coeffs_dict, offset = result
+    c_vec = np.zeros(n_vars)
+    for idx, val in coeffs_dict.items():
+        if idx < n_vars:
+            c_vec[idx] = val
+    return c_vec, offset
+
+
+def _precompute_lp_relaxation(model: Model) -> tuple | None:
+    """Precompute LP relaxation data from the model for MBM.
+
+    Returns (A_ub, b_ub, A_eq, b_eq, n_vars) or None if no linear
+    constraints found or HiGHS is unavailable.
+    """
+    try:
+        from discopt._jax.obbt import _extract_linear_constraints
+
+        return _extract_linear_constraints(model)
+    except (ImportError, Exception):
+        return None
 
 
 def _bound_expression(
@@ -279,6 +507,7 @@ def _bound_expression(
 def _reformulate_indicator(
     ic: _IndicatorConstraint,
     model: Model,
+    lp_data: tuple | None = None,
 ) -> list[Constraint]:
     """Reformulate an indicator constraint to big-M constraints.
 
@@ -294,7 +523,10 @@ def _reformulate_indicator(
     """
     con = ic.constraint
     y = ic.indicator
-    M = _compute_big_m(con, model)
+    if lp_data is not None:
+        M = _compute_big_m_lp(con, model, lp_data)
+    else:
+        M = _compute_big_m(con, model)
 
     if ic.active_value == 1:
         # When y=1 constraint is active; when y=0, relaxed by M
@@ -346,6 +578,7 @@ def _reformulate_disjunction(
     dc: _DisjunctiveConstraint,
     model: Model,
     add_aux_binary,
+    lp_data: tuple | None = None,
 ) -> tuple[list[Variable], list[Constraint]]:
     """Reformulate a disjunction via big-M.
 
@@ -387,8 +620,21 @@ def _reformulate_disjunction(
     # Big-M reformulation for each constraint in each disjunct
     for k, disjunct in enumerate(dc.disjuncts):
         y_k = selectors[k]
-        for j, con in enumerate(disjunct):
-            M = _compute_big_m(con, model)
+        for j, item in enumerate(disjunct):
+            # Handle nested disjunctions
+            if isinstance(item, _DisjunctiveConstraint):
+                inner_vars, inner_cons = _reformulate_disjunction_nested(
+                    item, model, add_aux_binary, parent_selector=y_k
+                )
+                new_vars.extend(inner_vars)
+                new_cons.extend(inner_cons)
+                continue
+
+            con = item
+            if lp_data is not None:
+                M = _compute_big_m_lp(con, model, lp_data)
+            else:
+                M = _compute_big_m(con, model)
             deactivation = _wrap(M) * (_wrap(1.0) - y_k)
 
             if con.sense == "<=":
@@ -426,6 +672,98 @@ def _reformulate_disjunction(
                         sense=">=",
                         rhs=0.0,
                         name=f"_gdp_{dc.name}_d{k}_c{j}_ge" if dc.name else None,
+                    )
+                )
+
+    return new_vars, new_cons
+
+
+def _reformulate_disjunction_nested(
+    dc: _DisjunctiveConstraint,
+    model: Model,
+    add_aux_binary,
+    parent_selector,
+) -> tuple[list[Variable], list[Constraint]]:
+    """Reformulate a nested disjunction linked to a parent selector.
+
+    When parent_selector = 0, all inner selectors must be 0.
+    When parent_selector = 1, exactly one inner selector must be 1.
+    """
+    n_disjuncts = len(dc.disjuncts)
+    new_vars = []
+    new_cons = []
+
+    # Create inner selector binaries
+    selectors = []
+    for k in range(n_disjuncts):
+        y_k = add_aux_binary(f"nested_{dc.name or 'anon'}_{k}")
+        selectors.append(y_k)
+        new_vars.append(y_k)
+
+    # sum(inner selectors) == parent_selector
+    sum_expr = selectors[0]
+    for k in range(1, n_disjuncts):
+        sum_expr = sum_expr + selectors[k]
+
+    new_cons.append(
+        Constraint(
+            body=sum_expr - parent_selector,
+            sense="==",
+            rhs=0.0,
+            name=f"_gdp_nested_select_{dc.name}" if dc.name else None,
+        )
+    )
+
+    # Big-M for each inner constraint
+    for k, disjunct in enumerate(dc.disjuncts):
+        y_k = selectors[k]
+        for j, item in enumerate(disjunct):
+            if isinstance(item, _DisjunctiveConstraint):
+                # Recursive nesting
+                inner_vars, inner_cons = _reformulate_disjunction_nested(
+                    item, model, add_aux_binary, parent_selector=y_k
+                )
+                new_vars.extend(inner_vars)
+                new_cons.extend(inner_cons)
+                continue
+
+            con = item
+            M = _compute_big_m(con, model)
+            deactivation = _wrap(M) * (_wrap(1.0) - y_k)
+
+            if con.sense == "<=":
+                new_cons.append(
+                    Constraint(
+                        body=con.body - deactivation,
+                        sense="<=",
+                        rhs=0.0,
+                        name=f"_gdp_nested_{dc.name}_d{k}_c{j}" if dc.name else None,
+                    )
+                )
+            elif con.sense == ">=":
+                new_cons.append(
+                    Constraint(
+                        body=con.body + deactivation,
+                        sense=">=",
+                        rhs=0.0,
+                        name=f"_gdp_nested_{dc.name}_d{k}_c{j}" if dc.name else None,
+                    )
+                )
+            elif con.sense == "==":
+                new_cons.append(
+                    Constraint(
+                        body=con.body - deactivation,
+                        sense="<=",
+                        rhs=0.0,
+                        name=f"_gdp_nested_{dc.name}_d{k}_c{j}_le" if dc.name else None,
+                    )
+                )
+                new_cons.append(
+                    Constraint(
+                        body=con.body + deactivation,
+                        sense=">=",
+                        rhs=0.0,
+                        name=f"_gdp_nested_{dc.name}_d{k}_c{j}_ge" if dc.name else None,
                     )
                 )
 
@@ -995,3 +1333,237 @@ def _reformulate_sos(
                     )
 
     return new_cons
+
+
+# ---------------------------------------------------------------------------
+# Logical constraint linearization
+# ---------------------------------------------------------------------------
+
+
+def _get_binary_var(expr: LogicalExpression):
+    """Extract the underlying Variable from a BooleanVar or indexed BooleanVar."""
+    if isinstance(expr, BooleanVar):
+        return expr.variable
+    raise TypeError(f"Expected BooleanVar as leaf, got {type(expr).__name__}")
+
+
+def _to_nnf(expr: LogicalExpression) -> LogicalExpression:
+    """Convert a logical expression to Negation Normal Form (NNF).
+
+    Pushes negation inward using De Morgan's laws. Eliminates Implies and
+    Equivalent by rewriting them.
+    """
+    if isinstance(expr, BooleanVar):
+        return expr
+    elif isinstance(expr, LogicalNot):
+        inner = expr.operand
+        if isinstance(inner, BooleanVar):
+            return expr  # literal: ~Y is already NNF
+        elif isinstance(inner, LogicalNot):
+            return _to_nnf(inner.operand)  # double negation
+        elif isinstance(inner, LogicalAnd):
+            # De Morgan: ~(A & B) = ~A | ~B
+            return _to_nnf(LogicalOr(LogicalNot(inner.left), LogicalNot(inner.right)))
+        elif isinstance(inner, LogicalOr):
+            # De Morgan: ~(A | B) = ~A & ~B
+            return _to_nnf(LogicalAnd(LogicalNot(inner.left), LogicalNot(inner.right)))
+        elif isinstance(inner, LogicalImplies):
+            # ~(A -> B) = A & ~B
+            return _to_nnf(LogicalAnd(inner.antecedent, LogicalNot(inner.consequent)))
+        elif isinstance(inner, LogicalEquivalent):
+            # ~(A <-> B) = (A & ~B) | (~A & B)
+            return _to_nnf(
+                LogicalOr(
+                    LogicalAnd(inner.left, LogicalNot(inner.right)),
+                    LogicalAnd(LogicalNot(inner.left), inner.right),
+                )
+            )
+        else:
+            return expr
+    elif isinstance(expr, LogicalAnd):
+        return LogicalAnd(_to_nnf(expr.left), _to_nnf(expr.right))
+    elif isinstance(expr, LogicalOr):
+        return LogicalOr(_to_nnf(expr.left), _to_nnf(expr.right))
+    elif isinstance(expr, LogicalImplies):
+        # A -> B  ≡  ~A | B
+        return _to_nnf(LogicalOr(LogicalNot(expr.antecedent), expr.consequent))
+    elif isinstance(expr, LogicalEquivalent):
+        # A <-> B  ≡  (A -> B) & (B -> A)
+        return _to_nnf(
+            LogicalAnd(
+                LogicalImplies(expr.left, expr.right),
+                LogicalImplies(expr.right, expr.left),
+            )
+        )
+    else:
+        return expr
+
+
+def _collect_literals(clause: LogicalExpression) -> list[tuple] | None:
+    """Collect literals from a disjunction (Or-tree) of literals.
+
+    Returns a list of (Variable, positive: bool) tuples, or None if the
+    expression is not a flat clause.
+    """
+    if isinstance(clause, BooleanVar):
+        return [(_get_binary_var(clause), True)]
+    elif isinstance(clause, LogicalNot) and isinstance(clause.operand, BooleanVar):
+        return [(_get_binary_var(clause.operand), False)]
+    elif isinstance(clause, LogicalOr):
+        left = _collect_literals(clause.left)
+        right = _collect_literals(clause.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _nnf_to_cnf_clauses(expr: LogicalExpression, model: Model, add_aux_binary) -> list[list[tuple]]:
+    """Convert NNF expression to CNF clauses.
+
+    Each clause is a list of (Variable, positive: bool) literals.
+    Uses Tseitin transformation for And nodes inside Or nodes.
+    """
+    # Literal
+    if isinstance(expr, BooleanVar):
+        return [[(_get_binary_var(expr), True)]]
+    elif isinstance(expr, LogicalNot) and isinstance(expr.operand, BooleanVar):
+        return [[(_get_binary_var(expr.operand), False)]]
+
+    # Conjunction: collect clauses from both sides
+    elif isinstance(expr, LogicalAnd):
+        left_clauses = _nnf_to_cnf_clauses(expr.left, model, add_aux_binary)
+        right_clauses = _nnf_to_cnf_clauses(expr.right, model, add_aux_binary)
+        return left_clauses + right_clauses
+
+    # Disjunction: try to collect flat literals first
+    elif isinstance(expr, LogicalOr):
+        literals = _collect_literals(expr)
+        if literals is not None:
+            return [literals]
+        # Not flat — use Tseitin: introduce auxiliary for each non-literal child
+        left_lit = _tseitin_var(expr.left, model, add_aux_binary)
+        right_lit = _tseitin_var(expr.right, model, add_aux_binary)
+        return [left_lit + right_lit]
+
+    return []
+
+
+def _tseitin_var(expr: LogicalExpression, model: Model, add_aux_binary) -> list[tuple]:
+    """Create a Tseitin auxiliary for a sub-expression, return its literal.
+
+    Returns a list of literals (usually just one) that represent this
+    sub-expression, and adds the defining clauses as constraints on the model.
+    """
+    # If already a literal, just return it
+    if isinstance(expr, BooleanVar):
+        return [(_get_binary_var(expr), True)]
+    if isinstance(expr, LogicalNot) and isinstance(expr.operand, BooleanVar):
+        return [(_get_binary_var(expr.operand), False)]
+
+    # Create auxiliary binary: aux <-> expr
+    aux = add_aux_binary("_tseitin")
+
+    # Get the sub-clauses for expr
+    sub_clauses = _nnf_to_cnf_clauses(expr, model, add_aux_binary)
+
+    # For each clause C_i in the CNF of expr:
+    #   aux -> C_i  (i.e., ~aux | C_i)  means if aux=1, all clauses hold
+    for clause in sub_clauses:
+        linear_cons = _clause_to_constraint([(aux, False)] + clause)
+        model._constraints.append(linear_cons)
+
+    # For the reverse (C_1 & C_2 & ... -> aux), we add:
+    #   For each clause C_i: if all C_i satisfied, aux=1
+    #   This is complex for general CNF; for soundness we just add aux=1
+    #   implication. The full Tseitin encoding is only needed for equivalence.
+    #   Since we only need aux -> expr (one direction) for the clause we're
+    #   building, the above is sufficient for correctness.
+
+    return [(aux, True)]
+
+
+def _clause_to_constraint(clause: list[tuple], name: str | None = None) -> Constraint:
+    """Convert a CNF clause to a linear constraint.
+
+    Clause: [(var1, True), (var2, False), ...] meaning (var1 | ~var2 | ...)
+    Linearization: sum(positive vars) + sum(1 - negative vars) >= 1
+    """
+    pos_sum = _wrap(0.0)
+    n_neg = 0
+    for var, positive in clause:
+        if positive:
+            pos_sum = pos_sum + var
+        else:
+            pos_sum = pos_sum + (_wrap(1.0) - var)
+            n_neg += 1
+
+    return Constraint(
+        body=pos_sum - _wrap(1.0),
+        sense=">=",
+        rhs=0.0,
+        name=name,
+    )
+
+
+def _logical_to_linear(
+    lc: "_LogicalConstraint",
+    model: Model,
+    add_aux_binary,
+) -> list[Constraint]:
+    """Convert a logical constraint to linear constraints via CNF.
+
+    Handles special cases (AtLeast, AtMost, Exactly) directly as
+    linear sums. General propositional formulas go through NNF → CNF.
+    """
+    expr = lc.expression
+    prefix = lc.name or "_logic"
+
+    # Special cases: cardinality constraints
+    if isinstance(expr, LogicalAtLeast):
+        var_sum = _wrap(0.0)
+        for op in expr.operands:
+            var_sum = var_sum + _get_binary_var(op)
+        return [
+            Constraint(
+                body=var_sum - _wrap(float(expr.k)),
+                sense=">=",
+                rhs=0.0,
+                name=f"{prefix}_atleast",
+            )
+        ]
+
+    if isinstance(expr, LogicalAtMost):
+        var_sum = _wrap(0.0)
+        for op in expr.operands:
+            var_sum = var_sum + _get_binary_var(op)
+        return [
+            Constraint(
+                body=var_sum - _wrap(float(expr.k)),
+                sense="<=",
+                rhs=0.0,
+                name=f"{prefix}_atmost",
+            )
+        ]
+
+    if isinstance(expr, LogicalExactly):
+        var_sum = _wrap(0.0)
+        for op in expr.operands:
+            var_sum = var_sum + _get_binary_var(op)
+        return [
+            Constraint(
+                body=var_sum - _wrap(float(expr.k)),
+                sense="==",
+                rhs=0.0,
+                name=f"{prefix}_exactly",
+            )
+        ]
+
+    # General case: NNF → CNF → linear
+    nnf = _to_nnf(expr)
+    clauses = _nnf_to_cnf_clauses(nnf, model, add_aux_binary)
+
+    result = []
+    for i, clause in enumerate(clauses):
+        name_i = f"{prefix}_{i}" if lc.name else None
+        result.append(_clause_to_constraint(clause, name=name_i))
+    return result

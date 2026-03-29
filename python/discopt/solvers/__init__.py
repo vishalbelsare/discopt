@@ -30,6 +30,19 @@ class LPResult:
 
 
 @dataclass
+class MILPResult:
+    """Result of solving a mixed-integer linear program."""
+
+    status: SolveStatus
+    x: Optional[np.ndarray] = None
+    objective: Optional[float] = None
+    gap: Optional[float] = None
+    node_count: int = 0
+    iterations: int = 0
+    wall_time: float = 0.0
+
+
+@dataclass
 class NLPResult:
     """Result of solving a nonlinear program."""
 

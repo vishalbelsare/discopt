@@ -824,6 +824,18 @@ def solve_model(
             stacklevel=2,
         )
 
+    # --- LOA decomposition: intercept before GDP reformulation ---
+    if gdp_method == "loa":
+        from discopt.solvers.gdpopt_loa import solve_gdpopt_loa
+
+        return solve_gdpopt_loa(
+            model,
+            time_limit=time_limit,
+            gap_tolerance=gap_tolerance,
+            max_iterations=max_nodes,
+            nlp_solver=nlp_solver,
+        )
+
     # --- GDP reformulation: convert indicator/disjunctive/SOS to standard MINLP ---
     from discopt._jax.gdp_reformulate import reformulate_gdp
 

@@ -924,3 +924,324 @@ class TestHullReformulation:
         # Disjunct 1 (x>=7): dlb=7, dub=10 => v bounds [0, 10]
         v1 = [v for v in disagg_vars if v.name.endswith("_1")][0]
         assert float(v1.ub) == pytest.approx(10.0)
+
+
+# ---------------------------------------------------------------------------
+# BooleanVar + Propositional Logic
+# ---------------------------------------------------------------------------
+
+
+class TestBooleanVar:
+    def test_scalar_creation(self):
+        m = dm.Model("test")
+        Y = m.boolean("y")
+        assert isinstance(Y, dm.BooleanVar)
+
+    def test_array_creation(self):
+        m = dm.Model("test")
+        Y = m.boolean("y", shape=(3,))
+        assert isinstance(Y, dm.BooleanVarArray)
+        assert len(Y) == 3
+        assert isinstance(Y[0], dm.BooleanVar)
+        assert isinstance(Y[2], dm.BooleanVar)
+
+    def test_and_operator(self):
+        m = dm.Model("test")
+        Y = m.boolean("y", shape=(2,))
+        from discopt.modeling.core import LogicalAnd
+
+        expr = Y[0] & Y[1]
+        assert isinstance(expr, LogicalAnd)
+
+    def test_or_operator(self):
+        m = dm.Model("test")
+        Y = m.boolean("y", shape=(2,))
+        from discopt.modeling.core import LogicalOr
+
+        expr = Y[0] | Y[1]
+        assert isinstance(expr, LogicalOr)
+
+    def test_not_operator(self):
+        m = dm.Model("test")
+        Y = m.boolean("y")
+        from discopt.modeling.core import LogicalNot
+
+        expr = ~Y
+        assert isinstance(expr, LogicalNot)
+
+    def test_implies_method(self):
+        m = dm.Model("test")
+        Y = m.boolean("y", shape=(2,))
+        from discopt.modeling.core import LogicalImplies
+
+        expr = Y[0].implies(Y[1])
+        assert isinstance(expr, LogicalImplies)
+
+    def test_equivalent_to_method(self):
+        m = dm.Model("test")
+        Y = m.boolean("y", shape=(2,))
+        from discopt.modeling.core import LogicalEquivalent
+
+        expr = Y[0].equivalent_to(Y[1])
+        assert isinstance(expr, LogicalEquivalent)
+
+    def test_complex_nesting(self):
+        m = dm.Model("test")
+        Y = m.boolean("y", shape=(3,))
+        from discopt.modeling.core import LogicalImplies
+
+        expr = Y[0].implies(Y[1] & ~Y[2])
+        assert isinstance(expr, LogicalImplies)
+
+    def test_iterate_array(self):
+        m = dm.Model("test")
+        Y = m.boolean("y", shape=(3,))
+        items = list(Y)
+        assert len(items) == 3
+        assert all(isinstance(b, dm.BooleanVar) for b in items)
+
+
+class TestLogicalConstraints:
+    def test_logical_implies_solve(self):
+        """Y[0]=1 and Y[0].implies(Y[1]) should force Y[1]=1."""
+        m = dm.Model("test_implies")
+        Y = m.boolean("y", shape=(2,))
+        x = m.continuous("x", lb=0, ub=10)
+
+        m.logical(Y[0].implies(Y[1]))
+        m.subject_to(Y[0].variable == 1)  # force Y[0] = 1
+        m.minimize(x + Y[1].variable)
+
+        result = m.solve(time_limit=30)
+        assert result.status == "optimal"
+        # Y[1] must be 1 due to implication
+        y_vals = result.x["y"]
+        assert y_vals[1] == pytest.approx(1.0, abs=1e-4)
+
+    def test_logical_or_solve(self):
+        """Y[0] | Y[1] forces at least one to be true."""
+        m = dm.Model("test_or")
+        Y = m.boolean("y", shape=(2,))
+
+        m.logical(Y[0] | Y[1])
+        # Minimize sum to prefer both 0 — but OR forces at least one to 1
+        m.minimize(Y[0].variable + Y[1].variable)
+
+        result = m.solve(time_limit=30)
+        assert result.status == "optimal"
+        y_vals = result.x["y"]
+        assert y_vals[0] + y_vals[1] >= 1.0 - 1e-4
+
+    def test_logical_complex_solve(self):
+        """Y[0].implies(Y[1] & ~Y[2])."""
+        m = dm.Model("test_complex")
+        Y = m.boolean("y", shape=(3,))
+
+        m.logical(Y[0].implies(Y[1] & ~Y[2]))
+        m.subject_to(Y[0].variable == 1)  # force Y[0] = 1
+        m.minimize(Y[1].variable + Y[2].variable)
+
+        result = m.solve(time_limit=30)
+        assert result.status == "optimal"
+        y_vals = result.x["y"]
+        # Y[0]=1 implies Y[1]=1 and Y[2]=0
+        assert y_vals[1] == pytest.approx(1.0, abs=1e-4)
+        assert y_vals[2] == pytest.approx(0.0, abs=1e-4)
+
+    def test_logical_atleast(self):
+        """atleast(2, Y) forces at least 2 true."""
+        m = dm.Model("test_atleast")
+        Y = m.boolean("y", shape=(3,))
+
+        m.logical(dm.atleast(2, Y))
+        m.minimize(Y[0].variable + Y[1].variable + Y[2].variable)
+
+        result = m.solve(time_limit=30)
+        assert result.status == "optimal"
+        y_sum = sum(result.x["y"])
+        assert y_sum >= 2.0 - 1e-4
+
+    def test_logical_atmost(self):
+        """atmost(1, Y) forces at most 1 true."""
+        m = dm.Model("test_atmost")
+        Y = m.boolean("y", shape=(3,))
+
+        m.logical(dm.atmost(1, Y))
+        # Maximize to prefer all 1 — but atmost forces at most 1
+        m.maximize(Y[0].variable + Y[1].variable + Y[2].variable)
+
+        result = m.solve(time_limit=30)
+        assert result.status == "optimal"
+        y_sum = sum(result.x["y"])
+        assert y_sum <= 1.0 + 1e-4
+
+    def test_logical_exactly(self):
+        """exactly(2, Y) forces exactly 2 true."""
+        m = dm.Model("test_exactly")
+        Y = m.boolean("y", shape=(3,))
+
+        m.logical(dm.exactly(2, Y))
+        m.minimize(Y[0].variable)  # any feasible objective
+
+        result = m.solve(time_limit=30)
+        assert result.status == "optimal"
+        y_sum = sum(result.x["y"])
+        assert y_sum == pytest.approx(2.0, abs=1e-4)
+
+    def test_logical_equivalent_to_solve(self):
+        """Y[0].equivalent_to(Y[1]) forces Y[0] == Y[1]."""
+        m = dm.Model("test_equiv")
+        Y = m.boolean("y", shape=(2,))
+
+        m.logical(Y[0].equivalent_to(Y[1]))
+        m.subject_to(Y[0].variable == 1)
+        m.minimize(Y[1].variable)
+
+        result = m.solve(time_limit=30)
+        assert result.status == "optimal"
+        y_vals = result.x["y"]
+        assert y_vals[1] == pytest.approx(1.0, abs=1e-4)
+
+
+# ---------------------------------------------------------------------------
+# Nested Disjunctions
+# ---------------------------------------------------------------------------
+
+
+class TestNestedDisjunctions:
+    def test_disjunction_factory(self):
+        """m.disjunction() returns object without adding to model."""
+        m = dm.Model("test")
+        x = m.continuous("x", lb=0, ub=10)
+        inner = m.disjunction([[x <= 3], [x >= 7]], name="inner")
+
+        from discopt.modeling.core import _DisjunctiveConstraint
+
+        assert isinstance(inner, _DisjunctiveConstraint)
+        # Should NOT be in model constraints yet
+        assert inner not in m._constraints
+
+    def test_nested_solve_two_level(self):
+        """Nested disjunction: outer picks mode, inner refines."""
+        m = dm.Model("nested")
+        x = m.continuous("x", lb=0, ub=20)
+
+        # Inner: x in [1, 3] or x in [5, 7]
+        inner = m.disjunction(
+            [
+                [x >= 1, x <= 3],
+                [x >= 5, x <= 7],
+            ],
+            name="inner",
+        )
+
+        # Outer: (inner disjunction) or x in [15, 20]
+        m.either_or(
+            [
+                [inner],
+                [x >= 15, x <= 20],
+            ],
+            name="outer",
+        )
+
+        m.minimize(x)
+        result = m.solve(time_limit=60)
+        assert result.status == "optimal"
+        # Minimum is x=1 from inner disjunct 1
+        assert result.objective == pytest.approx(1.0, abs=1e-3)
+
+    def test_nested_solve_picks_outer(self):
+        """Nested: when inner options are worse, solver picks other outer."""
+        m = dm.Model("nested2")
+        x = m.continuous("x", lb=0, ub=20)
+
+        inner = m.disjunction(
+            [
+                [x >= 10, x <= 12],
+                [x >= 14, x <= 16],
+            ],
+            name="inner",
+        )
+
+        m.either_or(
+            [
+                [inner],
+                [x >= 2, x <= 4],
+            ],
+            name="outer",
+        )
+
+        m.minimize(x)
+        result = m.solve(time_limit=60)
+        assert result.status == "optimal"
+        # x=2 is best (from outer disjunct 2)
+        assert result.objective == pytest.approx(2.0, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# Disjunct Block Abstraction
+# ---------------------------------------------------------------------------
+
+
+class TestDisjunctBlock:
+    def test_create_disjunct(self):
+        m = dm.Model("test")
+        d = m.make_disjunct("mode_a")
+        assert d.name == "mode_a"
+        assert isinstance(d.active, dm.BooleanVar)
+        assert len(d.constraints) == 0
+
+    def test_add_constraints_to_disjunct(self):
+        m = dm.Model("test")
+        x = m.continuous("x", lb=0, ub=10)
+        d = m.make_disjunct("mode_a")
+        d.subject_to(x <= 3)
+        d.subject_to(x >= 1)
+        assert len(d.constraints) == 2
+
+    def test_add_disjunction_solve(self):
+        """Disjunct block solve matches either_or result."""
+        m = dm.Model("test_block")
+        x = m.continuous("x", lb=0, ub=10)
+
+        d1 = m.make_disjunct("low")
+        d1.subject_to(x <= 3)
+
+        d2 = m.make_disjunct("high")
+        d2.subject_to(x >= 7)
+
+        m.add_disjunction([d1, d2], name="mode")
+        m.minimize(x)
+
+        result = m.solve(time_limit=30)
+        assert result.status == "optimal"
+        assert result.objective == pytest.approx(0.0, abs=1e-3)
+
+    def test_disjunct_indicator_in_logical(self):
+        """Can use disjunct indicators in logical constraints."""
+        m = dm.Model("test")
+        x = m.continuous("x", lb=0, ub=10)
+
+        d1 = m.make_disjunct("a")
+        d1.subject_to(x <= 3)
+
+        d2 = m.make_disjunct("b")
+        d2.subject_to(x >= 7)
+
+        m.add_disjunction([d1, d2])
+
+        # Force d1 active via logical constraint
+        m.subject_to(d1.active.variable == 1)
+        m.minimize(x)
+
+        result = m.solve(time_limit=30)
+        assert result.status == "optimal"
+        assert result.objective == pytest.approx(0.0, abs=1e-3)
+
+    def test_disjunct_list_constraints(self):
+        """Can add a list of constraints at once."""
+        m = dm.Model("test")
+        x = m.continuous("x", lb=0, ub=10)
+        d = m.make_disjunct("mode")
+        d.subject_to([x <= 5, x >= 2])
+        assert len(d.constraints) == 2
