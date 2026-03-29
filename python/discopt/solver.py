@@ -799,8 +799,12 @@ def solve_model(
         (heuristic, not a valid global lower bound — use with caution),
         ``"none"`` disables (default).
     gdp_method : str, default "big-m"
-        Reformulation method for disjunctive constraints:
-        ``"big-m"`` (default) or ``"hull"`` (convex hull).
+        Reformulation method for disjunctive/indicator/logical constraints:
+        ``"big-m"`` (default) — standard big-M relaxation;
+        ``"mbigm"`` — multiple big-M with LP-based tightening for tighter bounds;
+        ``"hull"`` — convex hull reformulation, tightest relaxation but more variables;
+        ``"loa"`` — Logic-based Outer Approximation decomposition (GDPopt-style),
+        alternating MILP master / NLP subproblem, requires ``highspy``.
 
     Returns
     -------

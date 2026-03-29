@@ -132,7 +132,7 @@ m.subject_to(dm.sum(y) <= k, name="cardinality")
 result = m.solve()
 #+END_SRC
 
-The API supports continuous, binary, and integer variables; parameters (for sensitivity analysis and decision-focused learning); generalized disjunctive programming (GDP) constraints with big-M, multiple big-M (MBM), and convex hull reformulations; =BooleanVar= with propositional logic operators (=&=, =|=, =~=, =.implies()=, =.equivalent_to()=) and CNF-to-linear conversion; nested disjunctions for hierarchical process design; and standard mathematical functions (=exp=, =log=, =sin=, =cos=, =sqrt=, =abs=, =tanh=, =sigmoid=, =softplus=, and matrix operations).
+The API supports continuous, binary, and integer variables; parameters (for sensitivity analysis and decision-focused learning); generalized disjunctive programming (GDP) constraints with big-M, multiple big-M (MBM) with LP-based bound tightening, convex hull, and Logic-based Outer Approximation (LOA cite:&Turkay1996) reformulations via =gdp_method=; =BooleanVar= with propositional logic operators (=&=, =|=, =~=, =.implies()=, =.equivalent_to()=) and CNF-to-linear conversion; nested disjunctions for hierarchical process design; and standard mathematical functions (=exp=, =log=, =sin=, =cos=, =sqrt=, =abs=, =tanh=, =sigmoid=, =softplus=, and matrix operations).
 
 ** Dynamic Optimization via DAE Collocation
 
@@ -472,6 +472,16 @@ We further validate on instances from MINLPLib cite:&Bussieck2003, imported via 
 | nvs06    |   2 |   0 | optimal  | 1.770      | 1.770      |    0.022 |      9 |
 
 Of the 9 solvable instances, 7 reach optimal status (matching known optima to $10^{-3}$), while 2 reach feasible solutions at the time limit. The =gear= instance finds a near-zero objective ($2.3 \times 10^{-11}$, matching the known optimum $0.0$) but cannot prove optimality without convex relaxations for the =.nl= import path. Instance =nvs01= reaches a local optimum for the same reason. The JAX computation accounts for 92--99.9% of solver time, with Rust tree management contributing $< 1\%$ and Python overhead $< 2\%$.
+
+** Neural Network Embedding Validation
+
+We validate the =discopt.nn= module on feedforward networks with ReLU and smooth activations. A representative 2-input, 4-hidden, 1-output network demonstrates the three formulation strategies:
+
+- *ReLU big-M*: 4 binary variables (one per hidden ReLU neuron), 9 continuous variables, 16 linear constraints. Interval arithmetic propagates tight pre-activation bounds, simplifying neurons whose bounds are entirely positive or negative to linear constraints with no binary variable.
+- *Full-space* (tanh): 9 continuous variables, 8 nonlinear activation constraints. McCormick relaxations applied to tanh activation functions provide valid lower bounds within spatial B&B.
+- *Reduced-space*: zero intermediate variables; nested expressions build a single composite function, suitable for networks with $\le 3$ layers.
+
+All three strategies produce identical optimal objectives on the test instance, confirming correctness of the algebraic encoding. The ReLU big-M formulation solves to global optimality at the root node (no branching required) when pre-activation bounds are tight enough to fix all binary variables; the full-space formulation requires 1--3 B&B nodes with McCormick relaxations. The ONNX reader is validated against PyTorch-exported models: imported weights and biases match to machine precision, and =NetworkDefinition.forward()= reproduces the PyTorch output to $10^{-14}$ absolute error.
 
 ** Relaxation Gap Reduction
 

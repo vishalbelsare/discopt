@@ -401,7 +401,125 @@ def example_parametric():
 
 
 # ═══════════════════════════════════════════════════════════════
-# EXAMPLE 8: Import from Pyomo
+# EXAMPLE 8: Logical Constraints and Disjunctive Programming
+#
+# Demonstrates BooleanVar, propositional logic (land/lor/lnot),
+# atleast/atmost/exactly, and GDP reformulation methods.
+# ═══════════════════════════════════════════════════════════════
+
+
+def example_logical_constraints():
+    """GDP model with boolean variables and propositional logic.
+
+    Project selection problem: choose a subset of projects
+    subject to precedence, exclusivity, and budget constraints
+    expressed as logical propositions.
+    """
+    m = dm.Model("project_selection")
+
+    # Continuous: investment level for each project (if selected)
+    invest = m.continuous("invest", shape=(4,), lb=0, ub=100)
+
+    # Boolean: whether each project is selected
+    active = m.boolean("active", shape=(4,))
+
+    # Objective: maximize weighted return
+    returns = np.array([12.0, 8.0, 15.0, 6.0])
+    m.maximize(dm.sum(lambda i: returns[i] * invest[i], over=range(4)))
+
+    # Budget constraint (at most 3 projects active)
+    m.subject_to(dm.atmost(3, active), name="budget")
+
+    # Project 3 requires project 0 (precedence)
+    m.subject_to(dm.land(~active[3], active[0]), name="precedence")
+
+    # At least one of projects 0 or 1 must be active
+    m.subject_to(dm.lor(active[0], active[1]), name="require_one")
+
+    # Investment only allowed if project is active (indicator constraints)
+    for i in range(4):
+        m.if_then(active[i].variable, [invest[i] >= 10, invest[i] <= 80])
+
+    # Disjunction: project 2 is either high-intensity (≥50) or low-intensity (≤20)
+    d_high = m.disjunct("project2_high")
+    d_high.subject_to(invest[2] >= 50)
+    d_low = m.disjunct("project2_low")
+    d_low.subject_to(invest[2] <= 20)
+    m.add_disjunction([d_high, d_low], name="project2_mode")
+
+    # Solve with default big-M:        m.solve(gdp_method="big-m")
+    # Solve with LP-tightened big-M:   m.solve(gdp_method="mbigm")
+    # Solve with convex hull:          m.solve(gdp_method="hull")
+    # Solve with LOA decomposition:    m.solve(gdp_method="loa")
+
+    print(m)
+    return m
+
+
+# ═══════════════════════════════════════════════════════════════
+# EXAMPLE 9: Neural Network Surrogate Optimization
+#
+# Embeds a trained feedforward NN as MINLP constraints and
+# optimizes over it. Demonstrates NNFormulation with three
+# strategies: relu_bigm, full_space, reduced_space.
+# ═══════════════════════════════════════════════════════════════
+
+
+def example_nn_surrogate():
+    """Optimize over a trained NN surrogate using discopt.nn.
+
+    A 2-input, 1-output network predicts process yield.
+    We find the input conditions that maximize predicted yield
+    subject to operating bounds.
+    """
+    from discopt.nn import NetworkDefinition, NNFormulation
+    from discopt.nn.network import Activation, DenseLayer
+
+    # Simulate a trained network (normally loaded from file / ONNX)
+    np.random.seed(0)
+    W1 = np.random.randn(2, 8) * 0.5
+    b1 = np.random.randn(8) * 0.1
+    W2 = np.random.randn(8, 4) * 0.5
+    b2 = np.random.randn(4) * 0.1
+    W3 = np.random.randn(4, 1) * 0.5
+    b3 = np.random.randn(1) * 0.1
+
+    net = NetworkDefinition(
+        layers=[
+            DenseLayer(W1, b1, Activation.RELU),
+            DenseLayer(W2, b2, Activation.RELU),
+            DenseLayer(W3, b3, Activation.LINEAR),
+        ],
+        input_bounds=(np.array([-1.0, -1.0]), np.array([1.0, 1.0])),
+    )
+
+    # Build optimization model
+    m = dm.Model("nn_surrogate")
+
+    # Embed the network using ReLU big-M MILP formulation
+    nn = NNFormulation(m, net, strategy="relu_bigm", prefix="yield_model")
+    nn.formulate()
+
+    # Maximize predicted yield (NN output)
+    m.maximize(nn.outputs[0])
+
+    # Add operating constraints on inputs
+    m.subject_to(nn.inputs[0] + nn.inputs[1] <= 1.5, name="combined_limit")
+
+    # For smooth activations (sigmoid/tanh), use full_space with McCormick relaxations:
+    #   nn = NNFormulation(m, net_smooth, strategy="full_space")
+    # For small networks, use reduced_space (no intermediate variables):
+    #   nn = NNFormulation(m, net_small, strategy="reduced_space")
+    # Load from ONNX:
+    #   from discopt.nn import load_onnx
+    #   net = load_onnx("model.onnx", input_bounds=(lb, ub))
+
+    print(m)
+    return m
+
+
+# ═══════════════════════════════════════════════════════════════
+# EXAMPLE 10: Import from Pyomo
 #
 # Shows the bridge from existing Pyomo models to discopt.
 # ═══════════════════════════════════════════════════════════════
@@ -439,7 +557,7 @@ def example_pyomo_import():
 
 
 # ═══════════════════════════════════════════════════════════════
-# EXAMPLE 9: Import from .nl file (AMPL)
+# EXAMPLE 11: Import from .nl file (AMPL)
 #
 # Standard interchange format for optimization problems.
 # ═══════════════════════════════════════════════════════════════
@@ -460,7 +578,7 @@ def example_nl_import():
 
 
 # ═══════════════════════════════════════════════════════════════
-# EXAMPLE 10: Natural Language Formulation (LLM)
+# EXAMPLE 12: Natural Language Formulation (LLM)
 #
 # The LLM-native interface: describe your problem, get a model.
 # ═══════════════════════════════════════════════════════════════
@@ -516,7 +634,7 @@ def example_llm_formulation():
 
 
 # ═══════════════════════════════════════════════════════════════
-# EXAMPLE 11: Streaming Solve with Live Progress
+# EXAMPLE 13: Streaming Solve with Live Progress
 # ═══════════════════════════════════════════════════════════════
 
 
@@ -572,6 +690,8 @@ if __name__ == "__main__":
         ("Reactor Design", example_reactor_design),
         ("Facility Location", example_facility_location),
         ("Parametric / Sensitivity", example_parametric),
+        ("Logical Constraints / GDP", example_logical_constraints),
+        ("NN Surrogate Optimization", example_nn_surrogate),
     ]
 
     for name, func in examples:

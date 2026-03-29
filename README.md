@@ -13,7 +13,9 @@ A hybrid Mixed-Integer Nonlinear Programming (MINLP) solver combining a Rust bac
 - **Spatial Branch and Bound** -- Rust-powered node pool, branching, and pruning
 - **JIT-compiled NLP evaluation** -- objective, gradient, Hessian, and constraint Jacobian via JAX
 - **Three NLP backends** -- pure-JAX interior-point method (default, vmap-batched), ripopt (Rust IPM via PyO3), cyipopt (Ipopt)
-- **Convex relaxations** -- McCormick envelopes (19 functions), piecewise McCormick, alphaBB underestimators
+- **Convex relaxations** -- McCormick envelopes (21 functions including sigmoid/softplus/tanh), piecewise McCormick, alphaBB underestimators
+- **Neural network embedding** -- embed trained feedforward networks (ReLU, sigmoid, tanh, softplus) as MINLP constraints via big-M, full-space, and reduced-space strategies; interval arithmetic bound propagation; ONNX import (`pip install discopt[nn]`)
+- **Generalized disjunctive programming** -- `BooleanVar`, propositional logic operators (`land`, `lor`, `lnot`, `atleast`, `atmost`, `exactly`), `either_or()`, `if_then()`; reformulated via big-M, multiple big-M (LP-tightened), hull, or Logic-based Outer Approximation (`gdp_method="loa"`)
 - **Presolve** -- FBBT (interval arithmetic, probing, Big-M simplification), OBBT with LP warm-start
 - **Cutting planes** -- reformulation-linearization (RLT) and outer approximation (OA)
 - **GNN branching policy** -- bipartite graph neural network trained on strong branching data
@@ -61,9 +63,9 @@ Model.solve()  -->  Python orchestrator  -->  Rust TreeManager (B&B engine)
 
 **Rust-Python bindings** (`crates/discopt-python`): PyO3 bindings with zero-copy numpy array transfer for the B&B tree manager, expression IR, batch dispatch, and .nl parser.
 
-**JAX layer** (`python/discopt/_jax`): DAG compiler mapping modeling expressions to JAX primitives, JIT-compiled NLP evaluator (objective, gradient, Hessian, constraint Jacobian), McCormick convex/concave relaxations (19 functions), and a relaxation compiler with vmap support.
+**JAX layer** (`python/discopt/_jax`): DAG compiler mapping modeling expressions to JAX primitives, JIT-compiled NLP evaluator (objective, gradient, Hessian, constraint Jacobian), McCormick convex/concave relaxations (21 functions), and a relaxation compiler with vmap support.
 
-**Solver wrappers** (`python/discopt/solvers`): ripopt (Rust IPM via PyO3), cyipopt NLP wrapper for Ipopt, HiGHS LP wrapper with warm-start support.
+**Solver wrappers** (`python/discopt/solvers`): ripopt (Rust IPM via PyO3), cyipopt NLP wrapper for Ipopt, HiGHS LP and MILP wrappers with warm-start support.
 
 **CUTEst interface** (`python/discopt/interfaces/cutest.py`): PyCUTEst-based evaluator for NLP benchmarking against the CUTEst test set.
 
@@ -130,7 +132,9 @@ Tutorial notebooks are available in `docs/notebooks/`:
 - **IPM vs Ipopt** -- backend comparison
 - **Batch IPM** -- vmap-batched interior-point solving
 - **Dynamic Optimization** -- DAE collocation for optimal control, parameter estimation, and PDEs
+- **Neural Network Embedding** -- optimize over trained ML surrogates as MINLP constraints
 - **Decision-Focused Learning** -- differentiable optimization in ML pipelines
+- **GDP Tutorial** -- disjunctive programming, logical constraints, big-M/hull/LOA reformulations
 
 Full documentation is built with Jupyter Book: `jupyter-book build docs/`
 
