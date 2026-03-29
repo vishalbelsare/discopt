@@ -17,8 +17,8 @@ from discopt.solvers import NLPResult, SolveStatus
 # Map ripopt status strings to SolveStatus enum
 _RIPOPT_STATUS_MAP: dict[str, SolveStatus] = {
     "optimal": SolveStatus.OPTIMAL,
-    "acceptable": SolveStatus.OPTIMAL,
     "infeasible": SolveStatus.INFEASIBLE,
+    "local_infeasibility": SolveStatus.INFEASIBLE,
     "max_iterations": SolveStatus.ITERATION_LIMIT,
     "numerical_error": SolveStatus.ERROR,
     "unbounded": SolveStatus.UNBOUNDED,

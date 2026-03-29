@@ -166,14 +166,13 @@ impl ripopt::NlpProblem for PyNlpProblem {
 fn status_to_string(status: ripopt::SolveStatus) -> &'static str {
     match status {
         ripopt::SolveStatus::Optimal => "optimal",
-        ripopt::SolveStatus::Acceptable => "acceptable",
         ripopt::SolveStatus::Infeasible => "infeasible",
+        ripopt::SolveStatus::LocalInfeasibility => "local_infeasibility",
         ripopt::SolveStatus::MaxIterations => "max_iterations",
         ripopt::SolveStatus::NumericalError => "numerical_error",
         ripopt::SolveStatus::Unbounded => "unbounded",
         ripopt::SolveStatus::RestorationFailed => "restoration_failed",
         ripopt::SolveStatus::InternalError => "internal_error",
-        ripopt::SolveStatus::LocalInfeasibility => "local_infeasibility",
     }
 }
 
@@ -257,12 +256,6 @@ pub fn solve_ripopt(
     if let Some(val) = options.get_item("print_level")? {
         opts.print_level = val.extract::<u8>()?;
     }
-    if let Some(val) = options.get_item("acceptable_tol")? {
-        opts.acceptable_tol = val.extract::<f64>()?;
-    }
-    if let Some(val) = options.get_item("acceptable_iter")? {
-        opts.acceptable_iter = val.extract::<usize>()?;
-    }
     if let Some(val) = options.get_item("mu_init")? {
         opts.mu_init = val.extract::<f64>()?;
     }
@@ -287,16 +280,6 @@ pub fn solve_ripopt(
     if let Some(val) = options.get_item("compl_inf_tol")? {
         opts.compl_inf_tol = val.extract::<f64>()?;
     }
-    if let Some(val) = options.get_item("acceptable_constr_viol_tol")? {
-        opts.acceptable_constr_viol_tol = val.extract::<f64>()?;
-    }
-    if let Some(val) = options.get_item("acceptable_dual_inf_tol")? {
-        opts.acceptable_dual_inf_tol = val.extract::<f64>()?;
-    }
-    if let Some(val) = options.get_item("acceptable_compl_inf_tol")? {
-        opts.acceptable_compl_inf_tol = val.extract::<f64>()?;
-    }
-
     // Release the GIL for the main solve loop — callbacks re-acquire it
     let result = py.allow_threads(|| ripopt::solve(&problem, &opts));
 
