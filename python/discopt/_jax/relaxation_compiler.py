@@ -33,9 +33,11 @@ from discopt._jax.mccormick import (
     relax_log10,
     relax_neg,
     relax_pow,
+    relax_sigmoid,
     relax_sign,
     relax_sin,
     relax_sinh,
+    relax_softplus,
     relax_sqrt,
     relax_sub,
     relax_tan,
@@ -526,6 +528,8 @@ def _compile_relax_node(
             "asin": relax_asin,
             "acos": relax_acos,
             "tanh": relax_tanh,
+            "sigmoid": relax_sigmoid,
+            "softplus": relax_softplus,
             "abs": relax_abs,
         }
 

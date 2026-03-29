@@ -586,6 +586,51 @@ def relax_tanh(x, lb, ub):
     return cv, cc
 
 
+def relax_sigmoid(x, lb, ub):
+    """McCormick relaxation of sigmoid(x) = 1/(1+exp(-x)) on [lb, ub].
+
+    sigmoid is concave on [0, inf) and convex on (-inf, 0].
+    Returns (cv, cc).
+    """
+    import jax.nn as jnn
+
+    f = jnn.sigmoid
+
+    # Case 1: lb >= 0 → concave region
+    case1_cv = _secant(f, x, lb, ub)
+    case1_cc = f(x)
+
+    # Case 2: ub <= 0 → convex region
+    case2_cv = f(x)
+    case2_cc = _secant(f, x, lb, ub)
+
+    # Case 3: lb < 0 < ub → mixed
+    sec_neg = _secant(f, x, lb, 0.0)
+    sec_pos = _secant(f, x, 0.0, ub)
+    case3_cv = jnp.where(x >= 0, sec_pos, f(x))
+    case3_cc = jnp.where(x >= 0, f(x), sec_neg)
+
+    is_concave = lb >= 0
+    is_convex = ub <= 0
+
+    cv = jnp.where(is_concave, case1_cv, jnp.where(is_convex, case2_cv, case3_cv))
+    cc = jnp.where(is_concave, case1_cc, jnp.where(is_convex, case2_cc, case3_cc))
+    return cv, cc
+
+
+def relax_softplus(x, lb, ub):
+    """McCormick relaxation of softplus(x) = log(1+exp(x)) on [lb, ub].
+
+    softplus is convex everywhere.
+    Returns (cv, cc).
+    """
+    f = lambda t: jnp.logaddexp(t, 0.0)  # noqa: E731
+
+    cv = f(x)
+    cc = _secant(f, x, lb, ub)
+    return cv, cc
+
+
 # ---------------------------------------------------------------------------
 # Composite: sign, min, max
 # ---------------------------------------------------------------------------

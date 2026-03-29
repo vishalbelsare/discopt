@@ -145,6 +145,8 @@ def _compile_node(expr: Expression, model: Model) -> Callable:
             "atanh": jnp.arctanh,
             "erf": lambda x: __import__("jax").scipy.special.erf(x),
             "log1p": jnp.log1p,
+            "sigmoid": lambda x: __import__("jax").nn.sigmoid(x),
+            "softplus": lambda x: jnp.logaddexp(x, 0.0),
             "abs": jnp.abs,
             "sign": jnp.sign,
         }

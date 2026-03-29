@@ -469,6 +469,59 @@ def log1p(x: Union[Expression, float]) -> Expression:
     return FunctionCall("log1p", _wrap(x))
 
 
+def tanh(x: Union[Expression, float]) -> Expression:
+    """
+    Hyperbolic tangent.
+
+    Parameters
+    ----------
+    x : Expression or float
+        Input expression.
+
+    Returns
+    -------
+    Expression
+        Expression representing ``tanh(x)``.
+    """
+    return FunctionCall("tanh", _wrap(x))
+
+
+def sigmoid(x: Union[Expression, float]) -> Expression:
+    """
+    Logistic sigmoid: ``1 / (1 + exp(-x))``.
+
+    Parameters
+    ----------
+    x : Expression or float
+        Input expression.
+
+    Returns
+    -------
+    Expression
+        Expression representing ``sigmoid(x)``, valued in ``(0, 1)``.
+    """
+    return FunctionCall("sigmoid", _wrap(x))
+
+
+def softplus(x: Union[Expression, float]) -> Expression:
+    """
+    Softplus: ``log(1 + exp(x))``.
+
+    A smooth approximation of ReLU.
+
+    Parameters
+    ----------
+    x : Expression or float
+        Input expression.
+
+    Returns
+    -------
+    Expression
+        Expression representing ``softplus(x)``, always positive.
+    """
+    return FunctionCall("softplus", _wrap(x))
+
+
 def abs_(x: Union[Expression, float]) -> Expression:
     """
     Absolute value.
@@ -1523,6 +1576,129 @@ class Model:
         self._validate_binaries([y1, y2], "iff")
         self.subject_to(y1 == y2, name=name)
 
+    def disjunction(
+        self,
+        disjuncts: list[list],
+        name: Optional[str] = None,
+    ) -> "_DisjunctiveConstraint":
+        """Create a disjunction object for nesting inside either_or().
+
+        Unlike :meth:`either_or`, this does **not** add the disjunction to
+        the model. Use it to build nested disjunctions.
+
+        Parameters
+        ----------
+        disjuncts : list of list
+            Each inner list is a group of constraints (a disjunct).
+        name : str, optional
+            Name for the disjunction.
+
+        Returns
+        -------
+        _DisjunctiveConstraint
+        """
+        return _DisjunctiveConstraint(disjuncts=disjuncts, name=name)
+
+    def make_disjunct(self, name: str) -> "Disjunct":
+        """Create a named disjunct block with an auto-generated indicator.
+
+        Parameters
+        ----------
+        name : str
+            Block name. A boolean indicator ``{name}_active`` is created.
+
+        Returns
+        -------
+        Disjunct
+
+        Example
+        -------
+        >>> d1 = m.make_disjunct("mode_a")
+        >>> d1.subject_to(x <= 3)
+        """
+        return Disjunct(name, self)
+
+    def add_disjunction(
+        self,
+        disjuncts: list["Disjunct"],
+        name: Optional[str] = None,
+    ) -> None:
+        """Add a disjunction over Disjunct blocks.
+
+        Exactly one disjunct must be active. This maps to indicator
+        constraints (``if_then``) and an ``exactly(1, ...)`` selector.
+
+        Parameters
+        ----------
+        disjuncts : list of Disjunct
+            The disjunct blocks to form the disjunction.
+        name : str, optional
+            Name for the disjunction.
+
+        Example
+        -------
+        >>> d1 = m.make_disjunct("mode_a")
+        >>> d1.subject_to(x <= 3)
+        >>> d2 = m.make_disjunct("mode_b")
+        >>> d2.subject_to(x >= 7)
+        >>> m.add_disjunction([d1, d2], name="mode_select")
+        """
+        for d in disjuncts:
+            self.if_then(d.indicator.variable, d._constraints, name=d.name)
+        indicators = [d.indicator.variable for d in disjuncts]
+        self.exactly(1, indicators, name=f"_disj_{name}_xor" if name else None)
+
+    # ── Boolean logic (GDP) ──
+
+    def boolean(
+        self,
+        name: str,
+        shape: Union[tuple, int] = (),
+    ) -> Union["BooleanVar", "BooleanVarArray"]:
+        """Create boolean decision variable(s) backed by binary variables.
+
+        Parameters
+        ----------
+        name : str
+            Variable name.
+        shape : tuple or int
+            Shape of the boolean variable array. Scalar by default.
+
+        Returns
+        -------
+        BooleanVar or BooleanVarArray
+        """
+        if isinstance(shape, int):
+            shape = (shape,)
+        var = self.binary(name, shape=shape)
+        if shape == () or shape == (1,):
+            return BooleanVar(var)
+        return BooleanVarArray(var)
+
+    def logical(
+        self,
+        expr: "LogicalExpression",
+        name: Optional[str] = None,
+    ) -> None:
+        """Add a propositional logic constraint.
+
+        Parameters
+        ----------
+        expr : LogicalExpression
+            A boolean expression built from BooleanVars using ``&``, ``|``,
+            ``~``, ``.implies()``, ``.equivalent_to()``.
+        name : str, optional
+            Constraint name.
+
+        Examples
+        --------
+        >>> Y = m.boolean("choice", shape=(3,))
+        >>> m.logical(Y[0].implies(Y[1] & ~Y[2]))
+        """
+        if not isinstance(expr, LogicalExpression):
+            raise TypeError(f"Expected LogicalExpression, got {type(expr).__name__}")
+        self._constraints.append(_LogicalConstraint(expr, name))
+
     # ── Solve ──
 
     def solve(
@@ -1722,6 +1898,230 @@ class _SOSConstraint:
     sos_type: int
     variables: list[Variable]
     name: Optional[str] = None
+
+
+# ─────────────────────────────────────────────────────────────
+# Propositional logic for GDP
+# ─────────────────────────────────────────────────────────────
+
+
+class LogicalExpression:
+    """Base class for propositional logic expressions over BooleanVars."""
+
+    def __and__(self, other: "LogicalExpression") -> "LogicalAnd":
+        return LogicalAnd(self, _wrap_logical(other))
+
+    def __rand__(self, other: "LogicalExpression") -> "LogicalAnd":
+        return LogicalAnd(_wrap_logical(other), self)
+
+    def __or__(self, other: "LogicalExpression") -> "LogicalOr":
+        return LogicalOr(self, _wrap_logical(other))
+
+    def __ror__(self, other: "LogicalExpression") -> "LogicalOr":
+        return LogicalOr(_wrap_logical(other), self)
+
+    def __invert__(self) -> "LogicalNot":
+        return LogicalNot(self)
+
+    def implies(self, other: "LogicalExpression") -> "LogicalImplies":
+        """Logical implication: self → other."""
+        return LogicalImplies(self, _wrap_logical(other))
+
+    def equivalent_to(self, other: "LogicalExpression") -> "LogicalEquivalent":
+        """Logical equivalence: self ↔ other."""
+        return LogicalEquivalent(self, _wrap_logical(other))
+
+
+def _wrap_logical(x):
+    """Wrap a BooleanVar or LogicalExpression, raise otherwise."""
+    if isinstance(x, LogicalExpression):
+        return x
+    raise TypeError(f"Expected LogicalExpression, got {type(x).__name__}")
+
+
+class BooleanVar(LogicalExpression):
+    """A boolean decision variable backed by a binary Variable.
+
+    Created via :meth:`Model.boolean`, not directly.
+    """
+
+    def __init__(self, variable):
+        self.variable = variable
+
+    def __repr__(self) -> str:
+        return f"BooleanVar({self.variable.name})"
+
+
+class BooleanVarArray:
+    """Array of BooleanVars backed by a single array-shaped binary Variable."""
+
+    def __init__(self, variable):
+        self.variable = variable
+        self._size = variable.size
+
+    def __getitem__(self, idx) -> BooleanVar:
+        return BooleanVar(self.variable[idx])
+
+    def __len__(self) -> int:
+        return int(self._size)
+
+    def __iter__(self):
+        for i in range(self._size):
+            yield self[i]
+
+
+@dataclass
+class LogicalAnd(LogicalExpression):
+    left: LogicalExpression
+    right: LogicalExpression
+
+
+@dataclass
+class LogicalOr(LogicalExpression):
+    left: LogicalExpression
+    right: LogicalExpression
+
+
+@dataclass
+class LogicalNot(LogicalExpression):
+    operand: LogicalExpression
+
+
+@dataclass
+class LogicalImplies(LogicalExpression):
+    antecedent: LogicalExpression
+    consequent: LogicalExpression
+
+
+@dataclass
+class LogicalEquivalent(LogicalExpression):
+    left: LogicalExpression
+    right: LogicalExpression
+
+
+@dataclass
+class LogicalAtLeast(LogicalExpression):
+    k: int
+    operands: list
+
+
+@dataclass
+class LogicalAtMost(LogicalExpression):
+    k: int
+    operands: list
+
+
+@dataclass
+class LogicalExactly(LogicalExpression):
+    k: int
+    operands: list
+
+
+@dataclass
+class _LogicalConstraint:
+    expression: LogicalExpression
+    name: Optional[str] = None
+
+
+# Functional-style constructors for logical expressions
+
+
+def land(*args: LogicalExpression) -> LogicalExpression:
+    """Logical AND of multiple BooleanVars/expressions."""
+    result = args[0]
+    for a in args[1:]:
+        result = LogicalAnd(result, a)
+    return result
+
+
+def lor(*args: LogicalExpression) -> LogicalExpression:
+    """Logical OR of multiple BooleanVars/expressions."""
+    result = args[0]
+    for a in args[1:]:
+        result = LogicalOr(result, a)
+    return result
+
+
+def lnot(x: LogicalExpression) -> LogicalNot:
+    """Logical NOT."""
+    return LogicalNot(x)
+
+
+def atleast(k: int, *args: LogicalExpression) -> LogicalAtLeast:
+    """At least k of the given boolean expressions must be true."""
+    operands = list(args[0]) if len(args) == 1 and hasattr(args[0], "__iter__") else list(args)
+    return LogicalAtLeast(k, operands)
+
+
+def atmost(k: int, *args: LogicalExpression) -> LogicalAtMost:
+    """At most k of the given boolean expressions may be true."""
+    operands = list(args[0]) if len(args) == 1 and hasattr(args[0], "__iter__") else list(args)
+    return LogicalAtMost(k, operands)
+
+
+def exactly(k: int, *args: LogicalExpression) -> LogicalExactly:
+    """Exactly k of the given boolean expressions must be true."""
+    operands = list(args[0]) if len(args) == 1 and hasattr(args[0], "__iter__") else list(args)
+    return LogicalExactly(k, operands)
+
+
+# ─────────────────────────────────────────────────────────────
+# Disjunct block abstraction
+# ─────────────────────────────────────────────────────────────
+
+
+class Disjunct:
+    """A named block of constraints activated by a boolean indicator.
+
+    Created via :meth:`Model.disjunct`, not directly.
+
+    Parameters
+    ----------
+    name : str
+        Block name. An indicator boolean ``{name}_active`` is created.
+    model : Model
+        The parent optimization model.
+
+    Example
+    -------
+    >>> d1 = m.disjunct("mode_a")
+    >>> d1.subject_to(x <= 3)
+    >>> d2 = m.disjunct("mode_b")
+    >>> d2.subject_to(x >= 7)
+    >>> m.add_disjunction([d1, d2])
+    """
+
+    def __init__(self, name: str, model: "Model"):
+        self.name = name
+        self._model = model
+        bv = model.boolean(f"{name}_active")
+        assert isinstance(bv, BooleanVar)
+        self.indicator: "BooleanVar" = bv
+        self._constraints: list[Constraint] = []
+
+    def subject_to(
+        self,
+        constraint: Union[Constraint, list[Constraint]],
+        name: Optional[str] = None,
+    ) -> None:
+        """Add constraint(s) to this disjunct."""
+        if isinstance(constraint, list):
+            self._constraints.extend(constraint)
+        else:
+            self._constraints.append(constraint)
+
+    @property
+    def active(self) -> "BooleanVar":
+        """The boolean indicator for this disjunct."""
+        return self.indicator
+
+    @property
+    def constraints(self) -> list[Constraint]:
+        """Constraints in this disjunct."""
+        return list(self._constraints)
+
+    def __repr__(self) -> str:
+        return f"Disjunct({self.name!r}, {len(self._constraints)} constraints)"
 
 
 # ─────────────────────────────────────────────────────────────

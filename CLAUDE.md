@@ -43,6 +43,7 @@ mypy python/discopt/
 - **`python/discopt/modeling/`** — Python modeling API with expression DAG system for MINLP formulation, supporting continuous/binary/integer variables and operator overloading that maps to Rust AST. Imported as `from discopt import Model` or `import discopt.modeling as dm`.
 - **`python/discopt/_jax/`** — JAX DAG compiler, McCormick relaxations, NLP evaluator, relaxation compiler.
 - **`python/discopt/solvers/`** — HiGHS LP wrapper, cyipopt NLP wrapper.
+- **`python/discopt/nn/`** — Neural network embedding module. Embeds trained feedforward NNs as algebraic constraints in MINLP models (inspired by OMLT). `network.py` defines `NetworkDefinition`/`DenseLayer`/`Activation`; `bounds.py` does interval arithmetic propagation; `formulations/` has `FullSpaceFormulation` (smooth activations), `ReluBigMFormulation` (big-M MILP), `ReducedSpaceFormulation` (nested expressions); `readers/onnx_reader.py` loads ONNX models. Optional dep: `pip install discopt[nn]`.
 - **`python/discopt/solver.py`** — Solver orchestrator: end-to-end `Model.solve()` via B&B.
 - **`crates/discopt-core/`** — Rust: Expression IR, B&B tree, .nl parser, FBBT/presolve.
 - **`crates/discopt-python/`** — Rust: PyO3 bindings with zero-copy numpy.

@@ -18,9 +18,13 @@ Examples
 """
 
 from discopt.modeling.core import (
+    BooleanVar,
+    BooleanVarArray,
     Constraint,
+    Disjunct,
     # Expressions (for isinstance checks, rarely needed)
     Expression,
+    LogicalExpression,
     # Model
     Model,
     Parameter,
@@ -33,8 +37,12 @@ from discopt.modeling.core import (
     acosh,
     asinh,
     atanh,
+    # Logical functions
+    atleast,
+    atmost,
     cos,
     erf,
+    exactly,
     # Mathematical functions
     exp,
     from_description,
@@ -42,20 +50,26 @@ from discopt.modeling.core import (
     from_nl,
     # Import functions
     from_pyomo,
+    land,
+    lnot,
     log,
     log1p,
     log2,
     log10,
+    lor,
     maximum,
     minimum,
     norm,
     prod,
+    sigmoid,
     sign,
     sin,
+    softplus,
     sqrt,
     # Aggregation
     sum,
     tan,
+    tanh,
 )
 from discopt.modeling.core import (
     abs_ as abs,
@@ -82,16 +96,29 @@ __all__ = [
     "atanh",
     "erf",
     "abs",
+    "sigmoid",
     "sign",
+    "softplus",
     "minimum",
     "maximum",
     "sum",
     "prod",
     "norm",
+    "tanh",
     "SolveResult",
     "SolveUpdate",
     "from_pyomo",
     "from_nl",
     "from_gams",
     "from_description",
+    "BooleanVar",
+    "BooleanVarArray",
+    "Disjunct",
+    "LogicalExpression",
+    "land",
+    "lor",
+    "lnot",
+    "atleast",
+    "atmost",
+    "exactly",
 ]
