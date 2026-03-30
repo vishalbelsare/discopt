@@ -738,6 +738,7 @@ def solve_model(
     use_learned_relaxations: bool = False,
     mccormick_bounds: str = "auto",
     gdp_method: str = "big-m",
+    **kwargs,
 ) -> SolveResult:
     """
     Solve a Model via NLP-based spatial Branch & Bound.
@@ -799,12 +800,8 @@ def solve_model(
         (heuristic, not a valid global lower bound — use with caution),
         ``"none"`` disables (default).
     gdp_method : str, default "big-m"
-        Reformulation method for disjunctive/indicator/logical constraints:
-        ``"big-m"`` (default) — standard big-M relaxation;
-        ``"mbigm"`` — multiple big-M with LP-based tightening for tighter bounds;
-        ``"hull"`` — convex hull reformulation, tightest relaxation but more variables;
-        ``"loa"`` — Logic-based Outer Approximation decomposition (GDPopt-style),
-        alternating MILP master / NLP subproblem, requires ``highspy``.
+        Reformulation method for disjunctive constraints:
+        ``"big-m"`` (default) or ``"hull"`` (convex hull).
 
     Returns
     -------
@@ -826,6 +823,25 @@ def solve_model(
             "JAX_ENABLE_X64=1 *before* importing JAX for full solver precision.  "
             "Results may be inaccurate.",
             stacklevel=2,
+        )
+
+    # --- OA decomposition: general-purpose Outer Approximation ---
+    if gdp_method == "oa":
+        from discopt.solvers.oa import solve_oa
+
+        # Extract OA-specific kwargs that solve_model doesn't understand
+        oa_kwargs = {}
+        for key in ("equality_relaxation", "ecp_mode", "feasibility_cuts"):
+            if key in kwargs:
+                oa_kwargs[key] = kwargs.pop(key)
+
+        return solve_oa(
+            model,
+            time_limit=time_limit,
+            gap_tolerance=gap_tolerance,
+            max_iterations=max_nodes,
+            nlp_solver=nlp_solver,
+            **oa_kwargs,
         )
 
     # --- LOA decomposition: intercept before GDP reformulation ---
