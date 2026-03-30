@@ -194,51 +194,43 @@ class TestPyTreeManager:
 # ──────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 class TestSolveSimple:
     """End-to-end tests solving example_simple_minlp."""
 
-    def test_solve_returns_solve_result(self):
+    @pytest.fixture(scope="class")
+    def result(self):
         m = example_simple_minlp()
-        result = m.solve()
+        return m.solve()
+
+    def test_solve_returns_solve_result(self, result):
         assert isinstance(result, SolveResult)
 
-    def test_solve_status(self):
-        m = example_simple_minlp()
-        result = m.solve()
+    def test_solve_status(self, result):
         assert result.status in ("optimal", "feasible")
 
-    def test_solve_has_solution(self):
-        m = example_simple_minlp()
-        result = m.solve()
+    def test_solve_has_solution(self, result):
         assert result.x is not None
         assert "x1" in result.x
         assert "x2" in result.x
         assert "x3" in result.x
 
-    def test_solve_objective_finite(self):
-        m = example_simple_minlp()
-        result = m.solve()
+    def test_solve_objective_finite(self, result):
         assert result.objective is not None
         assert np.isfinite(result.objective)
 
-    def test_solve_binary_variable_integral(self):
-        m = example_simple_minlp()
-        result = m.solve()
+    def test_solve_binary_variable_integral(self, result):
         x3 = result.x["x3"]
         # x3 should be 0 or 1
         assert abs(x3 - 0.0) < 1e-5 or abs(x3 - 1.0) < 1e-5
 
-    def test_solve_respects_bounds(self):
-        m = example_simple_minlp()
-        result = m.solve()
+    def test_solve_respects_bounds(self, result):
         assert result.x["x1"] >= -1e-6
         assert result.x["x1"] <= 5.0 + 1e-6
         assert result.x["x2"] >= -1e-6
         assert result.x["x2"] <= 5.0 + 1e-6
 
-    def test_solve_constraints_satisfied(self):
-        m = example_simple_minlp()
-        result = m.solve()
+    def test_solve_constraints_satisfied(self, result):
         x1 = float(result.x["x1"])
         x2 = float(result.x["x2"])
         # x1 + x2 >= 1
@@ -246,14 +238,10 @@ class TestSolveSimple:
         # x1^2 + x2 <= 3
         assert x1**2 + x2 <= 3.0 + 1e-4
 
-    def test_solve_node_count_positive(self):
-        m = example_simple_minlp()
-        result = m.solve()
+    def test_solve_node_count_positive(self, result):
         assert result.node_count >= 1
 
-    def test_solve_wall_time_positive(self):
-        m = example_simple_minlp()
-        result = m.solve()
+    def test_solve_wall_time_positive(self, result):
         assert result.wall_time > 0
 
     def test_piecewise_partitions_parameter(self):
@@ -269,6 +257,7 @@ class TestSolveSimple:
 # ──────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 class TestSolveCorrectness:
     """Verify solver finds correct optimal values."""
 
@@ -324,6 +313,7 @@ class TestSolveCorrectness:
 # ──────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 class TestTermination:
     """Test solver termination conditions."""
 
@@ -365,6 +355,7 @@ class TestTermination:
 # ──────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 class TestProfiling:
     """Test that profiling times are populated and consistent."""
 
@@ -390,6 +381,7 @@ class TestProfiling:
 # ──────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 class TestDeterminism:
     """Test that deterministic mode produces identical results."""
 
@@ -411,26 +403,29 @@ class TestDeterminism:
 # ──────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 class TestSolveResult:
     """Test SolveResult API methods."""
 
-    def test_value_method(self):
+    @pytest.fixture(scope="class")
+    def model_and_result(self):
         m = example_simple_minlp()
+        return m, m.solve()
+
+    def test_value_method(self, model_and_result):
+        m, result = model_and_result
         x1 = m._variables[0]
-        result = m.solve()
         val = result.value(x1)
         assert isinstance(val, np.ndarray)
 
-    def test_explain_method(self):
-        m = example_simple_minlp()
-        result = m.solve()
+    def test_explain_method(self, model_and_result):
+        _, result = model_and_result
         explanation = result.explain()
         assert isinstance(explanation, str)
         assert "Solved" in explanation or result.status in explanation
 
-    def test_repr(self):
-        m = example_simple_minlp()
-        result = m.solve()
+    def test_repr(self, model_and_result):
+        _, result = model_and_result
         s = repr(result)
         assert "SolveResult" in s
 
@@ -440,25 +435,25 @@ class TestSolveResult:
 # ──────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 class TestSolveIPM:
     """End-to-end tests solving with nlp_solver='ipm'."""
 
-    def test_ipm_solve_returns_solve_result(self):
+    @pytest.fixture(scope="class")
+    def ipm_result(self):
         m = example_simple_minlp()
-        result = m.solve(nlp_solver="ipm")
-        assert isinstance(result, SolveResult)
+        return m.solve(nlp_solver="ipm")
 
-    def test_ipm_solve_status(self):
-        m = example_simple_minlp()
-        result = m.solve(nlp_solver="ipm")
-        assert result.status in ("optimal", "feasible")
+    def test_ipm_solve_returns_solve_result(self, ipm_result):
+        assert isinstance(ipm_result, SolveResult)
 
-    def test_ipm_solve_correctness(self):
+    def test_ipm_solve_status(self, ipm_result):
+        assert ipm_result.status in ("optimal", "feasible")
+
+    def test_ipm_solve_correctness(self, ipm_result):
         """IPM should find a feasible solution for example_simple_minlp."""
-        m = example_simple_minlp()
-        result = m.solve(nlp_solver="ipm")
-        assert result.objective is not None
-        assert result.objective < 5.0  # Valid feasible solution
+        assert ipm_result.objective is not None
+        assert ipm_result.objective < 5.0  # Valid feasible solution
 
     def test_ipm_batch_solve(self):
         """Batch IPM (batch_size=8) should produce correct result."""
@@ -488,6 +483,7 @@ class TestSolveIPM:
 # ──────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 class TestSolveBatchIPM:
     """Test batch IPM solving specifically."""
 
@@ -526,6 +522,7 @@ class TestSolveBatchIPM:
 # ──────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 class TestBranchingPolicy:
     """Test branching_policy parameter plumbing."""
 

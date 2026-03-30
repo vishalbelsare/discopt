@@ -1466,6 +1466,7 @@ class TestLineaxAvailability:
 # ---------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestMatrixFreeOperators:
     """Test the matrix-free KKT and condensed operators."""
 

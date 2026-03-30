@@ -235,6 +235,7 @@ _SOLVER_HARD = {
 }
 
 
+@pytest.mark.slow
 @pytest.mark.correctness
 class TestSolveSmall:
     """Solve small solvable instances (<=5 vars) via from_nl() + Model.solve()."""
@@ -269,6 +270,7 @@ class TestSolveSmall:
         assert_optimal_value(result.objective, inst.expected_obj, inst.name)
 
 
+@pytest.mark.slow
 @pytest.mark.correctness
 class TestSolveMedium:
     """Solve medium solvable instances (6-10 vars) via from_nl() + Model.solve()."""
@@ -295,6 +297,7 @@ class TestSolveMedium:
 # ──────────────────────────────────────────────────────────
 
 
+@pytest.mark.slow
 @pytest.mark.correctness
 class TestMINLPLibGate:
     """Phase gate: zero incorrect results across all MINLPLib instances."""
