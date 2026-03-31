@@ -1,6 +1,7 @@
 # discopt
 
 [![CI](https://github.com/jkitchin/discopt/actions/workflows/ci.yml/badge.svg)](https://github.com/jkitchin/discopt/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/jkitchin/discopt/graph/badge.svg)](https://codecov.io/gh/jkitchin/discopt)
 
 ![img](discopt.png)
 
