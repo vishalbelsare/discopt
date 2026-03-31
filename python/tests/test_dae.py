@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 from discopt.dae.polynomials import (
     collocation_matrix,
+    collocation_matrix_2nd,
     lagrange_basis,
     legendre_roots,
     radau_roots,
@@ -148,6 +149,78 @@ class TestCollocationMatrix:
     def test_invalid_scheme(self):
         with pytest.raises(ValueError):
             collocation_matrix(3, "trapezoid")
+
+
+class TestCollocationMatrix2nd:
+    def test_shape(self):
+        for ncp in range(2, 6):
+            A2 = collocation_matrix_2nd(ncp, "radau")
+            assert A2.shape == (ncp, ncp + 1)
+
+    def test_exact_for_polynomials(self):
+        """A2 applied to t^k values should give k*(k-1)*t^{k-2} at collocation points."""
+        for ncp in [3, 4, 5]:
+            A2 = collocation_matrix_2nd(ncp, "radau")
+            cp = radau_roots(ncp)
+            nodes = np.concatenate([[0.0], cp])
+
+            for deg in range(2, ncp + 1):
+                f_vals = nodes**deg
+                computed = A2 @ f_vals
+                exact = deg * (deg - 1) * cp ** (deg - 2)
+                np.testing.assert_allclose(
+                    computed,
+                    exact,
+                    atol=1e-10,
+                    err_msg=f"Failed for ncp={ncp}, degree={deg}",
+                )
+
+    def test_linear_gives_zero(self):
+        """Second derivative of a linear function should be zero."""
+        for scheme in ["radau", "legendre"]:
+            for ncp in [2, 3, 4]:
+                A2 = collocation_matrix_2nd(ncp, scheme)
+                # f(t) = t  =>  f''(t) = 0
+                if scheme == "radau":
+                    cp = radau_roots(ncp)
+                else:
+                    cp = legendre_roots(ncp)
+                nodes = np.concatenate([[0.0], cp])
+                result = A2 @ nodes
+                np.testing.assert_allclose(
+                    result,
+                    0.0,
+                    atol=1e-10,
+                    err_msg=f"Failed for scheme={scheme}, ncp={ncp}",
+                )
+
+    def test_quadratic(self):
+        """f(t) = t^2 => f''(t) = 2 everywhere."""
+        for scheme in ["radau", "legendre"]:
+            for ncp in [2, 3, 4]:
+                A2 = collocation_matrix_2nd(ncp, scheme)
+                if scheme == "radau":
+                    cp = radau_roots(ncp)
+                else:
+                    cp = legendre_roots(ncp)
+                nodes = np.concatenate([[0.0], cp])
+                f_vals = nodes**2
+                result = A2 @ f_vals
+                np.testing.assert_allclose(
+                    result,
+                    2.0,
+                    atol=1e-10,
+                    err_msg=f"Failed for scheme={scheme}, ncp={ncp}",
+                )
+
+    def test_legendre_shape(self):
+        for ncp in range(2, 6):
+            A2 = collocation_matrix_2nd(ncp, "legendre")
+            assert A2.shape == (ncp, ncp + 1)
+
+    def test_invalid_scheme(self):
+        with pytest.raises(ValueError):
+            collocation_matrix_2nd(3, "trapezoid")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -631,6 +704,197 @@ class TestMethodOfLines:
 
 
 # ─────────────────────────────────────────────────────────────
+# Phase 5c: FDBuilder second-order ODEs and DAEs
+# ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.slow
+class TestFDSecondOrder:
+    def test_harmonic_oscillator(self):
+        """d²x/dt² = -x via FDBuilder. Should converge with fine grid."""
+        import discopt.modeling as dm
+        from discopt.dae import ContinuousSet, FDBuilder
+
+        m = dm.Model("fd_harmonic")
+        cs = ContinuousSet("t", bounds=(0, 2), nfe=100)
+        fd = FDBuilder(m, cs, method="backward")
+        fd.add_second_order_state(
+            "x",
+            initial=1.0,
+            initial_velocity=0.0,
+            bounds=(-2, 2),
+            velocity_bounds=(-3, 3),
+        )
+        fd.set_second_order_ode(lambda t, pos, vel, a, c: {"x": -pos["x"]})
+        fd.discretize()
+
+        x_var = fd.get_state("x")
+        m.minimize(0 * x_var[0])
+        result = m.solve()
+        assert result.status == "optimal", f"Solve failed: {result.status}"
+
+        t_pts, x_vals = fd.extract_solution(result, "x")
+        exact = np.cos(t_pts)
+        np.testing.assert_allclose(x_vals, exact, atol=0.15)
+
+    def test_free_fall(self):
+        """d²x/dt² = -g (constant gravity), x(0)=0, v(0)=10."""
+        import discopt.modeling as dm
+        from discopt.dae import ContinuousSet, FDBuilder
+
+        g = 9.81
+        m = dm.Model("fd_freefall")
+        cs = ContinuousSet("t", bounds=(0, 1), nfe=50)
+        fd = FDBuilder(m, cs, method="backward")
+        fd.add_second_order_state(
+            "x",
+            initial=0.0,
+            initial_velocity=10.0,
+            bounds=(-50, 50),
+            velocity_bounds=(-50, 50),
+        )
+        fd.set_second_order_ode(lambda t, pos, vel, a, c: {"x": -g})
+        fd.discretize()
+
+        x_var = fd.get_state("x")
+        m.minimize(0 * x_var[0])
+        result = m.solve()
+        assert result.status == "optimal"
+
+        t_pts, x_vals = fd.extract_solution(result, "x")
+        exact = 10.0 * t_pts - 0.5 * g * t_pts**2
+        np.testing.assert_allclose(x_vals, exact, atol=0.1)
+
+
+@pytest.mark.slow
+class TestFDAlgebraic:
+    def test_index1_dae(self):
+        """dx/dt = -x + z, 0 = x^2 - z via FDBuilder."""
+        import discopt.modeling as dm
+        from discopt.dae import ContinuousSet, FDBuilder
+
+        m = dm.Model("fd_dae")
+        cs = ContinuousSet("t", bounds=(0, 0.5), nfe=20)
+        fd = FDBuilder(m, cs, method="backward")
+        fd.add_state("x", initial=0.5, bounds=(0.1, 2))
+        fd.add_algebraic("z", bounds=(0.01, 4))
+        fd.set_ode(lambda t, s, a, c: {"x": -s["x"] + a["z"]})
+        fd.set_algebraic(lambda t, s, a, c: {"z": s["x"] ** 2 - a["z"]})
+        fd.discretize()
+
+        x_var = fd.get_state("x")
+        m.minimize(0 * x_var[0])
+        result = m.solve()
+        assert result.status == "optimal", f"Solve failed: {result.status}"
+
+        # Verify z approx x^2 at interior grid points
+        z_var = fd.get_state("z")
+        x_val = result.value(x_var)
+        z_val = result.value(z_var)
+        for k in range(cs.nfe):
+            np.testing.assert_allclose(z_val[k], x_val[k + 1] ** 2, atol=1e-3)
+
+
+# ─────────────────────────────────────────────────────────────
+# Phase 5d: MOLBuilder PDE method-of-lines
+# ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.slow
+class TestMOLBuilder:
+    def test_heat_equation_dirichlet(self):
+        """1D heat equation with homogeneous Dirichlet BCs via MOLBuilder."""
+        import discopt.modeling as dm
+        from discopt.dae import (
+            BoundaryCondition,
+            ContinuousSet,
+            MOLBuilder,
+            SpatialSet,
+        )
+
+        alpha = 0.1
+        m = dm.Model("mol_heat")
+        ts = ContinuousSet("t", bounds=(0, 1), nfe=10, ncp=3)
+        ss = SpatialSet("z", bounds=(0, 1), npts=5)
+
+        mol = MOLBuilder(m, ts, ss)
+        mol.add_field(
+            "u",
+            bounds=(-2, 2),
+            initial=lambda z: np.sin(np.pi * z),
+            bc_left=BoundaryCondition("dirichlet", 0.0),
+            bc_right=BoundaryCondition("dirichlet", 0.0),
+        )
+        mol.set_pde(lambda t, z, f, fz, fzz, c: {"u": alpha * fzz["u"]})
+        mol.discretize()
+
+        u_var = mol.get_field("u")
+        m.minimize(0 * u_var[0, 0, 0])
+        result = m.solve()
+        assert result.status == "optimal"
+
+        t_pts, z_pts, u_vals = mol.extract_solution(result, "u")
+        # Temperature should decay toward zero
+        initial_energy = np.sum(u_vals[0] ** 2)
+        final_energy = np.sum(u_vals[-1] ** 2)
+        assert final_energy < initial_energy * 0.5
+
+
+class TestSpatialSet:
+    def test_fields(self):
+        from discopt.dae import SpatialSet
+
+        ss = SpatialSet("z", bounds=(0, 1), npts=4)
+        assert ss.name == "z"
+        assert ss.bounds == (0, 1)
+        assert ss.npts == 4
+        np.testing.assert_allclose(ss.dz, 0.2)
+        np.testing.assert_allclose(ss.interior_points, [0.2, 0.4, 0.6, 0.8])
+
+    def test_invalid_npts(self):
+        from discopt.dae import SpatialSet
+
+        with pytest.raises(ValueError):
+            SpatialSet("z", bounds=(0, 1), npts=0)
+
+    def test_invalid_bounds(self):
+        from discopt.dae import SpatialSet
+
+        with pytest.raises(ValueError):
+            SpatialSet("z", bounds=(1, 0), npts=5)
+
+
+class TestBoundaryCondition:
+    def test_dirichlet(self):
+        from discopt.dae import BoundaryCondition
+
+        bc = BoundaryCondition("dirichlet", 1.5)
+        assert bc.type == "dirichlet"
+        assert bc.eval(0.0) == 1.5
+        assert bc.eval(99.0) == 1.5
+
+    def test_neumann(self):
+        from discopt.dae import BoundaryCondition
+
+        bc = BoundaryCondition("neumann", -0.5)
+        assert bc.type == "neumann"
+        assert bc.eval(0.0) == -0.5
+
+    def test_time_dependent(self):
+        from discopt.dae import BoundaryCondition
+
+        bc = BoundaryCondition("dirichlet", lambda t: 2.0 * t)
+        assert bc.eval(0.0) == 0.0
+        assert bc.eval(1.5) == 3.0
+
+    def test_invalid_type(self):
+        from discopt.dae import BoundaryCondition
+
+        with pytest.raises(ValueError):
+            BoundaryCondition("robin", 0.0)
+
+
+# ─────────────────────────────────────────────────────────────
 # Phase 6: Public API imports
 # ─────────────────────────────────────────────────────────────
 
@@ -639,15 +903,23 @@ class TestMethodOfLines:
 class TestPublicAPI:
     def test_imports(self):
         from discopt.dae import (
+            BoundaryCondition,
             ContinuousSet,
             DAEBuilder,
             FDBuilder,
+            FieldVar,
+            MOLBuilder,
+            SpatialSet,
         )
 
         # Verify all are accessible
         assert ContinuousSet is not None
         assert DAEBuilder is not None
         assert FDBuilder is not None
+        assert MOLBuilder is not None
+        assert SpatialSet is not None
+        assert BoundaryCondition is not None
+        assert FieldVar is not None
 
     def test_continuous_set_fields(self):
         from discopt.dae import ContinuousSet

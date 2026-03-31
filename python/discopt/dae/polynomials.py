@@ -179,3 +179,69 @@ def _lagrange_deriv(tau: np.ndarray, t: float, j: int) -> float:
                 prod *= t - tau[k]
         result += prod
     return result / denom
+
+
+def _lagrange_deriv2(tau: np.ndarray, t: float, j: int) -> float:
+    """Second derivative of the j-th Lagrange basis polynomial at t.
+
+    L_j''(t) = sum_{m != j} sum_{p != j, p != m}
+               [ prod_{k != j, k != m, k != p} (t - tau[k]) ]
+               / prod_{k != j} (tau[j] - tau[k])
+    """
+    n = len(tau)
+    denom = 1.0
+    for k in range(n):
+        if k != j:
+            denom *= tau[j] - tau[k]
+
+    result = 0.0
+    for m in range(n):
+        if m == j:
+            continue
+        for p in range(n):
+            if p == j or p == m:
+                continue
+            prod = 1.0
+            for k in range(n):
+                if k != j and k != m and k != p:
+                    prod *= t - tau[k]
+            result += prod
+    return result / denom
+
+
+def collocation_matrix_2nd(ncp: int, scheme: str = "radau") -> np.ndarray:
+    """Build the second-derivative collocation matrix.
+
+    Returns a matrix ``A2`` where ``A2[j, k]`` is the second derivative of
+    the k-th Lagrange basis polynomial (through the full node set
+    ``[0, tau_1, ..., tau_ncp]``) evaluated at collocation point ``tau_j``.
+
+    This allows direct collocation of second-order ODEs
+    (d²x/dt² = f(t, x, dx/dt)) without introducing auxiliary velocity
+    variables.
+
+    Parameters
+    ----------
+    ncp : int
+        Number of collocation points.
+    scheme : str
+        ``"radau"`` or ``"legendre"``.
+
+    Returns
+    -------
+    A2 : np.ndarray, shape ``(ncp, ncp + 1)``
+        Second-derivative matrix.
+    """
+    if scheme == "radau":
+        cp = radau_roots(ncp)
+    elif scheme == "legendre":
+        cp = legendre_roots(ncp)
+    else:
+        raise ValueError(f"Unknown scheme {scheme!r}, expected 'radau' or 'legendre'")
+
+    nodes = np.concatenate([[0.0], cp])
+    A2 = np.zeros((ncp, ncp + 1))
+    for i in range(ncp):
+        for j in range(ncp + 1):
+            A2[i, j] = _lagrange_deriv2(nodes, cp[i], j)
+    return A2

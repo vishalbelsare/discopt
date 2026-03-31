@@ -28,21 +28,28 @@ from discopt.dae.collocation import (
     align_time_grid,
 )
 from discopt.dae.finite_difference import FDBuilder
+from discopt.dae.mol import BoundaryCondition, FieldVar, MOLBuilder, SpatialSet
 from discopt.dae.polynomials import (
     collocation_matrix,
+    collocation_matrix_2nd,
     legendre_roots,
     radau_roots,
 )
 
 __all__ = [
     "AlgebraicVar",
+    "BoundaryCondition",
     "ContinuousSet",
     "ControlVar",
     "DAEBuilder",
     "FDBuilder",
+    "FieldVar",
+    "MOLBuilder",
+    "SpatialSet",
     "StateVar",
     "align_time_grid",
     "collocation_matrix",
+    "collocation_matrix_2nd",
     "legendre_roots",
     "radau_roots",
 ]

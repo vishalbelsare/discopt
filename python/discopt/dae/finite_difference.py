@@ -13,14 +13,16 @@ from typing import Any, Callable
 import numpy as np
 
 from discopt.dae.collocation import (
+    AlgebraicVar,
     ContinuousSet,
     ControlVar,
     StateVar,
+    _SecondOrderInfo,
 )
 
 
 class FDBuilder:
-    """Transcribe an ODE system using finite-difference stencils.
+    """Transcribe an ODE/DAE system using finite-difference stencils.
 
     State variables have shape ``(nfe + 1,)`` — values at grid points
     (including both endpoints). Controls are piecewise constant per interval.
@@ -43,8 +45,12 @@ class FDBuilder:
         self._cs = continuous_set
         self._method = method
         self._states: list[StateVar] = []
+        self._algebraics: list[AlgebraicVar] = []
         self._controls: list[ControlVar] = []
         self._ode_rhs: Callable | None = None
+        self._alg_rhs: Callable | None = None
+        self._second_order_rhs: Callable | None = None
+        self._second_order_info: list[_SecondOrderInfo] = []
         self._vars: dict[str, Any] = {}
         self._discretized = False
 
@@ -77,6 +83,78 @@ class FDBuilder:
         self._controls.append(cv)
         return cv
 
+    def add_second_order_state(
+        self,
+        name: str,
+        velocity_name: str | None = None,
+        n_components: int = 1,
+        bounds: tuple[float, float] = (-1e20, 1e20),
+        initial: float | np.ndarray | None = None,
+        initial_velocity: float | np.ndarray | None = None,
+        velocity_bounds: tuple[float, float] = (-1e20, 1e20),
+    ) -> StateVar:
+        """Declare a second-order state (position + velocity).
+
+        Creates two first-order states internally. The coupling
+        ``d(position)/dt = velocity`` is added during discretization.
+
+        Parameters
+        ----------
+        name : str
+            Position variable name.
+        velocity_name : str, optional
+            Velocity variable name. Defaults to ``"d{name}_dt"``.
+        n_components : int
+            Number of components.
+        bounds : tuple of float
+            Bounds on the position variable.
+        initial : float or np.ndarray, optional
+            Initial position.
+        initial_velocity : float or np.ndarray, optional
+            Initial velocity.
+        velocity_bounds : tuple of float
+            Bounds on the velocity variable.
+
+        Returns
+        -------
+        StateVar
+        """
+        if velocity_name is None:
+            velocity_name = f"d{name}_dt"
+
+        pos_sv = self.add_state(name, n_components, bounds, initial)
+        self.add_state(velocity_name, n_components, velocity_bounds, initial_velocity)
+
+        self._second_order_info.append(_SecondOrderInfo(name, velocity_name, initial_velocity))
+        return pos_sv
+
+    def add_algebraic(
+        self,
+        name: str,
+        n_components: int = 1,
+        bounds: tuple[float, float] = (-1e20, 1e20),
+    ) -> AlgebraicVar:
+        """Declare an algebraic variable (no time derivative).
+
+        Algebraic variables exist at interior grid points (indices 1..nfe).
+
+        Parameters
+        ----------
+        name : str
+            Variable name.
+        n_components : int
+            Number of components.
+        bounds : tuple of float
+            ``(lb, ub)`` bounds.
+
+        Returns
+        -------
+        AlgebraicVar
+        """
+        av = AlgebraicVar(name, n_components, bounds)
+        self._algebraics.append(av)
+        return av
+
     def set_ode(self, rhs: Callable) -> None:
         """Set the ODE right-hand side.
 
@@ -87,6 +165,29 @@ class FDBuilder:
             Same signature as :meth:`DAEBuilder.set_ode`.
         """
         self._ode_rhs = rhs
+
+    def set_algebraic(self, rhs: Callable) -> None:
+        """Set the algebraic equations (for index-1 DAEs).
+
+        Parameters
+        ----------
+        rhs : callable
+            ``rhs(t, states, algebraics, controls) -> dict[str, Expression]``
+            where each value is constrained ``== 0`` at every grid point.
+        """
+        self._alg_rhs = rhs
+
+    def set_second_order_ode(self, rhs: Callable) -> None:
+        """Set the second-order ODE right-hand side (acceleration).
+
+        Parameters
+        ----------
+        rhs : callable
+            ``rhs(t, positions, velocities, algebraics, controls) -> dict``
+            where keys are position state names and values are acceleration
+            expressions. The velocity coupling ``dx/dt = v`` is automatic.
+        """
+        self._second_order_rhs = rhs
 
     def discretize(self) -> dict[str, object]:
         """Generate all variables and finite-difference constraints.
@@ -121,6 +222,19 @@ class FDBuilder:
 
             self._vars[sv.name] = m.continuous(f"{cs.name}_{sv.name}", shape=shape, lb=lb, ub=ub)
 
+        # Algebraic variables: shape (nfe,) or (nfe, n_comp)
+        for av in self._algebraics:
+            ashape: tuple[int, ...] = (nfe,)
+            if av.n_components > 1:
+                ashape = (nfe, av.n_components)
+
+            self._vars[av.name] = m.continuous(
+                f"{cs.name}_{av.name}",
+                shape=ashape,
+                lb=av.bounds[0],
+                ub=av.bounds[1],
+            )
+
         # Control variables: shape (nfe,) or (nfe, n_comp)
         for cv in self._controls:
             cshape: tuple[int, ...] = (nfe,)
@@ -134,21 +248,86 @@ class FDBuilder:
                 ub=cv.bounds[1],
             )
 
+        # Build second-order ODE wrapper if needed
+        if self._second_order_rhs is not None:
+            self._build_second_order_wrapper()
+
         # Add FD constraints
-        if self._ode_rhs is None:
-            raise RuntimeError("No ODE RHS set. Call set_ode() first.")
+        if self._ode_rhs is None and not self._second_order_info:
+            raise RuntimeError("No ODE RHS set. Call set_ode() or set_second_order_ode().")
 
         tp = self.time_points()
+        rhs_fn = self._ode_rhs
         constraints = []
 
-        if self._method == "backward":
-            # (x[k] - x[k-1]) / h_k == f(t[k], x[k])  for k=1..nfe
-            for k in range(1, nfe + 1):
+        if rhs_fn is not None:
+            if self._method == "backward":
+                for k in range(1, nfe + 1):
+                    h_k = float(self._h_vec[k - 1])
+                    states_k = self._state_dict_at(k)
+                    alg_k = self._algebraic_dict_at(k - 1)
+                    ctrl_k = self._control_dict_at(k - 1)
+                    derivs = rhs_fn(tp[k], states_k, alg_k, ctrl_k)
+
+                    for sv in self._states:
+                        if sv.name not in derivs:
+                            continue
+                        var = self._vars[sv.name]
+                        if sv.n_components == 1:
+                            lhs = (var[k] - var[k - 1]) / h_k
+                            constraints.append(lhs == derivs[sv.name])
+                        else:
+                            for c in range(sv.n_components):
+                                lhs = (var[k, c] - var[k - 1, c]) / h_k
+                                constraints.append(lhs == derivs[sv.name][c])
+
+            elif self._method == "forward":
+                for k in range(nfe):
+                    h_k = float(self._h_vec[k])
+                    states_k = self._state_dict_at(k)
+                    alg_k = self._algebraic_dict_at(k)
+                    ctrl_k = self._control_dict_at(k)
+                    derivs = rhs_fn(tp[k], states_k, alg_k, ctrl_k)
+
+                    for sv in self._states:
+                        if sv.name not in derivs:
+                            continue
+                        var = self._vars[sv.name]
+                        if sv.n_components == 1:
+                            lhs = (var[k + 1] - var[k]) / h_k
+                            constraints.append(lhs == derivs[sv.name])
+                        else:
+                            for c in range(sv.n_components):
+                                lhs = (var[k + 1, c] - var[k, c]) / h_k
+                                constraints.append(lhs == derivs[sv.name][c])
+
+            elif self._method == "central":
+                for k in range(1, nfe):
+                    h_span = float(self._h_vec[k - 1] + self._h_vec[k])
+                    states_k = self._state_dict_at(k)
+                    alg_k = self._algebraic_dict_at(k - 1)
+                    ctrl_k = self._control_dict_at(k - 1)
+                    derivs = rhs_fn(tp[k], states_k, alg_k, ctrl_k)
+
+                    for sv in self._states:
+                        if sv.name not in derivs:
+                            continue
+                        var = self._vars[sv.name]
+                        if sv.n_components == 1:
+                            lhs = (var[k + 1] - var[k - 1]) / h_span
+                            constraints.append(lhs == derivs[sv.name])
+                        else:
+                            for c in range(sv.n_components):
+                                lhs = (var[k + 1, c] - var[k - 1, c]) / h_span
+                                constraints.append(lhs == derivs[sv.name][c])
+
+                # Last point: backward at k=nfe
+                k = nfe
                 h_k = float(self._h_vec[k - 1])
                 states_k = self._state_dict_at(k)
-                ctrl_k = self._control_dict_at(k - 1)  # interval [k-1, k]
-                derivs = self._ode_rhs(tp[k], states_k, {}, ctrl_k)
-
+                alg_k = self._algebraic_dict_at(k - 1)
+                ctrl_k = self._control_dict_at(k - 1)
+                derivs = rhs_fn(tp[k], states_k, alg_k, ctrl_k)
                 for sv in self._states:
                     if sv.name not in derivs:
                         continue
@@ -161,66 +340,12 @@ class FDBuilder:
                             lhs = (var[k, c] - var[k - 1, c]) / h_k
                             constraints.append(lhs == derivs[sv.name][c])
 
-        elif self._method == "forward":
-            # (x[k+1] - x[k]) / h_k == f(t[k], x[k])  for k=0..nfe-1
-            for k in range(nfe):
-                h_k = float(self._h_vec[k])
-                states_k = self._state_dict_at(k)
-                ctrl_k = self._control_dict_at(k)
-                derivs = self._ode_rhs(tp[k], states_k, {}, ctrl_k)
-
-                for sv in self._states:
-                    if sv.name not in derivs:
-                        continue
-                    var = self._vars[sv.name]
-                    if sv.n_components == 1:
-                        lhs = (var[k + 1] - var[k]) / h_k
-                        constraints.append(lhs == derivs[sv.name])
-                    else:
-                        for c in range(sv.n_components):
-                            lhs = (var[k + 1, c] - var[k, c]) / h_k
-                            constraints.append(lhs == derivs[sv.name][c])
-
-        elif self._method == "central":
-            # (x[k+1] - x[k-1]) / (h_{k-1} + h_k) == f(t[k], x[k])
-            for k in range(1, nfe):
-                h_span = float(self._h_vec[k - 1] + self._h_vec[k])
-                states_k = self._state_dict_at(k)
-                ctrl_k = self._control_dict_at(k - 1 if k > 0 else k)
-                derivs = self._ode_rhs(tp[k], states_k, {}, ctrl_k)
-
-                for sv in self._states:
-                    if sv.name not in derivs:
-                        continue
-                    var = self._vars[sv.name]
-                    if sv.n_components == 1:
-                        lhs = (var[k + 1] - var[k - 1]) / h_span
-                        constraints.append(lhs == derivs[sv.name])
-                    else:
-                        for c in range(sv.n_components):
-                            lhs = (var[k + 1, c] - var[k - 1, c]) / h_span
-                            constraints.append(lhs == derivs[sv.name][c])
-
-            # Also need the last point: backward at k=nfe
-            k = nfe
-            h_k = float(self._h_vec[k - 1])
-            states_k = self._state_dict_at(k)
-            ctrl_k = self._control_dict_at(k - 1)
-            derivs = self._ode_rhs(tp[k], states_k, {}, ctrl_k)
-            for sv in self._states:
-                if sv.name not in derivs:
-                    continue
-                var = self._vars[sv.name]
-                if sv.n_components == 1:
-                    lhs = (var[k] - var[k - 1]) / h_k
-                    constraints.append(lhs == derivs[sv.name])
-                else:
-                    for c in range(sv.n_components):
-                        lhs = (var[k, c] - var[k - 1, c]) / h_k
-                        constraints.append(lhs == derivs[sv.name][c])
-
         if constraints:
             m.subject_to(constraints, name=f"{cs.name}_fd")
+
+        # Add algebraic constraints
+        if self._alg_rhs is not None:
+            self._add_algebraic_constraints()
 
         return dict(self._vars)
 
@@ -299,6 +424,40 @@ class FDBuilder:
 
     # ── Internal helpers ──
 
+    def _build_second_order_wrapper(self):
+        """Wrap the second-order ODE RHS into a first-order ODE RHS."""
+        accel_rhs = self._second_order_rhs
+        so_info = {info.position_name: info for info in self._second_order_info}
+        existing_ode = self._ode_rhs
+
+        def combined_rhs(t, states, algebraics, controls):
+            derivs = {}
+
+            # Velocity coupling: d(position)/dt = velocity
+            for info in self._second_order_info:
+                derivs[info.position_name] = states[info.velocity_name]
+
+            # Acceleration from user-supplied RHS
+            positions = {
+                info.position_name: states[info.position_name] for info in self._second_order_info
+            }
+            velocities = {
+                info.velocity_name: states[info.velocity_name] for info in self._second_order_info
+            }
+            accels = accel_rhs(t, positions, velocities, algebraics, controls)
+            for pos_name, accel_expr in accels.items():
+                vel_name = so_info[pos_name].velocity_name
+                derivs[vel_name] = accel_expr
+
+            # Include any existing first-order ODE terms
+            if existing_ode is not None:
+                first_order = existing_ode(t, states, algebraics, controls)
+                derivs.update(first_order)
+
+            return derivs
+
+        self._ode_rhs = combined_rhs
+
     def _state_dict_at(self, k: int) -> dict:
         """Build states dict at grid point k."""
         d = {}
@@ -308,6 +467,23 @@ class FDBuilder:
                 d[sv.name] = var[k]
             else:
                 d[sv.name] = [var[k, c] for c in range(sv.n_components)]
+        return d
+
+    def _algebraic_dict_at(self, k: int) -> dict:
+        """Build algebraics dict at grid point k.
+
+        Algebraic variables have shape ``(nfe,)`` corresponding to interior
+        grid points (indices 1..nfe in the state grid). The mapping is:
+        algebraic index ``k`` corresponds to state grid point ``k + 1``.
+        The caller passes the interval index (0-based), so we use it directly.
+        """
+        d: dict = {}
+        for av in self._algebraics:
+            var = self._vars[av.name]
+            if av.n_components == 1:
+                d[av.name] = var[k]
+            else:
+                d[av.name] = [var[k, c] for c in range(av.n_components)]
         return d
 
     def _control_dict_at(self, k: int) -> dict:
@@ -320,3 +496,22 @@ class FDBuilder:
             else:
                 d[cv.name] = [var[k, c] for c in range(cv.n_components)]
         return d
+
+    def _add_algebraic_constraints(self):
+        """Add algebraic equations (g == 0) at interior grid points."""
+        m = self._model
+        nfe = self._cs.nfe
+        tp = self.time_points()
+
+        constraints = []
+        for k in range(nfe):
+            # Algebraic equations evaluated at interior grid point k+1
+            states_k = self._state_dict_at(k + 1)
+            alg_k = self._algebraic_dict_at(k)
+            ctrl_k = self._control_dict_at(k)
+            residuals = self._alg_rhs(tp[k + 1], states_k, alg_k, ctrl_k)
+            for _name, expr in residuals.items():
+                constraints.append(expr == 0)
+
+        if constraints:
+            m.subject_to(constraints, name=f"{self._cs.name}_algebraic")
