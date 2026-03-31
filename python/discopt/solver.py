@@ -1996,14 +1996,15 @@ def _solve_batch_ipm(
         result_obj = np.array([obj_vals[i, best_per_node[i]] for i in range(n_batch)])
         result_x = np.array([x_vals[i, best_per_node[i]] for i in range(n_batch)])
         any_feasible = np.any(feasible_mask, axis=1)
-        result_lbs = np.where(any_feasible, result_obj, _INFEASIBILITY_SENTINEL)
+        result_lbs = np.asarray(
+            np.where(any_feasible, result_obj, _INFEASIBILITY_SENTINEL), dtype=np.float64
+        )
         result_sols = result_x
     else:
         conv_mask = (converged == 1) | (converged == 2) | (converged == 3)
-        result_lbs = np.where(
-            conv_mask & np.isfinite(obj_vals),
-            obj_vals,
-            _INFEASIBILITY_SENTINEL,
+        result_lbs = np.asarray(
+            np.where(conv_mask & np.isfinite(obj_vals), obj_vals, _INFEASIBILITY_SENTINEL),
+            dtype=np.float64,
         )
         result_sols = x_vals
 
@@ -2243,7 +2244,10 @@ def _solve_milp_bb(
                 x_vals = np.asarray(state.x)
 
                 ok = (converged == 1) | (converged == 2) | (converged == 3)
-                result_lbs = np.where(ok, obj_vals + lp_data.obj_const, _INFEASIBILITY_SENTINEL)
+                result_lbs = np.asarray(
+                    np.where(ok, obj_vals + float(lp_data.obj_const), _INFEASIBILITY_SENTINEL),
+                    dtype=np.float64,
+                )
                 result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
                 for i in range(n_batch):
                     if ok[i]:
@@ -2455,7 +2459,10 @@ def _solve_miqp_bb(
                 x_vals = np.asarray(state.x)
 
                 ok = (converged == 1) | (converged == 2) | (converged == 3)
-                result_lbs = np.where(ok, obj_vals + qp_data.obj_const, _INFEASIBILITY_SENTINEL)
+                result_lbs = np.asarray(
+                    np.where(ok, obj_vals + float(qp_data.obj_const), _INFEASIBILITY_SENTINEL),
+                    dtype=np.float64,
+                )
                 result_sols = np.empty((n_batch, n_vars), dtype=np.float64)
                 for i in range(n_batch):
                     if ok[i]:
