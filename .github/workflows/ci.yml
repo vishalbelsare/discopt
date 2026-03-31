@@ -8,15 +8,10 @@ on:
 
 jobs:
   rust:
-    name: Rust (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    name: Rust
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Clone ripopt (sibling path dependency)
-        run: git clone https://${{ secrets.RIPOPT_TOKEN }}@github.com/jkitchin/ripopt.git ../ripopt
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -29,8 +24,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Clone ripopt (sibling path dependency)
-        run: git clone https://${{ secrets.RIPOPT_TOKEN }}@github.com/jkitchin/ripopt.git ../ripopt
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
