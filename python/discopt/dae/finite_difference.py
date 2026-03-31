@@ -48,7 +48,11 @@ class FDBuilder:
         self._vars: dict[str, Any] = {}
         self._discretized = False
 
-        self._h = (continuous_set.bounds[1] - continuous_set.bounds[0]) / continuous_set.nfe
+        if continuous_set.element_boundaries is not None:
+            self._h_vec = np.diff(continuous_set.element_boundaries)
+        else:
+            h_uniform = (continuous_set.bounds[1] - continuous_set.bounds[0]) / continuous_set.nfe
+            self._h_vec = np.full(continuous_set.nfe, h_uniform)
 
     def add_state(
         self,
@@ -98,7 +102,6 @@ class FDBuilder:
         m = self._model
         cs = self._cs
         nfe = cs.nfe
-        h = self._h
 
         # State variables: shape (nfe+1,) or (nfe+1, n_comp)
         for sv in self._states:
@@ -139,8 +142,9 @@ class FDBuilder:
         constraints = []
 
         if self._method == "backward":
-            # (x[k] - x[k-1]) / h == f(t[k], x[k])  for k=1..nfe
+            # (x[k] - x[k-1]) / h_k == f(t[k], x[k])  for k=1..nfe
             for k in range(1, nfe + 1):
+                h_k = float(self._h_vec[k - 1])
                 states_k = self._state_dict_at(k)
                 ctrl_k = self._control_dict_at(k - 1)  # interval [k-1, k]
                 derivs = self._ode_rhs(tp[k], states_k, {}, ctrl_k)
@@ -150,16 +154,17 @@ class FDBuilder:
                         continue
                     var = self._vars[sv.name]
                     if sv.n_components == 1:
-                        lhs = (var[k] - var[k - 1]) / h
+                        lhs = (var[k] - var[k - 1]) / h_k
                         constraints.append(lhs == derivs[sv.name])
                     else:
                         for c in range(sv.n_components):
-                            lhs = (var[k, c] - var[k - 1, c]) / h
+                            lhs = (var[k, c] - var[k - 1, c]) / h_k
                             constraints.append(lhs == derivs[sv.name][c])
 
         elif self._method == "forward":
-            # (x[k+1] - x[k]) / h == f(t[k], x[k])  for k=0..nfe-1
+            # (x[k+1] - x[k]) / h_k == f(t[k], x[k])  for k=0..nfe-1
             for k in range(nfe):
+                h_k = float(self._h_vec[k])
                 states_k = self._state_dict_at(k)
                 ctrl_k = self._control_dict_at(k)
                 derivs = self._ode_rhs(tp[k], states_k, {}, ctrl_k)
@@ -169,17 +174,17 @@ class FDBuilder:
                         continue
                     var = self._vars[sv.name]
                     if sv.n_components == 1:
-                        lhs = (var[k + 1] - var[k]) / h
+                        lhs = (var[k + 1] - var[k]) / h_k
                         constraints.append(lhs == derivs[sv.name])
                     else:
                         for c in range(sv.n_components):
-                            lhs = (var[k + 1, c] - var[k, c]) / h
+                            lhs = (var[k + 1, c] - var[k, c]) / h_k
                             constraints.append(lhs == derivs[sv.name][c])
 
         elif self._method == "central":
-            # (x[k+1] - x[k-1]) / (2h) == f(t[k], x[k])  for k=1..nfe-1
-            # Plus backward Euler at k=1 if nfe > 1
+            # (x[k+1] - x[k-1]) / (h_{k-1} + h_k) == f(t[k], x[k])
             for k in range(1, nfe):
+                h_span = float(self._h_vec[k - 1] + self._h_vec[k])
                 states_k = self._state_dict_at(k)
                 ctrl_k = self._control_dict_at(k - 1 if k > 0 else k)
                 derivs = self._ode_rhs(tp[k], states_k, {}, ctrl_k)
@@ -189,15 +194,16 @@ class FDBuilder:
                         continue
                     var = self._vars[sv.name]
                     if sv.n_components == 1:
-                        lhs = (var[k + 1] - var[k - 1]) / (2 * h)
+                        lhs = (var[k + 1] - var[k - 1]) / h_span
                         constraints.append(lhs == derivs[sv.name])
                     else:
                         for c in range(sv.n_components):
-                            lhs = (var[k + 1, c] - var[k - 1, c]) / (2 * h)
+                            lhs = (var[k + 1, c] - var[k - 1, c]) / h_span
                             constraints.append(lhs == derivs[sv.name][c])
 
             # Also need the last point: backward at k=nfe
             k = nfe
+            h_k = float(self._h_vec[k - 1])
             states_k = self._state_dict_at(k)
             ctrl_k = self._control_dict_at(k - 1)
             derivs = self._ode_rhs(tp[k], states_k, {}, ctrl_k)
@@ -206,11 +212,11 @@ class FDBuilder:
                     continue
                 var = self._vars[sv.name]
                 if sv.n_components == 1:
-                    lhs = (var[k] - var[k - 1]) / h
+                    lhs = (var[k] - var[k - 1]) / h_k
                     constraints.append(lhs == derivs[sv.name])
                 else:
                     for c in range(sv.n_components):
-                        lhs = (var[k, c] - var[k - 1, c]) / h
+                        lhs = (var[k, c] - var[k - 1, c]) / h_k
                         constraints.append(lhs == derivs[sv.name][c])
 
         if constraints:
@@ -226,14 +232,70 @@ class FDBuilder:
 
     def time_points(self) -> np.ndarray:
         """Return grid points as a flat array, shape ``(nfe + 1,)``."""
-        t0, tf = self._cs.bounds
-        return np.linspace(t0, tf, self._cs.nfe + 1)
+        cs = self._cs
+        if cs.element_boundaries is not None:
+            return np.array(cs.element_boundaries)
+        return np.linspace(cs.bounds[0], cs.bounds[1], cs.nfe + 1)
 
     def extract_solution(self, result, name: str) -> tuple[np.ndarray, np.ndarray]:
         """Extract time series from a solve result."""
         var = self._vars[name]
         val = result.value(var)
         return self.time_points(), val
+
+    def least_squares(
+        self,
+        state_name: str,
+        t_data: np.ndarray,
+        y_data: np.ndarray,
+        component: int | None = None,
+    ) -> object:
+        """Build a sum-of-squared-residuals expression for parameter estimation.
+
+        Maps each measurement time to the nearest grid point and returns
+        ``sum((x[nearest] - y_data[i])^2)`` as a discopt expression.
+
+        Must be called after :meth:`discretize`.
+
+        Parameters
+        ----------
+        state_name : str
+            Name of the state variable to fit.
+        t_data : np.ndarray
+            Measurement times, shape ``(n_obs,)``.
+        y_data : np.ndarray
+            Observed values, shape ``(n_obs,)``.
+        component : int, optional
+            For vector-valued states, which component to fit.
+
+        Returns
+        -------
+        Expression
+        """
+        if not self._discretized:
+            raise RuntimeError("Call discretize() before least_squares()")
+        if state_name not in self._vars:
+            raise KeyError(f"Unknown state {state_name!r}")
+
+        t_data = np.asarray(t_data, dtype=np.float64)
+        y_data = np.asarray(y_data, dtype=np.float64)
+
+        var = self._vars[state_name]
+        tp = self.time_points()
+
+        terms = []
+        for i in range(len(t_data)):
+            idx = int(np.argmin(np.abs(tp - t_data[i])))
+            if component is not None:
+                x_expr = var[idx, component]
+            else:
+                x_expr = var[idx]
+            terms.append((x_expr - float(y_data[i])) ** 2)
+
+        result = terms[0]
+        for t in terms[1:]:
+            result = result + t
+        return result
 
     # ── Internal helpers ──
 

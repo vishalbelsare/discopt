@@ -658,3 +658,249 @@ class TestPublicAPI:
         assert cs.nfe == 20
         assert cs.ncp == 3
         assert cs.scheme == "radau"
+
+
+# ─────────────────────────────────────────────────────────────
+# Phase 7: Non-uniform elements, align_time_grid, least_squares
+# ─────────────────────────────────────────────────────────────
+
+
+class TestAlignTimeGrid:
+    def test_measurement_times_become_boundaries(self):
+        from discopt.dae import align_time_grid
+
+        meas = np.array([0.3, 0.7, 1.5])
+        eb = align_time_grid((0, 2), nfe=10, measurement_times=meas)
+        for t in meas:
+            assert np.any(np.abs(eb - t) < 1e-12), f"Measurement {t} not in boundaries"
+
+    def test_boundaries_sorted(self):
+        from discopt.dae import align_time_grid
+
+        meas = np.array([0.8, 0.2, 0.5])
+        eb = align_time_grid((0, 1), nfe=5, measurement_times=meas)
+        assert np.all(np.diff(eb) > 0)
+
+    def test_preserves_endpoints(self):
+        from discopt.dae import align_time_grid
+
+        eb = align_time_grid((0, 10), nfe=20, measurement_times=np.array([3.0, 7.0]))
+        assert eb[0] == 0.0
+        assert eb[-1] == 10.0
+
+    def test_uniform_when_no_nearby_measurements(self):
+        from discopt.dae import align_time_grid
+
+        # Measurements far from any boundary should not be snapped
+        eb = align_time_grid((0, 1), nfe=2, measurement_times=np.array([]))
+        np.testing.assert_allclose(eb, [0.0, 0.5, 1.0])
+
+
+class TestNonUniformElements:
+    def test_element_boundaries_field(self):
+        from discopt.dae import ContinuousSet
+
+        eb = np.array([0.0, 0.3, 0.7, 1.0])
+        cs = ContinuousSet("t", bounds=(0, 1), nfe=3, element_boundaries=eb)
+        assert cs.nfe == 3
+        assert cs.bounds == (0.0, 1.0)
+
+    def test_element_boundaries_infers_nfe(self):
+        from discopt.dae import ContinuousSet
+
+        eb = np.array([0.0, 0.5, 1.0])
+        # nfe will be overridden by element_boundaries
+        cs = ContinuousSet("t", bounds=(0, 1), nfe=99, element_boundaries=eb)
+        assert cs.nfe == 2
+
+    def test_invalid_boundaries_raises(self):
+        from discopt.dae import ContinuousSet
+
+        with pytest.raises(ValueError):
+            ContinuousSet("t", bounds=(0, 1), nfe=2, element_boundaries=np.array([1.0, 0.5, 0.0]))
+
+    @pytest.mark.slow
+    def test_exp_decay_nonuniform(self):
+        """Exponential decay with non-uniform elements should still converge."""
+        import discopt.modeling as dm
+        from discopt.dae import ContinuousSet, DAEBuilder
+
+        eb = np.array([0.0, 0.1, 0.3, 0.6, 1.0, 1.5, 2.0])
+        m = dm.Model("nonuniform")
+        cs = ContinuousSet("t", bounds=(0, 2), nfe=6, element_boundaries=eb, ncp=3)
+        dae = DAEBuilder(m, cs)
+        dae.add_state("x", initial=1.0, bounds=(-5, 5))
+        dae.set_ode(lambda t, s, a, c: {"x": -s["x"]})
+        dae.discretize()
+
+        x_var = dae.get_state("x")
+        m.minimize(0 * x_var[0, 0])
+        result = m.solve()
+        assert result.status == "optimal"
+
+        t_pts, x_vals = dae.extract_solution(result, "x")
+        exact = np.exp(-t_pts)
+        np.testing.assert_allclose(x_vals, exact, atol=1e-3)
+
+
+@pytest.mark.slow
+class TestLeastSquares:
+    def test_basic_parameter_estimation(self):
+        """Estimate decay rate from noisy data using least_squares()."""
+        import discopt.modeling as dm
+        from discopt.dae import ContinuousSet, DAEBuilder
+
+        k_true = 0.5
+        t_obs = np.array([0.5, 1.0, 1.5, 2.0])
+        y_obs = np.exp(-k_true * t_obs)
+
+        m = dm.Model("param_est")
+        k = m.continuous("k", lb=0.01, ub=5.0)
+        cs = ContinuousSet("t", bounds=(0, 2), nfe=10, ncp=3)
+        dae = DAEBuilder(m, cs)
+        dae.add_state("x", initial=1.0, bounds=(-5, 5))
+        dae.set_ode(lambda t, s, a, c: {"x": -k * s["x"]})
+        dae.discretize()
+
+        obj = dae.least_squares("x", t_obs, y_obs)
+        m.minimize(obj)
+        result = m.solve()
+        assert result.status == "optimal"
+
+        k_est = result.value(k)
+        np.testing.assert_allclose(k_est, k_true, atol=0.05)
+
+    def test_before_discretize_raises(self):
+        """least_squares() should raise if called before discretize()."""
+        import discopt.modeling as dm
+        from discopt.dae import ContinuousSet, DAEBuilder
+
+        m = dm.Model("pre_disc")
+        cs = ContinuousSet("t", bounds=(0, 1), nfe=5, ncp=3)
+        dae = DAEBuilder(m, cs)
+        dae.add_state("x", initial=1.0)
+        dae.set_ode(lambda t, s, a, c: {"x": -s["x"]})
+
+        with pytest.raises(RuntimeError):
+            dae.least_squares("x", np.array([0.5]), np.array([0.6]))
+
+    def test_fd_least_squares(self):
+        """FDBuilder.least_squares() basic test."""
+        import discopt.modeling as dm
+        from discopt.dae import ContinuousSet, FDBuilder
+
+        k_true = 0.5
+        t_obs = np.array([0.5, 1.0, 1.5, 2.0])
+        y_obs = np.exp(-k_true * t_obs)
+
+        m = dm.Model("fd_param_est")
+        k = m.continuous("k", lb=0.01, ub=5.0)
+        cs = ContinuousSet("t", bounds=(0, 2), nfe=50)
+        fd = FDBuilder(m, cs, method="backward")
+        fd.add_state("x", initial=1.0, bounds=(-5, 5))
+        fd.set_ode(lambda t, s, a, c: {"x": -k * s["x"]})
+        fd.discretize()
+
+        obj = fd.least_squares("x", t_obs, y_obs)
+        m.minimize(obj)
+        result = m.solve()
+        assert result.status == "optimal"
+
+        k_est = result.value(k)
+        np.testing.assert_allclose(k_est, k_true, atol=0.1)
+
+
+# ─────────────────────────────────────────────────────────────
+# Phase 8: scipy cross-validation
+# ─────────────────────────────────────────────────────────────
+
+
+@pytest.mark.slow
+class TestScipyCrossValidation:
+    def test_exp_decay_vs_scipy(self):
+        """Compare collocation to scipy.integrate.solve_ivp for exp decay."""
+        import discopt.modeling as dm
+        from discopt.dae import ContinuousSet, DAEBuilder
+        from scipy.integrate import solve_ivp
+
+        m = dm.Model("scipy_exp")
+        cs = ContinuousSet("t", bounds=(0, 2), nfe=20, ncp=3)
+        dae = DAEBuilder(m, cs)
+        dae.add_state("x", initial=1.0, bounds=(-5, 5))
+        dae.set_ode(lambda t, s, a, c: {"x": -s["x"]})
+        dae.discretize()
+        x_var = dae.get_state("x")
+        m.minimize(0 * x_var[0, 0])
+        result = m.solve()
+        assert result.status == "optimal"
+
+        t_coll, x_coll = dae.extract_solution(result, "x")
+
+        # scipy reference
+        sol = solve_ivp(lambda t, y: [-y[0]], (0, 2), [1.0], t_eval=t_coll, rtol=1e-10)
+        np.testing.assert_allclose(x_coll, sol.y[0], atol=1e-4)
+
+    def test_two_species_vs_scipy(self):
+        """Compare collocation to scipy for coupled linear ODE system."""
+        import discopt.modeling as dm
+        from discopt.dae import ContinuousSet, DAEBuilder
+        from scipy.integrate import solve_ivp
+
+        k1, k2 = 0.5, 0.3
+
+        m = dm.Model("two_species_scipy")
+        cs = ContinuousSet("t", bounds=(0, 2), nfe=10, ncp=3)
+        dae = DAEBuilder(m, cs)
+        dae.add_state("A", initial=1.0, bounds=(-5, 5))
+        dae.add_state("B", initial=0.0, bounds=(-5, 5))
+        dae.set_ode(
+            lambda t, s, alg, ctrl: {
+                "A": -k1 * s["A"],
+                "B": k1 * s["A"] - k2 * s["B"],
+            }
+        )
+        dae.discretize()
+        A_var = dae.get_state("A")
+        m.minimize(0 * A_var[0, 0])
+        result = m.solve()
+        assert result.status == "optimal"
+
+        t_coll, A_coll = dae.extract_solution(result, "A")
+        _, B_coll = dae.extract_solution(result, "B")
+
+        def rhs(t, y):
+            return [-k1 * y[0], k1 * y[0] - k2 * y[1]]
+
+        sol = solve_ivp(rhs, (0, 2), [1.0, 0.0], t_eval=t_coll, rtol=1e-10)
+        np.testing.assert_allclose(A_coll, sol.y[0], atol=1e-4)
+        np.testing.assert_allclose(B_coll, sol.y[1], atol=1e-4)
+
+    def test_stiff_system_vs_scipy(self):
+        """Compare Radau collocation to scipy Radau for a stiff system."""
+        import discopt.modeling as dm
+        from discopt.dae import ContinuousSet, DAEBuilder
+        from scipy.integrate import solve_ivp
+
+        # Mildly stiff: dx/dt = -50*(x - cos(t))
+        m = dm.Model("stiff")
+        cs = ContinuousSet("t", bounds=(0, 1), nfe=10, ncp=3)
+        dae = DAEBuilder(m, cs)
+        dae.add_state("x", initial=1.0, bounds=(-5, 5))
+        dae.set_ode(lambda t, s, a, c: {"x": -50 * (s["x"] - dm.cos(t))})
+        dae.discretize()
+        x_var = dae.get_state("x")
+        m.minimize(0 * x_var[0, 0])
+        result = m.solve()
+        assert result.status == "optimal"
+
+        t_coll, x_coll = dae.extract_solution(result, "x")
+
+        sol = solve_ivp(
+            lambda t, y: [-50 * (y[0] - np.cos(t))],
+            (0, 1),
+            [1.0],
+            method="Radau",
+            t_eval=t_coll,
+            rtol=1e-10,
+        )
+        np.testing.assert_allclose(x_coll, sol.y[0], atol=1e-2)

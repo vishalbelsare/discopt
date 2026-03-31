@@ -25,6 +25,7 @@ from discopt.dae.collocation import (
     ControlVar,
     DAEBuilder,
     StateVar,
+    align_time_grid,
 )
 from discopt.dae.finite_difference import FDBuilder
 from discopt.dae.polynomials import (
@@ -40,6 +41,7 @@ __all__ = [
     "DAEBuilder",
     "FDBuilder",
     "StateVar",
+    "align_time_grid",
     "collocation_matrix",
     "legendre_roots",
     "radau_roots",

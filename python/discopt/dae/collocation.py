@@ -37,6 +37,10 @@ class ContinuousSet:
         Number of collocation points per element (1-5).
     scheme : str
         ``"radau"`` or ``"legendre"``.
+    element_boundaries : np.ndarray, optional
+        Explicit element boundary points. When provided, ``nfe`` is inferred
+        as ``len(element_boundaries) - 1`` and ``bounds`` is inferred from
+        the first and last values. Must be sorted and strictly increasing.
     """
 
     name: str
@@ -44,6 +48,18 @@ class ContinuousSet:
     nfe: int
     ncp: int = 3
     scheme: str = "radau"
+    element_boundaries: np.ndarray | None = None
+
+    def __post_init__(self):
+        if self.element_boundaries is not None:
+            eb = np.asarray(self.element_boundaries, dtype=np.float64)
+            if eb.ndim != 1 or len(eb) < 2:
+                raise ValueError("element_boundaries must be a 1-D array with at least 2 entries")
+            if not np.all(np.diff(eb) > 0):
+                raise ValueError("element_boundaries must be sorted and strictly increasing")
+            self.element_boundaries = eb
+            self.nfe = len(eb) - 1
+            self.bounds = (float(eb[0]), float(eb[-1]))
 
 
 @dataclass
@@ -110,7 +126,11 @@ class DAEBuilder:
         # Precompute collocation data
         cs = self._cs
         self._A, self._w = collocation_matrix(cs.ncp, cs.scheme)
-        self._h = (cs.bounds[1] - cs.bounds[0]) / cs.nfe
+        if cs.element_boundaries is not None:
+            self._h_vec = np.diff(cs.element_boundaries)
+        else:
+            h_uniform = (cs.bounds[1] - cs.bounds[0]) / cs.nfe
+            self._h_vec = np.full(cs.nfe, h_uniform)
 
     def add_state(
         self,
@@ -401,7 +421,6 @@ class DAEBuilder:
         m = self._model
         cs = self._cs
         A = self._A
-        h = self._h
         rhs_fn = self._ode_rhs
 
         if rhs_fn is None and not self._second_order_info:
@@ -424,18 +443,19 @@ class DAEBuilder:
 
                 derivs = rhs_fn(t_val, states_ij, alg_ij, ctrl_ij)
 
-                # Collocation: sum_k A[j,k] * x[i,k] == h * f(t_ij, x_ij)
+                # Collocation: sum_k A[j,k] * x[i,k] == h_i * f(t_ij, x_ij)
+                h_i = float(self._h_vec[i])
                 for sv in self._states:
                     if sv.name not in derivs:
                         continue
                     var = self._vars[sv.name]
                     if sv.n_components == 1:
                         lhs = sum(float(A[j, k]) * var[i, k] for k in range(cs.ncp + 1))
-                        constraints.append(lhs == h * derivs[sv.name])
+                        constraints.append(lhs == h_i * derivs[sv.name])
                     else:
                         for c in range(sv.n_components):
                             lhs = sum(float(A[j, k]) * var[i, k, c] for k in range(cs.ncp + 1))
-                            constraints.append(lhs == h * derivs[sv.name][c])
+                            constraints.append(lhs == h_i * derivs[sv.name][c])
 
         if constraints:
             m.subject_to(constraints, name=f"{cs.name}_collocation")
@@ -554,7 +574,6 @@ class DAEBuilder:
             A single expression suitable for use in ``m.minimize()``.
         """
         cs = self._cs
-        h = self._h
         tp = self._element_points()
 
         # Quadrature weights from the collocation scheme
@@ -562,13 +581,14 @@ class DAEBuilder:
 
         terms = []
         for i in range(cs.nfe):
+            h_i = float(self._h_vec[i])
             for j in range(cs.ncp):
                 t_val = tp[i, j + 1]
                 states_ij = self._state_dict_at(i, j + 1)
                 alg_ij = self._algebraic_dict_at(i, j)
                 ctrl_ij = self._control_dict_at(i)
                 f_val = integrand(t_val, states_ij, alg_ij, ctrl_ij)
-                terms.append(h * float(qw[j]) * f_val)
+                terms.append(h_i * float(qw[j]) * f_val)
 
         result = terms[0]
         for t in terms[1:]:
@@ -611,6 +631,64 @@ class DAEBuilder:
 
         return np.array(t_list), np.array(x_list)
 
+    def least_squares(
+        self,
+        state_name: str,
+        t_data: np.ndarray,
+        y_data: np.ndarray,
+        component: int | None = None,
+    ) -> object:
+        """Build a sum-of-squared-residuals expression for parameter estimation.
+
+        Maps each measurement time to the nearest collocation node and returns
+        ``sum((x[nearest] - y_data[i])^2)`` as a discopt expression suitable
+        for ``m.minimize()``.
+
+        Must be called after :meth:`discretize`.
+
+        Parameters
+        ----------
+        state_name : str
+            Name of the state variable to fit.
+        t_data : np.ndarray
+            Measurement times, shape ``(n_obs,)``.
+        y_data : np.ndarray
+            Observed values, shape ``(n_obs,)``.
+        component : int, optional
+            For vector-valued states, which component to fit.
+
+        Returns
+        -------
+        Expression
+        """
+        if not self._discretized:
+            raise RuntimeError("Call discretize() before least_squares()")
+        if state_name not in self._vars:
+            raise KeyError(f"Unknown state {state_name!r}")
+
+        t_data = np.asarray(t_data, dtype=np.float64)
+        y_data = np.asarray(y_data, dtype=np.float64)
+
+        var = self._vars[state_name]
+        tp = self._element_points()  # (nfe, ncp+1)
+        tp_flat = tp.ravel()
+
+        terms = []
+        for i in range(len(t_data)):
+            idx = int(np.argmin(np.abs(tp_flat - t_data[i])))
+            elem = idx // (self._cs.ncp + 1)
+            node = idx % (self._cs.ncp + 1)
+            if component is not None:
+                x_expr = var[elem, node, component]
+            else:
+                x_expr = var[elem, node]
+            terms.append((x_expr - float(y_data[i])) ** 2)
+
+        result = terms[0]
+        for t in terms[1:]:
+            result = result + t
+        return result
+
     # ── Internal helpers ──
 
     def _element_points(self) -> np.ndarray:
@@ -625,13 +703,17 @@ class DAEBuilder:
 
             cp = legendre_roots(cs.ncp)
 
-        t0, tf = cs.bounds
-        h = (tf - t0) / cs.nfe
+        if cs.element_boundaries is not None:
+            eb = cs.element_boundaries
+        else:
+            eb = np.linspace(cs.bounds[0], cs.bounds[1], cs.nfe + 1)
+
         tp = np.zeros((cs.nfe, cs.ncp + 1))
         for i in range(cs.nfe):
-            t_start = t0 + i * h
+            t_start = eb[i]
+            h_i = self._h_vec[i]
             tp[i, 0] = t_start
-            tp[i, 1:] = t_start + h * cp
+            tp[i, 1:] = t_start + h_i * cp
         return tp
 
     def _state_dict_at(self, i: int, k: int) -> dict:
@@ -697,3 +779,54 @@ class DAEBuilder:
         else:
             _, w_gl = np.polynomial.legendre.leggauss(cs.ncp)
             return w_gl / 2.0  # transform from [-1,1] to [0,1]
+
+
+def align_time_grid(
+    t_span: tuple[float, float],
+    nfe: int,
+    measurement_times: np.ndarray,
+) -> np.ndarray:
+    """Adjust element boundaries so measurement times coincide with boundaries.
+
+    Starts with a uniform grid of ``nfe + 1`` boundary points, then snaps
+    each boundary to the nearest measurement time (if it is closer than half
+    the original element width). This ensures that measurement times fall
+    exactly on element boundaries where collocation nodes exist.
+
+    Parameters
+    ----------
+    t_span : tuple of float
+        ``(t0, tf)`` domain boundaries.
+    nfe : int
+        Number of finite elements for the initial uniform grid.
+    measurement_times : np.ndarray
+        Times at which measurements are available.
+
+    Returns
+    -------
+    np.ndarray
+        Adjusted element boundaries, sorted and strictly increasing.
+        The first and last entries are always ``t_span[0]`` and ``t_span[1]``.
+    """
+    t0, tf = t_span
+    boundaries = np.linspace(t0, tf, nfe + 1)
+    meas = np.sort(np.asarray(measurement_times, dtype=np.float64))
+    h = (tf - t0) / nfe
+
+    # Snap interior boundaries to nearby measurement times
+    for m_t in meas:
+        if m_t <= t0 or m_t >= tf:
+            continue
+        # Find the nearest interior boundary
+        dists = np.abs(boundaries[1:-1] - m_t)
+        idx = int(np.argmin(dists))
+        if dists[idx] < 0.5 * h:
+            boundaries[idx + 1] = m_t
+
+    # Ensure sorted, unique, and strictly increasing
+    boundaries = np.unique(boundaries)
+
+    # Re-fix endpoints in case of floating-point drift
+    boundaries[0] = t0
+    boundaries[-1] = tf
+    return boundaries
