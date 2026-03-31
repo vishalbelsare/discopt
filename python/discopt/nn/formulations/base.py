@@ -1,4 +1,4 @@
-"""NNFormulation: embed a trained neural network into a discopt Model."""
+"""Formulation wrappers for embedding trained ML models into discopt."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from discopt.nn.formulations.reduced_space import ReducedSpaceFormulation
 from discopt.nn.formulations.relu_bigm import ReluBigMFormulation
 from discopt.nn.network import NetworkDefinition
 from discopt.nn.scaling import OffsetScaling
+from discopt.nn.tree import TreeEnsembleDefinition
 
 if TYPE_CHECKING:
     from discopt.modeling.core import Model, Variable
@@ -100,5 +101,73 @@ class NNFormulation:
             raise RuntimeError("formulate() has already been called")
 
         strategy = self._strategy_cls(self._model, self._network, self._prefix, self._scaling)
+        self._inputs, self._outputs = strategy.build()
+        self._formulated = True
+
+
+class TreeFormulation:
+    """Embed a trained tree ensemble into a discopt optimization model.
+
+    Parameters
+    ----------
+    model : discopt.Model
+        The optimization model to embed the tree ensemble into.
+    ensemble : TreeEnsembleDefinition
+        The trained tree ensemble.
+    prefix : str
+        Name prefix for created variables and constraints.
+    scaling : OffsetScaling or None
+        Optional input/output scaling.
+    split_eps : float
+        Epsilon for encoding strict inequality splits.
+
+    Example
+    -------
+    >>> tf = TreeFormulation(model, ensemble)
+    >>> tf.formulate()
+    >>> model.minimize(tf.outputs[0])
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        ensemble: TreeEnsembleDefinition,
+        prefix: str = "tree",
+        scaling: OffsetScaling | None = None,
+        split_eps: float = 1e-6,
+    ) -> None:
+        self._model = model
+        self._ensemble = ensemble
+        self._prefix = prefix
+        self._scaling = scaling
+        self._split_eps = split_eps
+        self._inputs: Variable | None = None
+        self._outputs: Variable | None = None
+        self._formulated = False
+
+    @property
+    def inputs(self) -> Variable:
+        """Input variables."""
+        if self._inputs is None:
+            raise RuntimeError("Call formulate() before accessing inputs")
+        return self._inputs
+
+    @property
+    def outputs(self) -> Variable:
+        """Output variables."""
+        if self._outputs is None:
+            raise RuntimeError("Call formulate() before accessing outputs")
+        return self._outputs
+
+    def formulate(self) -> None:
+        """Add all variables and constraints to the model."""
+        if self._formulated:
+            raise RuntimeError("formulate() has already been called")
+
+        from discopt.nn.formulations.tree_ensemble import TreeEnsembleFormulation
+
+        strategy = TreeEnsembleFormulation(
+            self._model, self._ensemble, self._prefix, self._scaling, self._split_eps
+        )
         self._inputs, self._outputs = strategy.build()
         self._formulated = True

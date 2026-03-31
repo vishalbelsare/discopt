@@ -22,24 +22,65 @@ Example
 """
 
 from discopt.nn.bounds import LayerBounds, propagate_bounds
-from discopt.nn.formulations.base import NNFormulation
+from discopt.nn.formulations.base import NNFormulation, TreeFormulation
 from discopt.nn.network import Activation, DenseLayer, NetworkDefinition
 from discopt.nn.scaling import OffsetScaling
+from discopt.nn.tree import DecisionTree, TreeEnsembleDefinition
 
 __all__ = [
     "Activation",
+    "DecisionTree",
     "DenseLayer",
     "LayerBounds",
     "NNFormulation",
     "NetworkDefinition",
     "OffsetScaling",
+    "TreeEnsembleDefinition",
+    "TreeFormulation",
     "propagate_bounds",
 ]
 
 
-# Lazy import for optional ONNX dependency
+# Lazy imports for optional dependencies
+
+
 def load_onnx(*args, **kwargs):  # type: ignore[no-untyped-def]
-    """Load an ONNX model into a NetworkDefinition. Requires ``pip install discopt[nn]``."""
+    """Load an ONNX model. Requires ``pip install discopt[nn]``."""
     from discopt.nn.readers.onnx_reader import load_onnx as _load_onnx
 
     return _load_onnx(*args, **kwargs)
+
+
+def load_sklearn_mlp(*args, **kwargs):  # type: ignore[no-untyped-def]
+    """Load sklearn MLPRegressor/Classifier. Requires scikit-learn."""
+    from discopt.nn.readers.sklearn_reader import load_sklearn_mlp as _f
+
+    return _f(*args, **kwargs)
+
+
+def load_sklearn_tree(*args, **kwargs):  # type: ignore[no-untyped-def]
+    """Load sklearn DecisionTree. Requires scikit-learn."""
+    from discopt.nn.readers.sklearn_reader import load_sklearn_tree as _f
+
+    return _f(*args, **kwargs)
+
+
+def load_sklearn_ensemble(*args, **kwargs):  # type: ignore[no-untyped-def]
+    """Load sklearn ensemble (GBR, RF). Requires scikit-learn."""
+    from discopt.nn.readers.sklearn_reader import load_sklearn_ensemble as _f
+
+    return _f(*args, **kwargs)
+
+
+def load_torch_sequential(*args, **kwargs):  # type: ignore[no-untyped-def]
+    """Load torch.nn.Sequential. Requires PyTorch."""
+    from discopt.nn.readers.torch_reader import load_torch_sequential as _f
+
+    return _f(*args, **kwargs)
+
+
+def add_predictor(*args, **kwargs):  # type: ignore[no-untyped-def]
+    """Embed a trained ML model as constraints. See :func:`discopt.nn.predictor.add_predictor`."""
+    from discopt.nn.predictor import add_predictor as _f
+
+    return _f(*args, **kwargs)
