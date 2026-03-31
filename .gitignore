@@ -9,7 +9,6 @@ build/
 
 # Rust
 /target/
-/spike/target/
 
 # Caches
 .mypy_cache/
@@ -23,12 +22,26 @@ build/
 # OS
 .DS_Store
 
+# Archive
+/archive/
+
 # Environments
 .env
 .venv/
 
-# Benchmark results (timestamped output from make benchmarks)
+# Coverage artifacts
+coverage.xml
+coverage.svg
+
+# Benchmark results and reports
 /results/
+/reports/
+
+# Build output
+_build/
+
+# Task files
+tasks.org
 
 # LaTeX build artifacts
 manuscript/_minted/
@@ -44,6 +57,9 @@ manuscript/*.out
 manuscript/*.run.xml
 manuscript/*.synctex.gz
 manuscript/*.toc
+
+# Claude Code
+.claude/
 
 # Jupyter Book
 docs/_build/

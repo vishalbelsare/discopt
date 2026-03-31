@@ -71,36 +71,36 @@ Add the date range context to each query (e.g., append the current year). Run 4 
 
 ### Step 4 — Fetch structured results from arXiv and OpenAlex APIs
 
-Use the CLI scripts in `scripts/` to query APIs. Run all 8 commands via the Bash tool. Run them in parallel (all 8 at once).
+Use the `discopt` CLI to query APIs. Run all 8 commands via the Bash tool. Run them in parallel (all 8 at once).
 
-**arXiv (4 queries)** — use `python scripts/search_arxiv.py`:
-
-```bash
-python scripts/search_arxiv.py 'all:"spatial branch and bound" OR all:"McCormick relaxation" OR all:"alphaBB"' --max-results 20 --start-date START_DATE
-```
-```bash
-python scripts/search_arxiv.py 'all:"interior point method" AND (all:JAX OR all:GPU OR all:"automatic differentiation")' --max-results 20 --start-date START_DATE
-```
-```bash
-python scripts/search_arxiv.py 'all:"graph neural network" AND (all:"branch and bound" OR all:"branching")' --max-results 20 --start-date START_DATE
-```
-```bash
-python scripts/search_arxiv.py 'all:MINLP AND (all:"cutting plane" OR all:"convex relaxation" OR all:"bound tightening")' --max-results 20 --start-date START_DATE
-```
-
-**OpenAlex (4 queries)** — use `python scripts/search_openalex.py`:
+**arXiv (4 queries)** — use `discopt search-arxiv`:
 
 ```bash
-python scripts/search_openalex.py "spatial branch bound MINLP" --from-date START_DATE --to-date END_DATE
+discopt search-arxiv 'all:"spatial branch and bound" OR all:"McCormick relaxation" OR all:"alphaBB"' --max-results 20 --start-date START_DATE
 ```
 ```bash
-python scripts/search_openalex.py "McCormick relaxation convex underestimator" --from-date START_DATE --to-date END_DATE
+discopt search-arxiv 'all:"interior point method" AND (all:JAX OR all:GPU OR all:"automatic differentiation")' --max-results 20 --start-date START_DATE
 ```
 ```bash
-python scripts/search_openalex.py "graph neural network branching optimization" --from-date START_DATE --to-date END_DATE
+discopt search-arxiv 'all:"graph neural network" AND (all:"branch and bound" OR all:"branching")' --max-results 20 --start-date START_DATE
 ```
 ```bash
-python scripts/search_openalex.py "interior point method GPU automatic differentiation" --from-date START_DATE --to-date END_DATE
+discopt search-arxiv 'all:MINLP AND (all:"cutting plane" OR all:"convex relaxation" OR all:"bound tightening")' --max-results 20 --start-date START_DATE
+```
+
+**OpenAlex (4 queries)** — use `discopt search-openalex`:
+
+```bash
+discopt search-openalex "spatial branch bound MINLP" --from-date START_DATE --to-date END_DATE
+```
+```bash
+discopt search-openalex "McCormick relaxation convex underestimator" --from-date START_DATE --to-date END_DATE
+```
+```bash
+discopt search-openalex "graph neural network branching optimization" --from-date START_DATE --to-date END_DATE
+```
+```bash
+discopt search-openalex "interior point method GPU automatic differentiation" --from-date START_DATE --to-date END_DATE
 ```
 
 Each script outputs JSON with `{"query": ..., "count": N, "results": [...]}`. Parse the JSON output to extract paper metadata.
@@ -143,10 +143,10 @@ Assign each paper a relevance tier:
 
 ### Step 7 — Write the report (MANDATORY — do NOT ask for confirmation)
 
-You MUST always create the report file without asking the user. Do NOT use the Write tool (it requires interactive permission). Instead, use the Bash tool to pipe the report content through the helper script:
+You MUST always create the report file without asking the user. Do NOT use the Write tool (it requires interactive permission). Instead, use the Bash tool to pipe the report content through the CLI:
 
 ```bash
-cat <<'REPORT_EOF' | python scripts/write_report.py reports/discoptbot/YYYY-MM-DD.md
+cat <<'REPORT_EOF' | discopt write-report reports/discoptbot/YYYY-MM-DD.md
 ... report content here ...
 REPORT_EOF
 ```
