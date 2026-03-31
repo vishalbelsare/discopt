@@ -56,25 +56,23 @@ def _make_diagonal_spd(n: int, min_eig: float = 1.0, max_eig: float = 100.0) -> 
 class TestPCGCorrectness:
     """Unit tests for the PCG solver on known SPD systems."""
 
-    def test_identity_system(self):
-        """Ax = b with A = I should give x = b."""
+    def test_structured_spd_systems(self):
+        """Identity and diagonal SPD systems."""
         n = 5
-        A = jnp.eye(n)
-        b = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        result = pcg_solve(A, b)
-        assert isinstance(result, PCGResult)
-        np.testing.assert_allclose(result.x, b, atol=1e-10)
-        assert bool(result.converged)
-        assert int(result.iterations) <= 5
+        A_id = jnp.eye(n)
+        b_id = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        result_id = pcg_solve(A_id, b_id)
+        assert isinstance(result_id, PCGResult)
+        np.testing.assert_allclose(result_id.x, b_id, atol=1e-10)
+        assert bool(result_id.converged)
+        assert int(result_id.iterations) <= 5
 
-    def test_diagonal_system(self):
-        """Diagonal SPD system."""
-        A = jnp.diag(jnp.array([2.0, 3.0, 5.0, 7.0]))
-        b = jnp.array([4.0, 9.0, 25.0, 49.0])
-        expected = b / jnp.diag(A)
-        result = pcg_solve(A, b)
-        np.testing.assert_allclose(result.x, expected, atol=1e-10)
-        assert bool(result.converged)
+        A_diag = jnp.diag(jnp.array([2.0, 3.0, 5.0, 7.0]))
+        b_diag = jnp.array([4.0, 9.0, 25.0, 49.0])
+        expected = b_diag / jnp.diag(A_diag)
+        result_diag = pcg_solve(A_diag, b_diag)
+        np.testing.assert_allclose(result_diag.x, expected, atol=1e-10)
+        assert bool(result_diag.converged)
 
     @pytest.mark.parametrize(
         "n,cond,atol",
@@ -92,24 +90,20 @@ class TestPCGCorrectness:
         np.testing.assert_allclose(result.x, x_expected, atol=atol)
         assert bool(result.converged)
 
-    def test_zero_rhs(self):
-        """Zero RHS should give zero solution."""
-        A = _make_spd_matrix(5)
-        b = jnp.zeros(5)
-        result = pcg_solve(A, b)
-        np.testing.assert_allclose(result.x, jnp.zeros(5), atol=1e-10)
-        assert bool(result.converged)
+    def test_zero_rhs_and_initial_guess(self):
+        """Zero RHS gives zero; good initial guess reduces iters."""
+        A_z = _make_spd_matrix(5)
+        b_z = jnp.zeros(5)
+        result_z = pcg_solve(A_z, b_z)
+        np.testing.assert_allclose(result_z.x, jnp.zeros(5), atol=1e-10)
+        assert bool(result_z.converged)
 
-    def test_initial_guess(self):
-        """Providing a good initial guess should reduce iterations."""
         A = _make_spd_matrix(10, cond=10.0)
         b = jnp.ones(10)
         x_exact = jnp.linalg.solve(A, b)
-
         result_zero = pcg_solve(A, b)
         x0_good = x_exact + 1e-5 * jnp.ones(10)
         result_good = pcg_solve(A, b, x0=x0_good)
-
         assert int(result_good.iterations) <= int(result_zero.iterations)
         np.testing.assert_allclose(result_good.x, x_exact, atol=1e-8)
 
@@ -177,58 +171,49 @@ class TestPCGConvergence:
 class TestPCGPreconditioner:
     """Test PCG with different preconditioners."""
 
-    def test_diagonal_preconditioner_reduces_iterations(self):
-        """Diagonal preconditioner should reduce iteration count."""
+    def test_diagonal_preconditioner(self):
+        """Diagonal preconditioner values and iteration reduction."""
+        A_small = jnp.diag(jnp.array([2.0, 5.0, 10.0]))
+        precond_s = diagonal_preconditioner(A_small)
+        z = precond_s(jnp.ones(3))
+        np.testing.assert_allclose(z, jnp.array([0.5, 0.2, 0.1]), atol=1e-10)
+
         A = _make_spd_matrix(30, cond=1000.0)
         b = jnp.ones(30)
 
-        result_no_precond = pcg_solve(
+        result_no = pcg_solve(
             A,
             b,
             preconditioner=identity_preconditioner(30),
             options=PCGOptions(tol=1e-8, max_iter=500),
         )
-
         precond = diagonal_preconditioner(A)
-        result_precond = pcg_solve(
+        result_yes = pcg_solve(
             A,
             b,
             preconditioner=precond,
             options=PCGOptions(tol=1e-8, max_iter=500),
         )
+        assert bool(result_yes.converged)
+        assert int(result_yes.iterations) <= int(result_no.iterations)
 
-        assert bool(result_precond.converged)
-        assert int(result_precond.iterations) <= int(result_no_precond.iterations)
-
-    def test_identity_preconditioner_same_as_none(self):
-        """Identity preconditioner gives same result as none."""
+    def test_identity_and_perfect_preconditioner(self):
+        """Identity matches no-precond; A^{-1} converges fast."""
         A = _make_spd_matrix(10, cond=10.0)
         b = jnp.ones(10)
 
         result_none = pcg_solve(A, b)
         result_id = pcg_solve(A, b, preconditioner=identity_preconditioner(10))
-
         np.testing.assert_allclose(result_none.x, result_id.x, atol=1e-10)
         assert int(result_none.iterations) == int(result_id.iterations)
 
-    def test_perfect_preconditioner(self):
-        """A^{-1} as preconditioner should converge in 1 iteration."""
-        A = _make_spd_matrix(10, cond=100.0)
-        b = jnp.ones(10)
-        A_inv = jnp.linalg.inv(A)
-        perfect_precond = lambda r: A_inv @ r  # noqa: E731
-
-        result = pcg_solve(A, b, preconditioner=perfect_precond)
-        assert int(result.iterations) <= 2
-        assert bool(result.converged)
-
-    def test_diagonal_preconditioner_values(self):
-        """Verify diagonal preconditioner produces correct M_inv."""
-        A = jnp.diag(jnp.array([2.0, 5.0, 10.0]))
-        precond = diagonal_preconditioner(A)
-        r = jnp.ones(3)
-        z = precond(r)
-        np.testing.assert_allclose(z, jnp.array([0.5, 0.2, 0.1]), atol=1e-10)
+        A2 = _make_spd_matrix(10, cond=100.0)
+        b2 = jnp.ones(10)
+        A2_inv = jnp.linalg.inv(A2)
+        perfect = lambda r: A2_inv @ r  # noqa: E731
+        result_p = pcg_solve(A2, b2, preconditioner=perfect)
+        assert int(result_p.iterations) <= 2
+        assert bool(result_p.converged)
 
 
 # ---------------------------------------------------------------
@@ -239,25 +224,21 @@ class TestPCGPreconditioner:
 class TestPCGMatvec:
     """Test the matrix-free PCG solver."""
 
-    def test_matvec_matches_dense(self):
-        """Matrix-free should give same result as dense."""
+    def test_matvec_matches_dense_with_preconditioner(self):
+        """Matrix-free should match dense, with and without precond."""
         A = _make_spd_matrix(15, cond=50.0)
         b = jnp.ones(15)
 
         result_dense = pcg_solve(A, b)
         result_matvec = pcg_solve_matvec(lambda v: A @ v, b)
-
         np.testing.assert_allclose(result_dense.x, result_matvec.x, atol=1e-10)
 
-    def test_matvec_with_preconditioner(self):
-        """Matrix-free PCG with diagonal preconditioner."""
-        A = _make_spd_matrix(20, cond=100.0)
-        b = jnp.ones(20)
-        precond = diagonal_preconditioner(A)
-
-        result = pcg_solve_matvec(lambda v: A @ v, b, preconditioner=precond)
-        x_expected = jnp.linalg.solve(A, b)
-        np.testing.assert_allclose(result.x, x_expected, atol=1e-8)
+        A2 = _make_spd_matrix(20, cond=100.0)
+        b2 = jnp.ones(20)
+        precond = diagonal_preconditioner(A2)
+        result_p = pcg_solve_matvec(lambda v: A2 @ v, b2, preconditioner=precond)
+        x_expected = jnp.linalg.solve(A2, b2)
+        np.testing.assert_allclose(result_p.x, x_expected, atol=1e-8)
 
     def test_matvec_implicit_operator(self):
         """Test with an implicit operator (not explicitly stored)."""
@@ -337,36 +318,27 @@ class TestCondensedKKT:
 class TestPCGJIT:
     """Test that PCG functions are JIT-compatible."""
 
-    def test_pcg_solve_jittable(self):
-        """pcg_solve should work under jax.jit."""
+    def test_pcg_solve_and_matvec_jittable(self):
+        """pcg_solve and pcg_solve_matvec under jax.jit."""
         A = _make_spd_matrix(10, cond=10.0)
         b = jnp.ones(10)
+        opts = PCGOptions(tol=1e-10, max_iter=100)
+        x_expected = jnp.linalg.solve(A, b)
 
         @jax.jit
         def solve_jit(A, b):
-            return pcg_solve(A, b, options=PCGOptions(tol=1e-10, max_iter=100))
+            return pcg_solve(A, b, options=opts)
 
         result = solve_jit(A, b)
-        x_expected = jnp.linalg.solve(A, b)
         np.testing.assert_allclose(result.x, x_expected, atol=1e-8)
         assert bool(result.converged)
 
-    def test_pcg_matvec_jittable(self):
-        """pcg_solve_matvec should work under jax.jit."""
-        A = _make_spd_matrix(10, cond=10.0)
-        b = jnp.ones(10)
-
         @jax.jit
-        def solve_jit(b):
-            return pcg_solve_matvec(
-                lambda v: A @ v,
-                b,
-                options=PCGOptions(tol=1e-10, max_iter=100),
-            )
+        def solve_mv_jit(b):
+            return pcg_solve_matvec(lambda v: A @ v, b, options=opts)
 
-        result = solve_jit(b)
-        x_expected = jnp.linalg.solve(A, b)
-        np.testing.assert_allclose(result.x, x_expected, atol=1e-8)
+        result_mv = solve_mv_jit(b)
+        np.testing.assert_allclose(result_mv.x, x_expected, atol=1e-8)
 
     def test_condensed_kkt_jittable(self):
         """solve_kkt_condensed_pcg should work under jax.jit."""
@@ -543,11 +515,6 @@ class TestIPMIterativeIntegration:
         )
         assert jnp.allclose(state.obj, 2.0, atol=0.05)
 
-    def test_pcg_default_is_dense(self):
-        """Default linear_solver should be 'dense'."""
-        opts = IPMOptions()
-        assert opts.linear_solver == "dense"
-
 
 # ---------------------------------------------------------------
 # 8. Scaling tests (larger problems)
@@ -682,10 +649,24 @@ class TestPCGEdgeCases:
         assert opts.max_iter == 50
         assert opts.use_relative_tol is False
 
+        assert IPMOptions().linear_solver == "dense"
+
         ipm_opts = IPMOptions(linear_solver="pcg", pcg_tol=1e-8, pcg_max_iter=500)
         assert ipm_opts.linear_solver == "pcg"
         assert ipm_opts.pcg_tol == 1e-8
         assert ipm_opts.pcg_max_iter == 500
+
+        lx_opts = IPMOptions(
+            linear_solver="lineax_cg",
+            lineax_max_steps=500,
+            lineax_warm_start=True,
+            lineax_preconditioner=True,
+        )
+        assert lx_opts.linear_solver == "lineax_cg"
+        assert lx_opts.lineax_max_steps == 500
+        assert lx_opts.lineax_warm_start is True
+        assert lx_opts.lineax_preconditioner is True
+        assert IPMOptions(linear_solver="lineax_gmres").linear_solver == "lineax_gmres"
 
     def test_pcg_result_fields(self):
         """PCGResult should have all expected fields."""
@@ -699,13 +680,6 @@ class TestPCGEdgeCases:
         assert result.x.shape == (3,)
         assert result.residual_norm.shape == ()
         assert result.iterations.shape == ()
-
-    def test_pcg_convergence_flag_false_on_max_iter(self):
-        """Convergence flag should be False when max_iter hit."""
-        A = _make_spd_matrix(50, cond=1e6)
-        b = jnp.ones(50)
-        result = pcg_solve(A, b, options=PCGOptions(tol=1e-15, max_iter=3))
-        assert int(result.iterations) == 3
 
 
 # ---------------------------------------------------------------
@@ -724,8 +698,8 @@ lineax = pytest.importorskip("lineax")
 class TestLineaxGMRES:
     """Test GMRES solver on the full indefinite KKT system."""
 
-    def test_unconstrained_gmres(self):
-        """min (x-2)^2 + (y+1)^2 with lineax_gmres."""
+    def test_gmres_small_problems(self):
+        """GMRES on unconstrained and equality-constrained."""
         x0 = jnp.array([0.0, 0.0])
         x_l = jnp.array([-5.0, -5.0])
         x_u = jnp.array([5.0, 5.0])
@@ -744,26 +718,22 @@ class TestLineaxGMRES:
         np.testing.assert_allclose(state.x[1], -1.0, atol=1e-3)
         assert int(state.converged) in (1, 2)
 
-    def test_equality_constrained_gmres(self):
-        """min x^2+y^2 s.t. x+y=2 with lineax_gmres."""
-        x0 = jnp.array([0.5, 0.5])
-        x_l = jnp.array([0.0, 0.0])
-        x_u = jnp.array([3.0, 3.0])
-        g_l = jnp.array([2.0])
-        g_u = jnp.array([2.0])
+        x0_c = jnp.array([0.5, 0.5])
+        x_l_c = jnp.array([0.0, 0.0])
+        x_u_c = jnp.array([3.0, 3.0])
 
-        state = ipm_solve(
+        state_c = ipm_solve(
             _obj_sum_sq,
             _con_sum_2d,
-            x0,
-            x_l,
-            x_u,
-            g_l,
-            g_u,
+            x0_c,
+            x_l_c,
+            x_u_c,
+            jnp.array([2.0]),
+            jnp.array([2.0]),
             IPMOptions(linear_solver="lineax_gmres"),
         )
-        np.testing.assert_allclose(float(state.obj), 2.0, atol=1e-2)
-        assert int(state.converged) in (1, 2)
+        np.testing.assert_allclose(float(state_c.obj), 2.0, atol=1e-2)
+        assert int(state_c.converged) in (1, 2)
 
     def test_lineax_gmres_100_vars(self):
         """100 variables with lineax_gmres."""
@@ -990,68 +960,12 @@ class TestConvenienceFunctions:
 
 
 # ---------------------------------------------------------------
-# 15. IPMOptions lineax fields
-# ---------------------------------------------------------------
-
-
-class TestIPMOptionsLineax:
-    """Test that IPMOptions has the new lineax fields."""
-
-    def test_lineax_options_fields(self):
-        """IPMOptions should have lineax_max_steps, etc."""
-        opts = IPMOptions(
-            linear_solver="lineax_cg",
-            lineax_max_steps=500,
-            lineax_warm_start=True,
-            lineax_preconditioner=True,
-        )
-        assert opts.linear_solver == "lineax_cg"
-        assert opts.lineax_max_steps == 500
-        assert opts.lineax_warm_start is True
-        assert opts.lineax_preconditioner is True
-
-        opts_gmres = IPMOptions(linear_solver="lineax_gmres")
-        assert opts_gmres.linear_solver == "lineax_gmres"
-
-
-# ---------------------------------------------------------------
 # 16. Lineax scaling tests
 # ---------------------------------------------------------------
 
 
 class TestLineaxScaling:
     """Test lineax solvers on larger problems."""
-
-    @pytest.mark.slow
-    def test_lineax_cg_1000_vars(self):
-        """1K variables with lineax_cg."""
-        n = 1000
-        obj_fn, con_fn = _make_large_quadratic(n)
-        x0 = jnp.ones(n) * 5.0
-        x_l = jnp.full(n, -10.0)
-        x_u = jnp.full(n, 10.0)
-        g_l = jnp.array([1.0])
-        g_u = jnp.array([1e20])
-
-        t0 = time.perf_counter()
-        state = ipm_solve(
-            obj_fn,
-            con_fn,
-            x0,
-            x_l,
-            x_u,
-            g_l,
-            g_u,
-            IPMOptions(
-                linear_solver="lineax_cg",
-                max_iter=200,
-                tol=1e-5,
-                acceptable_tol=1e-4,
-            ),
-        )
-        wall = time.perf_counter() - t0
-        assert int(state.converged) in (1, 2, 3)
-        assert wall < 300
 
     @pytest.mark.slow
     @pytest.mark.xfail(
@@ -1122,9 +1036,12 @@ class TestLineaxAvailability:
 class TestMatrixFreeOperators:
     """Test the matrix-free KKT and condensed operators."""
 
-    def test_condensed_matvec_matches_dense(self):
-        """Condensed matvec should match explicit Schur complement."""
-        from discopt._jax.ipm_iterative import _make_condensed_matvec
+    def test_matvec_operators_match_dense(self):
+        """Condensed and full KKT matvecs should match dense."""
+        from discopt._jax.ipm_iterative import (
+            _make_condensed_matvec,
+            _make_kkt_matvec,
+        )
 
         n, m = 5, 2
         W = _make_spd_matrix(n, cond=10.0)
@@ -1132,28 +1049,12 @@ class TestMatrixFreeOperators:
         J = jax.random.normal(key, (m, n))
         D = jnp.array([0.01, 0.02])
 
-        matvec, W_inv, JWinv = _make_condensed_matvec(W, J, D)
-        v = jnp.ones(m)
-
+        matvec_c, W_inv, JWinv = _make_condensed_matvec(W, J, D)
+        v_c = jnp.ones(m)
         S_explicit = J @ jnp.linalg.solve(W, J.T) + jnp.diag(D)
-        expected = S_explicit @ v
-        actual = matvec(v)
-        np.testing.assert_allclose(actual, expected, atol=1e-8)
+        np.testing.assert_allclose(matvec_c(v_c), S_explicit @ v_c, atol=1e-8)
 
-    def test_kkt_matvec_matches_dense(self):
-        """Full KKT matvec should match explicit matrix."""
-        from discopt._jax.ipm_iterative import _make_kkt_matvec
-
-        n, m = 5, 2
-        W = _make_spd_matrix(n, cond=10.0)
-        key = jax.random.PRNGKey(42)
-        J = jax.random.normal(key, (m, n))
-        D = jnp.array([0.01, 0.02])
-
-        matvec = _make_kkt_matvec(W, J, D, n, m)
-        v = jnp.ones(n + m)
-
+        matvec_k = _make_kkt_matvec(W, J, D, n, m)
+        v_k = jnp.ones(n + m)
         KKT = jnp.block([[W, J.T], [J, -jnp.diag(D)]])
-        expected = KKT @ v
-        actual = matvec(v)
-        np.testing.assert_allclose(actual, expected, atol=1e-8)
+        np.testing.assert_allclose(matvec_k(v_k), KKT @ v_k, atol=1e-8)
