@@ -30,8 +30,13 @@ parts:
       - file: notebooks/solver_internals
       - file: notebooks/sensitivity_analysis
       - file: notebooks/llm_integration
+      - file: notebooks/warm_start
+      - file: notebooks/convex_fast_path
+      - file: notebooks/export_formats
+      - file: notebooks/callbacks
   - caption: Solver Backends
     chapters:
+      - file: notebooks/qp_solver
       - file: notebooks/ipm_vs_ipopt
       - file: notebooks/batch_ipm_vs_ipopt
       - file: notebooks/benchmarks_by_class

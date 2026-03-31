@@ -27,6 +27,12 @@ solvers
 
 __version__ = "0.2.0"
 
+from discopt.callbacks import (
+    CallbackContext as CallbackContext,
+)
+from discopt.callbacks import (
+    CutResult as CutResult,
+)
 from discopt.modeling import (
     Constraint as Constraint,
 )

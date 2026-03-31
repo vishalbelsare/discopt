@@ -565,6 +565,106 @@ def _solve_node_multistart_ipm(
         )
 
 
+def _invoke_pre_import_callbacks(
+    *,
+    model,
+    tree,
+    t_start,
+    result_ids,
+    result_lbs,
+    result_sols,
+    result_feas,
+    n_batch,
+    int_offsets,
+    int_sizes,
+    n_vars,
+    lazy_constraints,
+    incumbent_callback,
+    _cut_pool,
+):
+    """Check lazy constraints and incumbent callbacks before importing results.
+
+    For each integer-feasible solution in the batch:
+    1. Call ``lazy_constraints`` callback. If it returns cuts, add them to the
+       cut pool and mark the node as infeasible (preventing it from becoming
+       an incumbent). The cuts will tighten subsequent relaxations.
+    2. Call ``incumbent_callback``. If it returns False, mark the node as
+       infeasible.
+    """
+    from discopt._jax.cutting_planes import LinearCut
+    from discopt.callbacks import CallbackContext, cut_result_to_dense
+
+    incumbent_info = tree.incumbent()
+    inc_obj = None
+    if incumbent_info is not None:
+        _, inc_obj = incumbent_info
+        if inc_obj >= _SENTINEL_THRESHOLD:
+            inc_obj = None
+
+    stats = tree.stats()
+    elapsed = time.perf_counter() - t_start
+
+    for i in range(n_batch):
+        if result_lbs[i] >= _SENTINEL_THRESHOLD:
+            continue  # skip infeasible nodes
+
+        # Check integrality
+        sol_is_int_feas = True
+        for off, sz in zip(int_offsets, int_sizes):
+            for j in range(off, off + sz):
+                if abs(result_sols[i, j] - round(result_sols[i, j])) > 1e-5:
+                    sol_is_int_feas = False
+                    break
+            if not sol_is_int_feas:
+                break
+
+        if not sol_is_int_feas:
+            continue
+
+        ctx = CallbackContext(
+            node_count=stats["total_nodes"],
+            incumbent_obj=inc_obj,
+            best_bound=stats.get("global_lower_bound", -np.inf),
+            gap=stats.get("gap"),
+            elapsed_time=elapsed,
+            x_relaxation=result_sols[i].copy(),
+            node_bound=float(result_lbs[i]),
+        )
+
+        # --- Lazy constraints ---
+        if lazy_constraints is not None:
+            try:
+                cuts = lazy_constraints(ctx, model)
+                if cuts:
+                    for cut in cuts:
+                        coeffs, rhs, sense = cut_result_to_dense(cut, model)
+                        _cut_pool.add(LinearCut(coeffs=coeffs, rhs=rhs, sense=sense))
+                    # Mark as infeasible so it does not become incumbent.
+                    result_lbs[i] = _INFEASIBILITY_SENTINEL
+                    logger.info(
+                        "Lazy constraint callback added %d cut(s) at node %d",
+                        len(cuts),
+                        int(result_ids[i]),
+                    )
+                    continue  # skip incumbent callback for cut-separated nodes
+            except Exception as e:
+                logger.warning("Lazy constraint callback raised an exception: %s", e)
+
+        # --- Incumbent callback ---
+        if incumbent_callback is not None:
+            try:
+                solution = _unpack_solution(model, result_sols[i])
+                accept = incumbent_callback(ctx, model, solution)
+                if accept is False:
+                    result_lbs[i] = _INFEASIBILITY_SENTINEL
+                    logger.info(
+                        "Incumbent callback rejected solution at node %d",
+                        int(result_ids[i]),
+                    )
+            except Exception as e:
+                logger.warning("Incumbent callback raised an exception: %s", e)
+
+
 def _unpack_solution(model: Model, x_flat: np.ndarray):
     """Convert flat solution vector to {var_name: array} dict."""
     result = {}
@@ -738,6 +838,11 @@ def solve_model(
     use_learned_relaxations: bool = False,
     mccormick_bounds: str = "auto",
     gdp_method: str = "big-m",
+    initial_point: Optional[np.ndarray] = None,
+    skip_convex_check: bool = False,
+    lazy_constraints=None,
+    incumbent_callback=None,
+    node_callback=None,
     **kwargs,
 ) -> SolveResult:
     """
@@ -934,6 +1039,10 @@ def solve_model(
                 t_start,
             )
         elif problem_class == ProblemClass.MIQP:
+            # Try HiGHS MIQP first, fall back to B&B with QP relaxations
+            highs_result = _solve_qp_highs(model, t_start, time_limit)
+            if highs_result is not None:
+                return highs_result
             return _solve_miqp_bb(
                 model,
                 time_limit,
@@ -944,9 +1053,39 @@ def solve_model(
                 t_start,
             )
 
+    # --- Convex NLP fast path: skip B&B for convex continuous problems ---
+    if _is_pure_continuous(model) and not skip_convex_check:
+        try:
+            from discopt._jax.convexity import classify_model as _classify_convexity
+
+            is_convex, _ = _classify_convexity(model)
+            if is_convex:
+                logger.info(
+                    "Convex NLP detected — solving with single NLP (global optimality guaranteed)"
+                )
+                result = _solve_continuous(
+                    model,
+                    time_limit,
+                    ipopt_options,
+                    t_start,
+                    nlp_solver,
+                    initial_point=initial_point,
+                )
+                result.convex_fast_path = True
+                return result
+        except Exception as exc:
+            logger.debug("Convex fast path detection failed: %s", exc)
+
     # --- Pure continuous: solve directly with NLP, no B&B needed ---
     if _is_pure_continuous(model):
-        return _solve_continuous(model, time_limit, ipopt_options, t_start, nlp_solver)
+        return _solve_continuous(
+            model,
+            time_limit,
+            ipopt_options,
+            t_start,
+            nlp_solver,
+            initial_point=initial_point,
+        )
 
     # --- Extract variable info ---
     n_vars, lb, ub, int_offsets, int_sizes = _extract_variable_info(model)
@@ -998,6 +1137,12 @@ def solve_model(
         _bilinear_terms = detect_bilinear_terms(model)
         _cut_pool = CutPool(max_cuts=500)
         _constraint_senses = [c.sense for c in model._constraints if isinstance(c, Constraint)]
+
+    # --- Lazy constraint callback requires a cut pool ---
+    if lazy_constraints is not None and _cut_pool is None:
+        from discopt._jax.cutting_planes import CutPool
+
+        _cut_pool = CutPool(max_cuts=500)
 
     # --- Convexity detection (Phase E) ---
     # Use the expression DAG convexity detector to:
@@ -1101,6 +1246,35 @@ def solve_model(
             logger.warning("McCormick relaxation setup failed: %s", e)
             _mc_obj_eval = None
             _mc_obj_relax_fn = None
+
+    # --- Warm-start: inject user-provided initial solution as incumbent ---
+    if initial_point is not None:
+        ws_obj = float(evaluator.evaluate_objective(initial_point))
+        # Check integer feasibility of the warm-start point
+        ws_int_feas = True
+        for off, sz in zip(int_offsets, int_sizes):
+            for j in range(off, off + sz):
+                if abs(initial_point[j] - round(initial_point[j])) > 1e-5:
+                    ws_int_feas = False
+                    break
+            if not ws_int_feas:
+                break
+        if ws_int_feas and np.isfinite(ws_obj) and ws_obj < _SENTINEL_THRESHOLD:
+            ws_con_feas = not cl_list or _check_constraint_feasibility(
+                evaluator, initial_point, cl_list, cu_list
+            )
+            if ws_con_feas:
+                tree.inject_incumbent(initial_point, ws_obj)
+                logger.info("Warm-start incumbent injected: obj=%.6g", ws_obj)
+            else:
+                logger.info(
+                    "Warm-start point is integer-feasible but violates "
+                    "constraints, using as NLP starting point only"
+                )
+        else:
+            logger.info(
+                "Warm-start point is not integer-feasible, using as NLP starting point only"
+            )
 
     # --- Feasibility pump at root ---
     # Try to find an integer-feasible incumbent before B&B starts.
@@ -1543,6 +1717,25 @@ def solve_model(
                 except Exception as e:
                     logger.debug("Feasibility pump failed: %s", e)
 
+        # --- User callbacks: lazy constraints and incumbent filtering ---
+        if lazy_constraints is not None or incumbent_callback is not None:
+            _invoke_pre_import_callbacks(
+                model=model,
+                tree=tree,
+                t_start=t_start,
+                result_ids=result_ids,
+                result_lbs=result_lbs,
+                result_sols=result_sols,
+                result_feas=result_feas,
+                n_batch=n_batch,
+                int_offsets=int_offsets,
+                int_sizes=int_sizes,
+                n_vars=n_vars,
+                lazy_constraints=lazy_constraints,
+                incumbent_callback=incumbent_callback,
+                _cut_pool=_cut_pool,
+            )
+
         # Import results back to Rust tree
         t_rust_start = time.perf_counter()
         tree.import_results(result_ids, result_lbs, result_sols, result_feas)
@@ -1614,6 +1807,35 @@ def solve_model(
                             )
                     except Exception as e:
                         logger.debug("FBBT with cutoff failed: %s", e)
+
+        # --- Node callback: notify user after each batch ---
+        if node_callback is not None:
+            try:
+                stats_snap = tree.stats()
+                incumbent_info_cb = tree.incumbent()
+                inc_obj_cb = None
+                if incumbent_info_cb is not None:
+                    _, inc_obj_cb = incumbent_info_cb
+                    if inc_obj_cb >= _SENTINEL_THRESHOLD:
+                        inc_obj_cb = None
+                best_idx = 0
+                for i in range(n_batch):
+                    if result_lbs[i] < result_lbs[best_idx]:
+                        best_idx = i
+                from discopt.callbacks import CallbackContext
+
+                ctx = CallbackContext(
+                    node_count=stats_snap["total_nodes"],
+                    incumbent_obj=inc_obj_cb,
+                    best_bound=stats_snap.get("global_lower_bound", -np.inf),
+                    gap=stats_snap.get("gap"),
+                    elapsed_time=time.perf_counter() - t_start,
+                    x_relaxation=result_sols[best_idx].copy(),
+                    node_bound=float(result_lbs[best_idx]),
+                )
+                node_callback(ctx, model)
+            except Exception as e:
+                logger.warning("Node callback raised an exception: %s", e)
 
         iteration += 1
 
@@ -1693,6 +1915,7 @@ def _solve_continuous(
     ipopt_options: Optional[dict],
     t_start: float,
     nlp_solver: str = "ipopt",
+    initial_point: Optional[np.ndarray] = None,
 ) -> SolveResult:
     """Solve a purely continuous model directly with NLP solver (no B&B)."""
     t_jax_start = time.perf_counter()
@@ -1702,7 +1925,11 @@ def _solve_continuous(
     lb, ub = evaluator.variable_bounds
     lb_clipped = np.clip(lb, -_SPC, _SPC)
     ub_clipped = np.clip(ub, -_SPC, _SPC)
-    x0 = 0.5 * (lb_clipped + ub_clipped)
+    if initial_point is not None:
+        x0 = np.clip(initial_point, lb, ub)
+        logger.info("Using warm-start point for continuous NLP")
+    else:
+        x0 = 0.5 * (lb_clipped + ub_clipped)
 
     opts = dict(ipopt_options) if ipopt_options else {}
     opts.setdefault("print_level", 0)
@@ -2128,6 +2355,147 @@ def _solve_lp(model: Model, t_start: float) -> SolveResult:
 
 
 def _solve_qp(model: Model, t_start: float) -> SolveResult:
+    """Solve a QP, preferring HiGHS when available, falling back to JAX IPM."""
+    result = _solve_qp_highs(model, t_start)
+    if result is not None:
+        return result
+    return _solve_qp_jax(model, t_start)
+
+
+def _solve_qp_highs(
+    model: Model,
+    t_start: float,
+    time_limit: float | None = None,
+) -> SolveResult | None:
+    """Solve a QP/MIQP using HiGHS. Returns None if HiGHS is unavailable."""
+    try:
+        from discopt.solvers.qp_highs import solve_qp as _highs_solve_qp
+    except ImportError:
+        return None
+
+    from discopt._jax.problem_classifier import extract_qp_data
+    from discopt.modeling.core import ObjectiveSense
+    from discopt.solvers import SolveStatus
+
+    qp_data = extract_qp_data(model)
+    n_orig = sum(v.size for v in model._variables)
+
+    # Build bounds list (original variables only, no slacks)
+    bounds = list(
+        zip(
+            np.asarray(qp_data.x_l[:n_orig]).tolist(),
+            np.asarray(qp_data.x_u[:n_orig]).tolist(),
+        )
+    )
+
+    # Extract constraint matrices from the equality-form representation.
+    # extract_qp_data converts inequalities to equalities with slacks,
+    # so we reconstruct inequality/equality constraints.
+    n_total = qp_data.A_eq.shape[1] if qp_data.A_eq.shape[0] > 0 else n_orig
+    n_slack = n_total - n_orig
+    A_eq_full = np.asarray(qp_data.A_eq)
+    b_eq_full = np.asarray(qp_data.b_eq)
+
+    A_ub = None
+    b_ub = None
+    A_eq = None
+    b_eq = None
+
+    if A_eq_full.shape[0] > 0:
+        eq_rows = []
+        eq_rhs = []
+        ub_rows = []
+        ub_rhs = []
+
+        for i in range(A_eq_full.shape[0]):
+            slack_part = A_eq_full[i, n_orig:]
+            has_slack = np.any(np.abs(slack_part) > 1e-15)
+            if has_slack and n_slack > 0:
+                slack_idx = np.argmax(np.abs(slack_part))
+                slack_coef = slack_part[slack_idx]
+                orig_row = A_eq_full[i, :n_orig]
+                rhs = b_eq_full[i]
+                if slack_coef > 0:
+                    ub_rows.append(orig_row)
+                    ub_rhs.append(rhs)
+                else:
+                    ub_rows.append(-orig_row)
+                    ub_rhs.append(-rhs)
+            else:
+                eq_rows.append(A_eq_full[i, :n_orig])
+                eq_rhs.append(b_eq_full[i])
+
+        if ub_rows:
+            A_ub = np.array(ub_rows, dtype=np.float64)
+            b_ub = np.array(ub_rhs, dtype=np.float64)
+        if eq_rows:
+            A_eq = np.array(eq_rows, dtype=np.float64)
+            b_eq = np.array(eq_rhs, dtype=np.float64)
+
+    # Build integrality array for MIQP
+    integrality = None
+    has_integer = any(v.var_type in (VarType.BINARY, VarType.INTEGER) for v in model._variables)
+    if has_integer:
+        int_arr = np.zeros(n_orig, dtype=np.int32)
+        offset = 0
+        for v in model._variables:
+            if v.var_type in (VarType.BINARY, VarType.INTEGER):
+                int_arr[offset : offset + v.size] = 1
+            offset += v.size
+        integrality = int_arr
+
+    # Q matrix: only the original variable part (no slacks)
+    Q_orig = np.asarray(qp_data.Q[:n_orig, :n_orig])
+    c_orig = np.asarray(qp_data.c[:n_orig])
+
+    try:
+        result = _highs_solve_qp(
+            Q=Q_orig,
+            c=c_orig,
+            A_ub=A_ub,
+            b_ub=b_ub,
+            A_eq=A_eq,
+            b_eq=b_eq,
+            bounds=bounds,
+            integrality=integrality,
+            time_limit=time_limit,
+        )
+    except Exception as e:
+        logger.debug("HiGHS QP solve failed: %s", e)
+        return None
+
+    wall_time = time.perf_counter() - t_start
+
+    if result.status == SolveStatus.OPTIMAL:
+        assert result.x is not None and result.objective is not None
+        x_flat = result.x[:n_orig]
+        obj_val = result.objective + qp_data.obj_const
+
+        assert model._objective is not None
+        if model._objective.sense == ObjectiveSense.MAXIMIZE:
+            obj_val = -obj_val
+
+        return SolveResult(
+            status="optimal",
+            objective=obj_val,
+            bound=obj_val,
+            gap=0.0,
+            x=_unpack_solution(model, x_flat),
+            wall_time=wall_time,
+            node_count=result.node_count,
+            rust_time=0.0,
+            jax_time=0.0,
+            python_time=wall_time,
+        )
+    elif result.status == SolveStatus.INFEASIBLE:
+        return SolveResult(status="infeasible", wall_time=wall_time)
+    elif result.status == SolveStatus.TIME_LIMIT:
+        return SolveResult(status="time_limit", wall_time=wall_time)
+
+    return None
+
+
+def _solve_qp_jax(model: Model, t_start: float) -> SolveResult:
     """Solve a QP using the pure-JAX QP IPM."""
     from discopt._jax.problem_classifier import extract_qp_data
     from discopt._jax.qp_ipm import qp_ipm_solve

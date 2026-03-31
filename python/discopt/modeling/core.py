@@ -216,6 +216,9 @@ class Variable(Expression):
     def size(self) -> int:
         return int(np.prod(self.shape))
 
+    def __hash__(self):
+        return id(self)
+
     def __repr__(self):
         if self.shape == () or self.shape == (1,):
             return self.name
@@ -833,6 +836,9 @@ class SolveResult:
         Time spent in JAX (NLP evaluations, autodiff).
     python_time : float
         Time spent in Python orchestration.
+    convex_fast_path : bool
+        True if the problem was detected as convex and solved with a
+        single NLP call (no Branch & Bound), guaranteeing global optimality.
     """
 
     status: str
@@ -847,6 +853,9 @@ class SolveResult:
     rust_time: float = 0.0
     jax_time: float = 0.0
     python_time: float = 0.0
+
+    # Convex fast path indicator
+    convex_fast_path: bool = False
 
     # LLM explanation (populated if llm=True)
     _explanation: Optional[str] = None
@@ -1712,6 +1721,11 @@ class Model:
         deterministic: bool = True,
         partitions: int = 0,
         branching_policy: str = "fractional",
+        initial_solution: Optional[dict] = None,
+        skip_convex_check: bool = False,
+        lazy_constraints: Optional[Callable] = None,
+        incumbent_callback: Optional[Callable] = None,
+        node_callback: Optional[Callable] = None,
         **kwargs,
     ) -> Union[SolveResult, Iterator["SolveUpdate"]]:
         """
@@ -1743,6 +1757,30 @@ class Model:
         branching_policy : str, default "fractional"
             Variable selection policy: ``"fractional"`` (most-fractional)
             or ``"gnn"`` (GNN scoring, future hook).
+        initial_solution : dict, optional
+            Initial feasible solution mapping Variable objects to values
+            (scalars, lists, or numpy arrays).  Used as a warm-start point
+            for NLP solves and as the initial incumbent in Branch & Bound.
+            Values are validated against variable bounds and integrality
+            requirements; violations produce warnings and are corrected
+            automatically (clamped / rounded).
+        skip_convex_check : bool, default False
+            If True, skip automatic convexity detection for continuous
+            problems. When False (default), convex NLPs are solved with
+            a single NLP call (no B&B), guaranteeing global optimality.
+        lazy_constraints : callable, optional
+            Lazy constraint callback. Called at integer-feasible nodes.
+            Should accept ``(ctx, model)`` and return a list of
+            :class:`~discopt.callbacks.CutResult`. If cuts are returned,
+            the solution is not accepted as incumbent until it satisfies
+            all lazy constraints.
+        incumbent_callback : callable, optional
+            Incumbent callback. Called when a new incumbent is about to
+            be accepted. Should accept ``(ctx, model, solution)`` and
+            return ``True`` to accept or ``False`` to reject.
+        node_callback : callable, optional
+            Node callback. Called after each batch of nodes is processed.
+            Should accept ``(ctx, model)`` and return ``None``.
         **kwargs
             Additional keyword arguments passed to the solver backend.
 
@@ -1755,8 +1793,17 @@ class Model:
         ------
         ValueError
             If the model fails validation (no objective, duplicate names, etc.).
+        TypeError
+            If *initial_solution* contains non-Variable keys.
         """
         self.validate()
+
+        # Validate initial solution if provided
+        _x0_flat = None
+        if initial_solution is not None:
+            from discopt.warm_start import validate_initial_solution
+
+            _x0_flat = validate_initial_solution(self, initial_solution)
 
         # Pre-solve LLM analysis (advisory only, never blocks solving)
         if llm:
@@ -1786,6 +1833,11 @@ class Model:
             deterministic=deterministic,
             partitions=partitions,
             branching_policy=branching_policy,
+            initial_point=_x0_flat,
+            skip_convex_check=skip_convex_check,
+            lazy_constraints=lazy_constraints,
+            incumbent_callback=incumbent_callback,
+            node_callback=node_callback,
             **kwargs,
         )
 
@@ -1868,6 +1920,48 @@ class Model:
 
     def __repr__(self):
         return self.summary()
+
+    # ── Export ──
+
+    def to_mps(self, path: Union[str, None] = None) -> Union[str, None]:
+        """Export the model to MPS format.
+
+        Only linear and quadratic models are supported. Nonlinear
+        expressions raise ``ValueError``.
+
+        Parameters
+        ----------
+        path : str, optional
+            File path to write. If ``None``, return the MPS string.
+
+        Returns
+        -------
+        str or None
+            MPS string if *path* is ``None``, otherwise ``None``.
+        """
+        from discopt.export.mps import to_mps
+
+        return to_mps(self, path)
+
+    def to_lp(self, path: Union[str, None] = None) -> Union[str, None]:
+        """Export the model to CPLEX LP format.
+
+        Only linear and quadratic models are supported. Nonlinear
+        expressions raise ``ValueError``.
+
+        Parameters
+        ----------
+        path : str, optional
+            File path to write. If ``None``, return the LP string.
+
+        Returns
+        -------
+        str or None
+            LP string if *path* is ``None``, otherwise ``None``.
+        """
+        from discopt.export.lp import to_lp
+
+        return to_lp(self, path)
 
     def _check_name(self, name: str):
         """Ensure variable/parameter name is unique."""

@@ -58,3 +58,43 @@ discopt followed a 4-phase development plan. Phases 1-3 are complete; Phase 4 (p
 | CUTEst interface                  | Done        | PyCUTEst evaluator for NLP benchmarking                   |
 | Documentation + example notebooks | In progress | Quickstart, advanced features, IPM comparison notebooks   |
 | Release engineering               | In progress | `pip install discopt`, pyproject.toml, packaging          |
+
+## Phase 5: Problem Class Coverage
+
+New problem types to make discopt competitive across the full optimization landscape.
+
+| Task                              | Status  | Description                                                                  |
+|-----------------------------------|---------|------------------------------------------------------------------------------|
+| SOCP support                      | Planned | Second-order cone constraints, conic solver integration (SCS/Clarabel)       |
+| Semidefinite programming (SDP)    | Planned | Matrix variables, PSD cone constraint, MOSEK/SCS backend                     |
+| Conic programming (general)       | Planned | Exponential cone, power cone for entropy/GP formulations                     |
+| Stochastic programming            | Planned | Two-stage/multi-stage recourse, scenario trees, chance constraints, SAA/CVaR |
+| Robust optimization               | Planned | Box/ellipsoidal/polyhedral uncertainty sets, adjustable robust counterparts  |
+| Multi-objective optimization      | Planned | Epsilon-constraint, NBI, Chebyshev scalarization, ParetoFront object        |
+| Bilevel optimization              | Planned | KKT reformulation to MPEC, cutting plane methods                             |
+| Complementarity problems (MPEC)   | Planned | Scholtes relaxation, penalty methods for equilibrium constraints             |
+| Geometric programming             | Planned | Posynomial/signomial programs, log-transformation to convex form             |
+
+## Phase 6: Solver and Algorithm Improvements
+
+| Task                              | Status  | Description                                                                  |
+|-----------------------------------|---------|------------------------------------------------------------------------------|
+| QP-specific solver                | Planned | Dedicated active-set or IPM QP solver, or OSQP integration                   |
+| Benders decomposition             | Planned | Classical and generalized Benders for block-structured MILP/MINLP            |
+| Lagrangian relaxation             | Planned | Dantzig-Wolfe, column generation, subgradient/bundle methods                 |
+| Global optimization beyond B&B    | Planned | DIRECT, basin-hopping multi-start, interval-based methods                    |
+| Convex NLP fast path              | Planned | Detect convex NLPs and solve without B&B, guaranteeing global optimality     |
+
+## Phase 7: Modeling API and Infrastructure
+
+| Task                              | Status  | Description                                                                  |
+|-----------------------------------|---------|------------------------------------------------------------------------------|
+| Set and index abstractions        | Planned | Named sets, indexed variables/constraints, set algebra for sparse models     |
+| Piecewise-linear functions        | Planned | SOS2, incremental, logarithmic PWL formulations as modeling primitives       |
+| Native indicator constraints      | Planned | Direct indicator support avoiding big-M when backend supports it             |
+| Warm-starting API                 | Planned | Initial feasible solutions via `m.solve(initial_solution=...)`, solution pools |
+| Export formats (MPS/LP/OSiL)      | Planned | Interoperability with Gurobi, CPLEX, MOSEK, BARON, NEOS                     |
+| Callback and cut generation API   | Planned | User-defined lazy constraints, cutting planes, incumbent callbacks in B&B    |
+| Infeasibility analysis (IIS)      | Planned | Algorithmic irreducible infeasible subsystem computation                     |
+| Pyomo import                      | Planned | `from_pyomo()` converter for Var, Constraint, Objective, GDP constructs      |
+| GAMS import                       | Planned | `from_gams()` reader for .gms scalar models                                 |
