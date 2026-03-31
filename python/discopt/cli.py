@@ -120,12 +120,11 @@ def search_openalex(
 
     url = f"https://api.openalex.org/works?{urllib.parse.urlencode(params)}"
 
+    # OpenAlex uses API keys for authentication. Get a free key at
+    # openalex.org/settings/api and set OPENALEX_API_KEY or pass --api-key.
     req = urllib.request.Request(
         url,
-        headers={
-            "User-Agent": "discopt-discoptbot/1.0 (mailto:jkitchin@andrew.cmu.edu)",
-            "Accept": "application/json",
-        },
+        headers={"User-Agent": "discopt/1.0", "Accept": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode("utf-8"))

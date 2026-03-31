@@ -19,7 +19,7 @@ import sys
 os.environ["JAX_PLATFORMS"] = "cpu"
 os.environ["JAX_ENABLE_X64"] = "1"
 
-sys.path.insert(0, "/Users/jkitchin/Dropbox/projects/discopt/python")
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import jax
 import jax.numpy as jnp

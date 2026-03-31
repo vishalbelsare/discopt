@@ -122,6 +122,23 @@ cargo test -p discopt-core
 JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 pytest python/tests/ -v
 ```
 
+## Command-Line Interface
+
+After installation, the `discopt` command is available on your PATH:
+
+```bash
+# Search arXiv for recent papers
+discopt search-arxiv 'all:"spatial branch and bound"' --max-results 10 --start-date 2026-01-01
+
+# Search OpenAlex
+discopt search-openalex "McCormick relaxation" --from-date 2026-01-01 --to-date 2026-03-31
+
+# Write a report from stdin
+echo "report content" | discopt write-report reports/output.md
+```
+
+All subcommands output structured JSON, making them suitable for scripting and integration with other tools. The `discoptbot` literature scanner skill uses these subcommands to automatically find and summarize relevant new papers from arXiv and OpenAlex.
+
 ## Documentation
 
 Tutorial notebooks are available in `docs/notebooks/`:
