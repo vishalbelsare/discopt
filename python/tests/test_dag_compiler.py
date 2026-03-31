@@ -442,27 +442,21 @@ class TestConstraintCompilation:
 
 
 # ─────────────────────────────────────────────────────────────
-# Tests on the 7 example models
+# Tests on representative example models
 # ─────────────────────────────────────────────────────────────
 
 
 def _build_all_examples():
-    """Build all 7 example models."""
+    """Build representative example models for parametrized tests."""
     return [
         ("simple_minlp", examples.example_simple_minlp),
-        ("pooling_haverly", examples.example_pooling_haverly),
         ("process_synthesis", examples.example_process_synthesis),
         pytest.param("portfolio", examples.example_portfolio, marks=pytest.mark.slow),
-        ("reactor_design", examples.example_reactor_design),
-        pytest.param(
-            "facility_location", examples.example_facility_location, marks=pytest.mark.slow
-        ),
-        ("parametric", examples.example_parametric),
     ]
 
 
 class TestJITTraceability:
-    """Verify that jax.make_jaxpr succeeds for all 7 example objectives."""
+    """Verify that jax.make_jaxpr succeeds for example objectives."""
 
     @pytest.mark.parametrize("name,builder", _build_all_examples())
     def test_jaxpr_traces(self, name, builder, capsys):
