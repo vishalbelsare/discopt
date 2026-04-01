@@ -207,7 +207,7 @@ version = "0.2.0"
 
 [[package]]
 name = "discopt-python"
-version = "0.2.0"
+version = "0.2.3"
 dependencies = [
  "discopt-core",
  "numpy",
@@ -1068,6 +1068,8 @@ checksum = "a96887878f22d7bad8a3b6dc5b7440e0ada9a245242924394987b21cf2210a4c"
 [[package]]
 name = "ripopt"
 version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb2217dfe4ec562aaeefb002b9a9427e8bd47ff9f94f37494f51e13723ddcf61"
 dependencies = [
  "env_logger",
  "faer",
@@ -1080,6 +1082,8 @@ dependencies = [
 [[package]]
 name = "rmumps"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "514a798c9a81dec2c1394589d661e99dc5c95ae7813dbf89c8eaac0ffd8f76bc"
 dependencies = [
  "amd",
  "rayon",
