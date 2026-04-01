@@ -23,7 +23,7 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: |
-          pip install jupyter-book sphinxcontrib-bibtex sphinx-autoapi
+          pip install "jupyter-book<2" sphinxcontrib-bibtex sphinx-autoapi
           pip install jax jaxlib numpy scipy
       - name: Build Jupyter Book
         run: jupyter-book build docs/
