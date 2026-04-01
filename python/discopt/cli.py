@@ -1,14 +1,18 @@
 """discopt CLI.
 
 Usage:
+    discopt about
+    discopt test
     discopt search-arxiv "query" [--max-results 20] [--start-date 2026-01-01]
     discopt search-openalex "query" [--from-date ...] [--to-date ...] [--per-page 20]
     discopt write-report <output-path>
 """
 
 import argparse
+import importlib.metadata
 import json
 import os
+import platform
 import sys
 import urllib.parse
 import urllib.request
@@ -225,9 +229,146 @@ def _cmd_write_report(args):
     print(f"Wrote {len(content)} bytes to {path}")
 
 
+def _cmd_about(_args):
+    import discopt
+
+    version = discopt.__version__
+
+    # Installation location
+    install_location = os.path.dirname(os.path.abspath(discopt.__file__))
+
+    # Try to get package metadata from pip
+    try:
+        meta = importlib.metadata.metadata("discopt")
+        pkg_version = meta["Version"]
+        summary = meta["Summary"] or ""
+        license_text = meta["License"] or ""
+    except importlib.metadata.PackageNotFoundError:
+        pkg_version = version
+        summary = "Hybrid MINLP solver combining Rust and JAX"
+        license_text = "EPL-2.0"
+
+    # Check for Rust extension
+    try:
+        import discopt._rust
+
+        rust_ext = os.path.abspath(discopt._rust.__file__)
+    except (ImportError, AttributeError):
+        rust_ext = "not available"
+
+    print(f"discopt {pkg_version}")
+    print(f"  Summary:      {summary}")
+    print(f"  License:      {license_text}")
+    print(f"  Location:     {install_location}")
+    print(f"  Rust ext:     {rust_ext}")
+    print(f"  Python:       {sys.version}")
+    print(f"  Platform:     {platform.platform()}")
+    print(f"  Executable:   {sys.executable}")
+
+    # Key dependency versions
+    deps = ["jax", "jaxlib", "numpy", "scipy"]
+    optional_deps = ["cyipopt", "highspy", "litellm", "pycutest", "onnx", "onnxruntime"]
+    for name in deps:
+        try:
+            ver = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            ver = "not installed"
+        print(f"  {name}: {ver}")
+
+    print("  Optional:")
+    for name in optional_deps:
+        try:
+            ver = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            ver = "not installed"
+        print(f"    {name}: {ver}")
+
+
+def _cmd_test(_args):
+    """Run a quick smoke test to verify the installation works."""
+    errors = []
+    passed = []
+
+    # 1. Import core package
+    try:
+        import discopt
+
+        passed.append(f"import discopt ({discopt.__version__})")
+    except Exception as e:
+        errors.append(f"import discopt: {e}")
+
+    # 2. Rust extension
+    try:
+        import discopt._rust  # noqa: F811
+
+        passed.append("Rust extension loaded")
+    except ImportError as e:
+        errors.append(f"Rust extension: {e}")
+
+    # 3. JAX
+    try:
+        import jax
+        import jax.numpy as jnp
+
+        _ = jnp.array([1.0, 2.0])
+        passed.append(f"JAX {jax.__version__} (backend: {jax.default_backend()})")
+    except Exception as e:
+        errors.append(f"JAX: {e}")
+
+    # 4. Build and solve a tiny model
+    try:
+        import discopt
+
+        m = discopt.Model("smoke_test")
+        x = m.continuous("x", lb=0, ub=10)
+        m.minimize(x)
+        m.subject_to(x >= 1)
+        result = m.solve(verbose=False)
+        obj = float(result.objective)
+        if abs(obj - 1.0) > 1e-3:
+            errors.append(f"Solve sanity: expected objective ~1.0, got {obj}")
+        else:
+            passed.append(f"Model build + solve (objective={obj:.6f})")
+    except Exception as e:
+        errors.append(f"Model build + solve: {e}")
+
+    # 5. DAG compiler (JAX tracing)
+    try:
+        from discopt._jax.dag_compiler import compile_objective
+        from discopt.modeling import Model
+
+        m2 = Model("dag_test")
+        x = m2.continuous("x", lb=0, ub=1)
+        m2.minimize(x * x)
+        _ = compile_objective(m2)
+        passed.append("DAG compiler")
+    except Exception as e:
+        errors.append(f"DAG compiler: {e}")
+
+    # Print results
+    for msg in passed:
+        print(f"  PASS  {msg}")
+    for msg in errors:
+        print(f"  FAIL  {msg}")
+
+    total = len(passed) + len(errors)
+    print(f"\n{len(passed)}/{total} checks passed.")
+
+    if errors:
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="discopt", description="discopt CLI")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # about
+    p_about = subparsers.add_parser("about", help="Show version and installation info")
+    p_about.set_defaults(func=_cmd_about)
+
+    # test
+    p_test = subparsers.add_parser("test", help="Run smoke tests to verify installation")
+    p_test.set_defaults(func=_cmd_test)
 
     # search-arxiv
     p_arxiv = subparsers.add_parser("search-arxiv", help="Search arXiv API")
