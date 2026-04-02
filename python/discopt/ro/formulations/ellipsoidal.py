@@ -85,8 +85,14 @@ class EllipsoidalRobustFormulation:
         from discopt.modeling.core import Constraint, Objective, ObjectiveSense
 
         # ── Robustify constraints ──────────────────────────────────────────────
+        # Only plain Constraint objects carry .body / .sense / .rhs; other
+        # types (_IndicatorConstraint, _DisjunctiveConstraint, _SOSConstraint,
+        # _LogicalConstraint) are passed through unchanged.
         new_constraints = []
         for con in m._constraints:
+            if not isinstance(con, Constraint):
+                new_constraints.append(con)
+                continue
             new_expr, penalties = _extract_penalties(con.body, unc_map)
             if penalties:
                 combined = _sum_expr([new_expr] + penalties)
@@ -211,8 +217,9 @@ def _soc_penalty(decision_expr, unc: EllipsoidalUncertaintySet):
 
     Sigma_sqrt = Constant(unc.Sigma_sqrt)
     scaled = MatMulExpression(Sigma_sqrt, decision_expr)
-    # ||scaled||₂ = sqrt(scaled^T @ scaled)
-    inner = FunctionCall("sum", FunctionCall("*", scaled, scaled))
+    # ||scaled||₂ = sqrt(sum(scaled * scaled))
+    # BinaryOp("*", ...) is element-wise multiplication; FunctionCall("*",...) is not valid.
+    inner = FunctionCall("sum", BinaryOp("*", scaled, scaled))
     norm2 = FunctionCall("sqrt", inner)
     return BinaryOp("*", Constant(np.array(unc.rho)), norm2)
 

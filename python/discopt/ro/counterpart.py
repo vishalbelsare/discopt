@@ -105,6 +105,16 @@ class RobustCounterpart:
 
         rc = RobustCounterpart(m, [unc_cost, unc_demand])
         rc.formulate()
+
+    Two-stage adjustable robust optimization (apply ADR first)::
+
+        from discopt.ro import AffineDecisionRule, BoxUncertaintySet, RobustCounterpart
+
+        adr = AffineDecisionRule(y, [xi])
+        adr.apply(m)  # substitutes y → y₀ + Y₀·ξ; model still contains xi
+
+        rc = RobustCounterpart(m, BoxUncertaintySet(xi, delta=0.1))
+        rc.formulate()  # eliminates xi with worst-case substitution
     """
 
     def __init__(

@@ -20,11 +20,17 @@ Supported uncertainty sets
     Includes the budget-of-uncertainty (Bertsimas & Sim) as a special case.
     Reformulated via LP duality.
 
-Main entry point
-----------------
+Main entry points
+-----------------
 :class:`RobustCounterpart`
     Wraps a model and an uncertainty set; calling :meth:`~RobustCounterpart.formulate`
-    rewrites the model in-place.
+    rewrites the model in-place (static robust counterpart).
+
+:class:`AffineDecisionRule`
+    Implements adjustable robust optimization via affine recourse.  Apply
+    *before* :class:`RobustCounterpart`: replaces a wait-and-see variable
+    ``y`` with ``y₀ + ΣYⱼξⱼ``, then let :class:`RobustCounterpart` handle
+    the remaining uncertainty.
 
 Example
 -------

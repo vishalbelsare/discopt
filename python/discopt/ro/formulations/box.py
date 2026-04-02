@@ -67,11 +67,17 @@ class BoxRobustFormulation:
 
         # ── Robustify constraints ──────────────────────────────────────────────
         # Constraint stored as body ≤ 0; worst-case ≡ maximise body over U.
+        # Only plain Constraint objects carry .body / .sense / .rhs; other
+        # types (_IndicatorConstraint, _DisjunctiveConstraint, _SOSConstraint,
+        # _LogicalConstraint) are passed through unchanged.
+        from discopt.modeling.core import Constraint
+
         new_constraints = []
         for con in m._constraints:
+            if not isinstance(con, Constraint):
+                new_constraints.append(con)
+                continue
             new_expr = _worst_case(con.body, unc_map, maximize=True, sign=+1)
-            from discopt.modeling.core import Constraint
-
             new_constraints.append(
                 Constraint(body=new_expr, sense=con.sense, rhs=con.rhs, name=con.name)
             )

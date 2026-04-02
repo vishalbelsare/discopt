@@ -59,7 +59,7 @@ References
    decision-based approximation approach to stochastic programming.
    *Operations Research*, 56(2), 344–357.
 
-.. [Bertsimas2010] Bertsimas, D., & Goyal, V. (2010). On the power and
+.. [Bertsimas2010] Bertsimas, D., & Goyal, V. (2012). On the power and
    limitations of affine policies in two-stage adaptive optimization.
    *Mathematical Programming*, 134(2), 491–531.
    https://doi.org/10.1007/s10107-011-0444-4

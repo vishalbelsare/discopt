@@ -81,8 +81,14 @@ class PolyhedralRobustFormulation:
         from discopt.modeling.core import Constraint, Objective, ObjectiveSense
 
         # ── Robustify constraints ──────────────────────────────────────────────
+        # Only plain Constraint objects carry .body / .sense / .rhs; other
+        # types (_IndicatorConstraint, _DisjunctiveConstraint, _SOSConstraint,
+        # _LogicalConstraint) are passed through unchanged.
         new_constraints = []
         for con in m._constraints:
+            if not isinstance(con, Constraint):
+                new_constraints.append(con)
+                continue
             new_expr = _wc_polyhedral(
                 con.body, unc_map, wc_lower, wc_upper, maximize=True, sign=+1
             )
