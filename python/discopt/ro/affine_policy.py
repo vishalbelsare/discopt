@@ -318,7 +318,25 @@ class AffineDecisionRule:
             new_obj_expr = _substitute_var(obj.expression, y, affine_expr)
             m._objective = Objective(expression=new_obj_expr, sense=obj.sense)
 
-        # ── 4. Retire y from the model variable list and renumber ────────────
+        # ── 4. Add robust bound constraints on the affine expression ────────
+        # The original recourse variable y had bounds [lb, ub].  The affine
+        # expression y0 + sum Y_j*xi_j must respect these bounds for ALL
+        # realizations of xi within the uncertainty set.  We add:
+        #   affine_expr <= ub   and   affine_expr >= lb
+        # as model constraints.  RobustCounterpart will later robustify them
+        # (handling the bilinear Y_j*xi_j terms correctly).
+        if y.ub is not None and np.all(np.isfinite(np.asarray(y.ub))):
+            ub_body = BinaryOp("-", affine_expr, Constant(np.asarray(y.ub, dtype=np.float64)))
+            m._constraints.append(
+                Constraint(body=ub_body, sense="<=", rhs=0.0, name=f"{pfx}_bound_ub")
+            )
+        if y.lb is not None and np.all(np.isfinite(np.asarray(y.lb))):
+            lb_body = BinaryOp("-", Constant(np.asarray(y.lb, dtype=np.float64)), affine_expr)
+            m._constraints.append(
+                Constraint(body=lb_body, sense="<=", rhs=0.0, name=f"{pfx}_bound_lb")
+            )
+
+        # ── 5. Retire y from the model variable list and renumber ────────────
         m._variables = [v for v in m._variables if v is not y]
         for i, v in enumerate(m._variables):
             v._index = i
