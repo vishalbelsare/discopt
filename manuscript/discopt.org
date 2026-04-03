@@ -84,6 +84,8 @@ Table ref:tab-gaps summarizes the capabilities of existing systems versus discop
 | DFL through MINLP        | No    | No      | No     | No           | No      | Yes     |
 | Compositional relaxation | Yes   | Partial | No     | N/A          | No      | Yes     |
 | NN embedding in MINLP    | No    | No      | No     | No           | Yes     | Yes     |
+| Robust counterpart API   | No    | No      | No     | No           | No      | Yes     |
+| Adjustable RO (ADR)      | No    | No      | No     | No           | No      | Yes     |
 
 * The discopt Architecture
 
@@ -168,6 +170,98 @@ Three formulation strategies are provided:
 - *Reduced-space*: Builds a single nested expression with no intermediate variables, suitable for small networks.
 
 Interval arithmetic bound propagation through the network layers computes tight big-M constants by splitting weight matrices into positive and negative parts. An ONNX reader (=load_onnx=) imports trained models from scikit-learn, PyTorch, and Keras via the ONNX interchange format.
+
+** Robust Optimization Module
+
+The =discopt.ro= module converts a nominal model with uncertain parameters into a deterministic *robust counterpart* that is feasible for every realization of the uncertainty within a prescribed set.  Following the classical framework of Ben-Tal and Nemirovski cite:&BenTal1999,BenTal2009, robust optimization replaces the original problem
+
+#+BEGIN_EXAMPLE
+  min_x  f(x, p)     s.t. g_i(x, p) ≤ 0  for all p ∈ U
+#+END_EXAMPLE
+
+with a deterministic equivalent that encodes the worst-case constraint tightening analytically.
+
+*** Uncertainty Sets
+
+Three standard uncertainty set families are supported:
+
+- *Box* ($L_\infty$ ball) $\mathcal{U} = \{p : |p_j - \bar{p}_j| \le \delta_j\}$: the worst-case maximisation of an affine function $c^\top p$ over the box is $\bar{c}^\top p + \sum_j \delta_j |c_j|$ , yielding a separable 1-norm penalty.  When $p$ appears only as an additive RHS term, this collapses to a single bound substitution $p \leftarrow \bar{p} \pm \delta$.
+- *Ellipsoidal* $\mathcal{U} = \{p : \|\Sigma^{-1/2}(p-\bar{p})\|_2 \le \rho\}$: the worst-case is $\bar{a}^\top p + \rho \|\Sigma^{1/2} a(x)\|_2$, a second-order cone (SOC) penalty cite:&BenTal1999.
+- *Polyhedral* $\mathcal{U} = \{p : A\xi \le b,\; \xi = p-\bar{p}\}$: the support function is evaluated by LP duality, introducing auxiliary dual variables $\lambda \ge 0$ satisfying $A^\top \lambda = a(x)$ and adding $b^\top \lambda$ to the constraint cite:&BertsimasSim2004.
+
+The *budget-of-uncertainty* set (Bertsimas--Sim cite:&BertsimasSim2004) is provided as a convenience constructor:
+
+$$\mathcal{U}_\Gamma = \left\{p : |p_j - \bar{p}_j| \le \delta_j,\; \sum_j \frac{|p_j - \bar{p}_j|}{\delta_j} \le \Gamma \right\}$$
+
+The budget $\Gamma \in [0, k]$ interpolates between the nominal solution ($\Gamma = 0$) and full box robustness ($\Gamma = k$), controlling the trade-off between solution cost and protection level.
+
+*** Implementation: Reformulation Strategies
+
+The box reformulation uses two strategies depending on the structure of the expression DAG.  When uncertain parameters appear with constant (known-sign) coefficients, the reformulation traverses the DAG while tracking the *effective sign* of each uncertain parameter at each node.  At a subtraction node $a - p$, the parameter $p$ acquires sign $-1$; at a negation node $-p$, the sign flips.  Multiplication by a non-negative constant preserves the sign; multiplication by a negative constant flips it.  This sign determines whether the worst-case value is the upper or lower component bound:
+
+#+BEGIN_EXAMPLE
+  sign > 0 and maximize ⟹ use upper bound  (p̄ + δ)
+  sign < 0 and maximize ⟹ use lower bound  (p̄ − δ)
+#+END_EXAMPLE
+
+When the expression contains *bilinear* terms ($p \cdot x$ where both are free), as arises from affine decision rules, the coefficient of $p$ involves decision variables whose sign is not known a priori.  In this case the reformulation extracts the per-component coefficient of each uncertain parameter and applies absolute-value linearization: the worst-case of $\mathrm{coeff}(x) \cdot \xi$ over $|\xi| \le \delta$ is $\delta \cdot |\mathrm{coeff}(x)|$, where the absolute value is linearized via auxiliary variables $t \ge 0$ satisfying $\mathrm{coeff}(x) \le t$ and $-\mathrm{coeff}(x) \le t$.  The implementation automatically detects the presence of bilinear terms and selects the appropriate strategy.
+
+For the polyhedral uncertainty set, the reformulation introduces auxiliary dual variables $\lambda \ge 0$ (one per polytope row) with equality constraints $A^\top \lambda = \mathrm{coeff}(x)$ and a worst-case penalty $b^\top \lambda$.  This LP-duality approach correctly handles the budget-of-uncertainty constraint, where the budget $\Gamma$ couples the uncertainty components and component-wise bounds alone would be insufficient.
+
+The =RobustCounterpart= class follows the same builder pattern as =NNFormulation=:
+
+#+BEGIN_SRC python
+from discopt.ro import BoxUncertaintySet, RobustCounterpart
+
+m = dm.Model("production")
+x = m.continuous("x", shape=(3,), lb=0)
+c = m.parameter("c", value=[10.0, 15.0, 8.0])
+d = m.parameter("d", value=100.0)
+
+m.minimize(dm.sum(c * x))
+m.subject_to(dm.sum(x) >= d, name="demand")
+
+rc = RobustCounterpart(m, [
+    BoxUncertaintySet(c, delta=0.10 * c.value),   # costs ± 10%
+    BoxUncertaintySet(d, delta=0.05 * d.value),   # demand ± 5%
+])
+rc.formulate()          # modifies m in-place; m is now deterministic
+result = m.solve()
+#+END_SRC
+
+After =formulate()=, the model contains no uncertain parameters: each has been replaced by its worst-case constant.  The reformulated model is a standard MINLP that can be solved by any of discopt's solver backends.
+
+*** Correctness Guarantee
+
+For the additive/affine uncertainty case, both reformulation strategies produce an exact robust counterpart: the reformulated constraints hold for all $p \in \mathcal{U}$ if and only if they hold after substitution.  The sign-tracking path follows directly from LP duality cite:&BenTal1999; the coefficient-extraction path is exact because the absolute-value linearization is tight for box uncertainty.  The polyhedral reformulation via LP duality is exact for any polyhedral set, including the budget-of-uncertainty case cite:&BertsimasSim2004.  The ellipsoidal reformulation produces exact second-order cone constraints for affine uncertainty.  The implementation verifies correctness via structural tests that confirm (1) no uncertain parameters remain in the reformulated DAG, and (2) the reformulated model solves to the analytically derived robust optimal value.
+
+*** Adjustable Robust Optimization via Affine Decision Rules
+
+Static robust optimization requires all decisions to be fixed before the uncertain parameters are revealed.  When some decisions can be deferred until after (partial) observation of the uncertainty, adjustable robust optimization (ARO) cite:&BenTalGoryashko2004 provides a less conservative solution.
+
+The two-stage framework partitions variables into *here-and-now* decisions $x$ (chosen before observing $\xi$) and *wait-and-see* recourse variables $y(\xi)$ (chosen after).  Optimising over arbitrary functions $y(\cdot)$ is generally intractable (the problem is semi-infinite), so discopt adopts **affine decision rules** (also called linear decision rules) cite:&BenTalGoryashko2004,Chen2009:
+
+$$y(\xi) = y_0 + \sum_{j=1}^{n_\xi} Y_j \cdot \xi_j, \quad \xi_j = p_j - \bar{p}_j$$
+
+where $y_0$ and $\{Y_j\}$ are new ordinary decision variables representing the intercept and policy matrix columns.  Bertsimas and Goyal cite:&Bertsimas2010 establish that for LP problems with right-hand-side uncertainty, affine rules are *optimal*, meaning no other measurable recourse policy achieves a lower cost; for uncertain constraint matrices they are an inner approximation.
+
+The =AffineDecisionRule= class implements this substitution as a pre-processing step compatible with the existing =RobustCounterpart=:
+
+#+BEGIN_SRC python
+from discopt.ro import AffineDecisionRule, BoxUncertaintySet, RobustCounterpart
+
+# Stage 1: substitute recourse variable y with y₀ + Y₀·(d - d̄)
+adr = AffineDecisionRule(y, uncertain_params=d)
+adr.apply()          # retires y; adds y₀, Y₀ to model._variables
+
+# Stage 2: static robust counterpart handles remaining ξ terms
+rc = RobustCounterpart(m, BoxUncertaintySet(d, delta=20.0))
+rc.formulate()       # fully deterministic; optimise over (x, y₀, Y₀)
+#+END_SRC
+
+The DAG substitution walks every constraint and objective node, replacing Variable nodes that match the recourse variable with the affine expression via identity comparison ($O(|V| + |E|)$ in the DAG size).  After substitution the recourse variable is retired from the model's variable list and remaining variables are renumbered.  In addition, =apply()= automatically enforces robust feasibility of the recourse variable bounds: if the original variable $y$ had bounds $[l, u]$, the constraints $y_0 + \sum_j Y_j \xi_j \le u$ and $y_0 + \sum_j Y_j \xi_j \ge l$ are added to the model, ensuring that the affine rule respects the original domain for all realizations of $\xi$.  The subsequent =RobustCounterpart.formulate()= call handles the bilinear $Y_j \cdot \xi_j$ terms in these bound constraints via coefficient extraction and absolute-value linearization.
+
+A call to =AffineDecisionRule.apply()= followed by =RobustCounterpart.formulate()= leaves the model fully deterministic with (1) no recourse variables, (2) no uncertain parameters, and (3) new intercept and policy-column variables in their place.  For simple problems (e.g., a two-variable LP with a single uncertain parameter), the affine decision rule typically matches the static robust optimal value, because the static solution already adapts optimally.  The theoretical advantage of ADR emerges in problems with structural asymmetry: multiple constraints, integer first-stage variables, or high-dimensional uncertainty where the static worst case is overly conservative.
 
 ** JAX DAG Compiler
 
@@ -512,7 +606,7 @@ discopt demonstrates that a modern, multi-language MINLP solver can provide capa
 
 *Command-line interface and literature monitoring.* discopt provides a command-line interface (=discopt=) installable via =pip=, with subcommands for searching arXiv and OpenAlex APIs and writing structured reports. These subcommands output JSON, enabling integration with scripting workflows and CI pipelines. A companion "discoptbot" agent uses the CLI to periodically scan for new publications relevant to the solver's algorithmic components (spatial B&B, McCormick relaxations, GNN branching, GPU-accelerated IPM), score them by relevance, and produce structured literature reports. This automated monitoring helps maintain awareness of algorithmic advances that could inform future solver development.
 
-*Future work.* Key directions include: (1) GPU-accelerated batch IPM via JAX's XLA backend when GPU support matures; (2) extending ripopt with sparse linear algebra to compete with Ipopt on large problems; (3) deeper integration of learned relaxations with online training during the B&B search; (4) exploiting the differentiable solver for bilevel optimization and meta-learning of solver parameters; (5) extending the DAE collocation module to higher-index DAEs, adaptive mesh refinement, and multi-stage optimal control with path constraints; and (6) extending the neural network embedding to convolutional layers, residual connections, gradient-boosted tree models, and LP-based bound tightening (OBBT) for tighter big-M constants.
+*Future work.* Key directions include: (1) GPU-accelerated batch IPM via JAX's XLA backend when GPU support matures; (2) extending ripopt with sparse linear algebra to compete with Ipopt on large problems; (3) deeper integration of learned relaxations with online training during the B&B search; (4) exploiting the differentiable solver for bilevel optimization and meta-learning of solver parameters; (5) extending the DAE collocation module to higher-index DAEs, adaptive mesh refinement, and multi-stage optimal control with path constraints; (6) extending the neural network embedding to convolutional layers, residual connections, gradient-boosted tree models, and LP-based bound tightening (OBBT) for tighter big-M constants; and (7) extending the robust optimization module beyond the current affine decision rules to bilinear coefficient uncertainty (via LP dual auxiliary variables), polynomial or piecewise-linear recourse policies, and distributionally robust optimization via moment-based or Wasserstein ambiguity sets cite:&BenTalGoryashko2004,Bertsimas2010.
 
 * Conclusion
 
