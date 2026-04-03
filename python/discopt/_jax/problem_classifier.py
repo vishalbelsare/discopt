@@ -607,7 +607,7 @@ def _extract_constraints_algebraic(model: Model, n_orig: int):
 
     x_l_orig, x_u_orig = _get_variable_bounds(model)
     x_l = np.concatenate([x_l_orig, np.zeros(n_slack, dtype=np.float64)])
-    x_u = np.concatenate([x_u_orig, np.full(n_slack, np.inf, dtype=np.float64)])
+    x_u = np.concatenate([x_u_orig, np.full(n_slack, 1e20, dtype=np.float64)])
 
     return A_eq, b_eq, x_l, x_u, n_slack
 
