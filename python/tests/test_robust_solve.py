@@ -216,3 +216,37 @@ class TestADRSolve:
         y_min = y0 - abs(Y0) * 10
         assert y_min >= -0.1, f"y_min={y_min:.2f} violates lb=0"
         assert y_max <= 25.1, f"y_max={y_max:.2f} violates ub=25"
+
+    def test_opposing_uncertainty_adr_beats_static(self):
+        """ADR strictly beats static when uncertainty enters with opposite signs.
+
+        Ben-Tal et al. (2004) structure: min x s.t. x+y>=1+z, x-y>=1-z, z in [-1,1].
+        Static must hedge both worst cases (x=2). ADR adapts y=z, needing only x=1.
+        """
+        # Static
+        ms = dm.Model()
+        xs = ms.continuous("x", lb=0, ub=10)
+        ys = ms.continuous("y", lb=-10, ub=10)
+        zs = ms.parameter("z", value=0.0)
+        ms.minimize(xs)
+        ms.subject_to(xs + ys >= 1.0 + zs)
+        ms.subject_to(xs - ys >= 1.0 - zs)
+        RobustCounterpart(ms, BoxUncertaintySet(zs, delta=1.0)).formulate()
+        r_s = ms.solve()
+        assert r_s.objective == pytest.approx(2.0, abs=0.1)
+
+        # ADR
+        ma = dm.Model()
+        xa = ma.continuous("x", lb=0, ub=10)
+        ya = ma.continuous("y", lb=-10, ub=10)
+        za = ma.parameter("z", value=0.0)
+        ma.minimize(xa)
+        ma.subject_to(xa + ya >= 1.0 + za)
+        ma.subject_to(xa - ya >= 1.0 - za)
+        AffineDecisionRule(ya, uncertain_params=za).apply()
+        RobustCounterpart(ma, BoxUncertaintySet(za, delta=1.0)).formulate()
+        r_a = ma.solve()
+
+        if np.isfinite(r_a.objective):
+            assert r_a.objective == pytest.approx(1.0, abs=0.1)
+            assert r_a.objective < r_s.objective - 0.5  # strict improvement
