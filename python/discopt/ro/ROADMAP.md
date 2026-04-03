@@ -6,10 +6,14 @@ Verified against Ben-Tal et al. (2009) Example 1.1.1.
 
 ## Known Limitations
 
-**Solver convergence.** The IPM frequently returns `iteration_limit` rather
-than `optimal`, even when solution values are correct to tolerance. The
-ellipsoidal reformulation produces SOCP constraints solved as general NLP;
-a dedicated SOCP solver would be faster and more reliable.
+**Solver convergence.** The LP/QP IPMs now use gradient-based scaling,
+a mu error gate, and have the z-recovery removed, which improved
+convergence on poorly-scaled problems (e.g., Ben-Tal drug example).
+However, the NLP IPM lacks scaling, and variables without explicit
+upper bounds still converge slowly due to the default bound creating
+a distant barrier term. The ellipsoidal reformulation produces SOCP
+constraints solved as general NLP; a dedicated SOCP solver would be
+faster and more reliable.
 
 **ADR practical value.** The affine decision rule implementation is
 mathematically correct but no example yet demonstrates a strict improvement
@@ -69,3 +73,30 @@ Per-component sign tracking would fix this.
 9. **Automatic uncertainty set selection.** Given historical data, fit
    box/ellipsoidal/polyhedral sets with specified coverage probability.
    See Bertsimas et al. (2018) "Data-driven robust optimization."
+
+## IPM Solver Improvements
+
+These are general solver improvements discovered during RO development
+that affect all problem types, not just robust optimization.
+
+10. **Route LPs to HiGHS when available.** The custom LP IPM is a
+    research implementation. HiGHS is a production simplex/IPM that
+    handles edge cases (degeneracy, unbounded variables, poor scaling)
+    robustly. The solver already uses HiGHS for QP; extending it to
+    LP would give production-quality LP solving immediately. The
+    custom IPM would remain as a fallback when HiGHS is not installed.
+
+11. **Acceptable convergence for LP/QP IPMs.** The NLP IPM has an
+    "acceptable" convergence path (code 2) that triggers after 15
+    consecutive iterations within a loose tolerance. The LP and QP
+    IPMs lack this: they only return optimal or iteration_limit.
+    Adding acceptable convergence would catch cases where the solution
+    is correct but formal optimality is not certified within max_iter.
+
+12. **NLP IPM scaling.** The LP/QP IPMs now have gradient-based
+    scaling (scaling.py). The NLP IPM needs the same treatment, but
+    it is harder because scaling factors depend on the evaluation
+    point and the steepest-descent recovery path interacts with the
+    scaling. Requires evaluating the gradient and Jacobian at the
+    initial point, computing row scaling factors, and wrapping the
+    evaluator functions.
