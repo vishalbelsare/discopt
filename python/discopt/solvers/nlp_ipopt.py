@@ -192,8 +192,16 @@ def solve_nlp(
         cu=cu,
     )
 
+    # cyipopt requires native Python types (rejects numpy scalars).
+    import numpy as _np
+
     for key, value in opts.items():
-        problem.add_option(key, value)
+        if isinstance(value, (_np.floating, float)):
+            problem.add_option(key, float(value))
+        elif isinstance(value, (_np.integer, int)):
+            problem.add_option(key, int(value))
+        else:
+            problem.add_option(key, value)
 
     t0 = time.perf_counter()
     x, info = problem.solve(x0.astype(np.float64))

@@ -2984,8 +2984,14 @@ def _solve_node_nlp_ipopt(
         cu=cu,
     )
 
+    # cyipopt requires native Python types (rejects numpy scalars).
     for key, value in options.items():
-        problem.add_option(key, value)
+        if isinstance(value, (np.floating, float)):
+            problem.add_option(key, float(value))
+        elif isinstance(value, (np.integer, int)):
+            problem.add_option(key, int(value))
+        else:
+            problem.add_option(key, value)
 
     from discopt.solvers import NLPResult
 
