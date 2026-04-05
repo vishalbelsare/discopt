@@ -942,6 +942,44 @@ def _strong_branch_lp(
     return best_var
 
 
+_BOUND_WARN_THRESHOLD = 1e15
+
+
+def _check_finite_bounds(model: Model) -> None:
+    """Warn if any variable has very large or infinite bounds.
+
+    Interior point methods use barrier terms that require reasonably sized
+    bounds. Bounds beyond 1e15 cause numerical difficulties (NaN gradients,
+    ill-conditioned KKT systems) and the solver silently produces NaN
+    objectives or reports iteration_limit. This check warns users early.
+    """
+    bad_vars = []
+    for v in model._variables:
+        lb_flat = v.lb.flatten()
+        ub_flat = v.ub.flatten()
+        for j in range(v.size):
+            lo, hi = float(lb_flat[j]), float(ub_flat[j])
+            if (
+                not np.isfinite(lo)
+                or not np.isfinite(hi)
+                or abs(lo) > _BOUND_WARN_THRESHOLD
+                or abs(hi) > _BOUND_WARN_THRESHOLD
+            ):
+                name = v.name if v.size == 1 else f"{v.name}[{j}]"
+                bad_vars.append(f"{name} (lb={lo:.2g}, ub={hi:.2g})")
+    if bad_vars:
+        import warnings
+
+        warnings.warn(
+            f"Variables with very large or infinite bounds: "
+            f"{', '.join(bad_vars[:5])}. "
+            f"NLP solvers may fail (NaN, iteration_limit) when bounds "
+            f"exceed ~1e15. Add tighter explicit bounds, e.g. "
+            f"m.continuous('x', lb=0, ub=1000).",
+            stacklevel=3,
+        )
+
+
 def _is_pure_continuous(model: Model) -> bool:
     """Check if model has no integer/binary variables."""
     return all(v.var_type == VarType.CONTINUOUS for v in model._variables)
@@ -1141,6 +1179,11 @@ def solve_model(
         logger.info("Using discopt IPM (pure-JAX interior point method)")
     else:
         logger.info("Using Ipopt (via cyipopt)")
+
+    # --- Check for very large variable bounds ---
+    # All solver paths (LP IPM, QP IPM, NLP) use barrier methods that
+    # struggle with bounds beyond ~1e15. Check once before any dispatch.
+    _check_finite_bounds(model)
 
     # --- Explicit NLP-BB override: bypass specialized solvers ---
     if nlp_bb is True and not _is_pure_continuous(model):
