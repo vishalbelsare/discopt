@@ -4,9 +4,9 @@ You are a scientific literature scanner specialized in mathematical optimization
 
 ## Input
 
-Time interval: $ARGUMENTS
+$ARGUMENTS
 
-If no interval is given, default to `1m` (one month). Supported intervals: `1w`, `2w`, `1m`, `3m`, `6m`, `1y`.
+Arguments are optional topic guidance (e.g., "McCormick relaxations", "GPU solvers", "GNN branching"). If provided, weight those topics more heavily in your search. If empty, search broadly across all relevant topics.
 
 ## Important
 
@@ -14,15 +14,17 @@ This command runs fully autonomously. Do NOT ask the user for confirmation at an
 
 ## Instructions
 
-### Step 1 — Parse interval and compute date range
+### Step 1 — Read previous reports to avoid duplicates
 
-Parse the interval from `$ARGUMENTS` and compute `START_DATE` and `END_DATE` as YYYY-MM-DD strings. Use today's date as `END_DATE`. Examples:
-- `1w` → 7 days back
-- `2w` → 14 days back
-- `1m` → 1 month back (default)
-- `3m` → 3 months back
-- `6m` → 6 months back
-- `1y` → 1 year back
+Read the list of existing reports:
+
+```bash
+ls reports/discoptbot/*.md 2>/dev/null
+```
+
+For each existing report, read the "High-Relevance Papers" and "Medium-Relevance Papers" sections to build a set of previously reported paper titles and arXiv IDs. You will exclude these from the new report.
+
+If no previous reports exist, the seen-set is empty.
 
 ### Step 2 — Read discopt source files for context
 
@@ -43,7 +45,7 @@ Use the Read tool with `limit: 50` for each file. Read them in parallel where po
 
 ### Step 3 — Run WebSearch queries (16 queries in 4 parallel batches)
 
-Add the date range context to each query (e.g., append the current year). Run 4 queries at a time in parallel.
+Append the current year to each query. Run 4 queries at a time in parallel.
 
 **Batch 1 — Core MINLP:**
 1. `"spatial branch and bound" MINLP convex relaxation`
@@ -71,41 +73,41 @@ Add the date range context to each query (e.g., append the current year). Run 4 
 
 ### Step 4 — Fetch structured results from arXiv and OpenAlex APIs
 
-Use the `discopt` CLI to query APIs. Run all 8 commands via the Bash tool. Run them in parallel (all 8 at once).
+Use the `discopt` CLI to query APIs. Run all 8 commands via the Bash tool in parallel.
 
 **arXiv (4 queries)** — use `discopt search-arxiv`:
 
 ```bash
-discopt search-arxiv 'all:"spatial branch and bound" OR all:"McCormick relaxation" OR all:"alphaBB"' --max-results 20 --start-date START_DATE
+discopt search-arxiv 'all:"spatial branch and bound" OR all:"McCormick relaxation" OR all:"alphaBB"' --max-results 20
 ```
 ```bash
-discopt search-arxiv 'all:"interior point method" AND (all:JAX OR all:GPU OR all:"automatic differentiation")' --max-results 20 --start-date START_DATE
+discopt search-arxiv 'all:"interior point method" AND (all:JAX OR all:GPU OR all:"automatic differentiation")' --max-results 20
 ```
 ```bash
-discopt search-arxiv 'all:"graph neural network" AND (all:"branch and bound" OR all:"branching")' --max-results 20 --start-date START_DATE
+discopt search-arxiv 'all:"graph neural network" AND (all:"branch and bound" OR all:"branching")' --max-results 20
 ```
 ```bash
-discopt search-arxiv 'all:MINLP AND (all:"cutting plane" OR all:"convex relaxation" OR all:"bound tightening")' --max-results 20 --start-date START_DATE
+discopt search-arxiv 'all:MINLP AND (all:"cutting plane" OR all:"convex relaxation" OR all:"bound tightening")' --max-results 20
 ```
 
 **OpenAlex (4 queries)** — use `discopt search-openalex`:
 
 ```bash
-discopt search-openalex "spatial branch bound MINLP" --from-date START_DATE --to-date END_DATE
+discopt search-openalex "spatial branch bound MINLP"
 ```
 ```bash
-discopt search-openalex "McCormick relaxation convex underestimator" --from-date START_DATE --to-date END_DATE
+discopt search-openalex "McCormick relaxation convex underestimator"
 ```
 ```bash
-discopt search-openalex "graph neural network branching optimization" --from-date START_DATE --to-date END_DATE
+discopt search-openalex "graph neural network branching optimization"
 ```
 ```bash
-discopt search-openalex "interior point method GPU automatic differentiation" --from-date START_DATE --to-date END_DATE
+discopt search-openalex "interior point method GPU automatic differentiation"
 ```
 
-Each script outputs JSON with `{"query": ..., "count": N, "results": [...]}`. Parse the JSON output to extract paper metadata.
+Each script outputs JSON with `{"query": ..., "count": N, "results": [...]}`. Parse the JSON output to extract paper metadata. If the CLI commands are not available, skip this step and rely on web search results.
 
-### Step 5 — Deduplicate
+### Step 5 — Deduplicate and filter
 
 Merge all results from Steps 3 and 4. Deduplicate by:
 - Exact arXiv ID match
@@ -113,6 +115,8 @@ Merge all results from Steps 3 and 4. Deduplicate by:
 - Case-insensitive title similarity (titles that differ only in whitespace/punctuation)
 
 Keep the entry with the most complete metadata.
+
+**Remove previously reported papers**: compare each result against the seen-set from Step 1. Drop any paper whose title or arXiv ID matches a previous report. The goal is that each report contains only NEW papers not seen before.
 
 ### Step 6 — Score and rank papers
 
@@ -143,24 +147,18 @@ Assign each paper a relevance tier:
 
 ### Step 7 — Write the report (MANDATORY — do NOT ask for confirmation)
 
-You MUST always create the report file without asking the user. Do NOT use the Write tool (it requires interactive permission). Instead, use the Bash tool to pipe the report content through the CLI:
+Write the report to `reports/discoptbot/YYYY-MM-DD.md` (using today's date). Use the Write tool.
 
-```bash
-cat <<'REPORT_EOF' | discopt write-report reports/discoptbot/YYYY-MM-DD.md
-... report content here ...
-REPORT_EOF
-```
-
-Write to `reports/discoptbot/YYYY-MM-DD.md` (using today's date).
+If no new papers are found (all results were previously reported), write a short report stating that and skip the detailed sections.
 
 Use this format:
 
 ```markdown
-# discoptbot Report: START_DATE to END_DATE
+# discoptbot Report: YYYY-MM-DD
 
 **Generated**: YYYY-MM-DD
-**Queries**: 16 web searches + 4 arXiv + 4 OpenAlex
-**Results**: N total found, M after deduplication (H high-relevance, K medium-relevance)
+**Queries**: 16 web searches + 8 API queries
+**Results**: N total found, M after deduplication, K new (not previously reported), H high-relevance, J medium-relevance
 
 ---
 
@@ -215,37 +213,17 @@ Top 3-5 papers ranked by estimated implementation effort vs. potential impact on
 ## Search Queries Used
 
 <details>
-<summary>Click to expand (24 queries total)</summary>
+<summary>Click to expand</summary>
 
 **WebSearch (16):**
 1. `"spatial branch and bound" MINLP convex relaxation`
-2. `McCormick relaxation tightening piecewise bilinear`
-3. `alphaBB underestimator convex relaxation global optimization`
-4. `interior point method nonlinear programming JAX GPU`
-5. `cutting planes outer approximation mixed integer nonlinear`
-6. `RLT reformulation linearization technique MINLP`
-7. `feasibility based bound tightening FBBT OBBT preprocessing`
-8. `probing techniques presolve mixed integer optimization`
-9. `GNN graph neural network branch and bound variable selection`
-10. `machine learning branching heuristics mixed integer programming`
-11. `learned convex relaxation neural network optimization`
-12. `differentiable optimization implicit differentiation combinatorial`
-13. `GPU accelerated optimization solver parallel branch and bound`
-14. `JAX automatic differentiation optimization solver`
-15. `BARON SCIP MINLP solver benchmark comparison`
-16. `input convex neural network ICNN optimization`
+...
 
 **arXiv API (4):**
-1. `all:"spatial branch and bound" OR all:"McCormick relaxation" OR all:"alphaBB"`
-2. `all:"interior point method" AND (all:JAX OR all:GPU OR all:"automatic differentiation")`
-3. `all:"graph neural network" AND (all:"branch and bound" OR all:"branching")`
-4. `all:MINLP AND (all:"cutting plane" OR all:"convex relaxation" OR all:"bound tightening")`
+1. ...
 
 **OpenAlex API (4):**
-1. `spatial branch bound MINLP`
-2. `McCormick relaxation convex underestimator`
-3. `graph neural network branching optimization`
-4. `interior point method GPU automatic differentiation`
+1. ...
 
 </details>
 ```
@@ -254,6 +232,6 @@ Top 3-5 papers ranked by estimated implementation effort vs. potential impact on
 
 After writing the report, print a brief summary to the user:
 - Report file path
-- Number of high/medium relevance papers found
+- Number of new high/medium relevance papers found
 - Top 3 most actionable papers with one-line descriptions
 - Any search errors or API failures encountered
