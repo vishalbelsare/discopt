@@ -2456,7 +2456,8 @@ def from_gams(path: str) -> Model:
     """
     from discopt.modeling.gams_parser import parse_gams_file
 
-    return parse_gams_file(path)
+    result: Model = parse_gams_file(path)
+    return result
 
 
 def from_description(

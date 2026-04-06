@@ -133,9 +133,7 @@ class _GamsWriter:
             else:
                 groups["free"].append(var)
 
-        # Add synthetic obj_var only if model has an objective
-        if self.model._objective is not None:
-            groups["free"].insert(0, None)  # placeholder for obj_var
+        has_obj = self.model._objective is not None
 
         type_kw = {
             "free": "Free Variables",
@@ -145,19 +143,18 @@ class _GamsWriter:
         }
 
         for gtype, vars_list in groups.items():
-            if not vars_list:
-                continue
-            names = []
+            names: list[str] = []
+            # Prepend synthetic obj_var to free group
+            if gtype == "free" and has_obj:
+                names.append("obj_var")
             for var in vars_list:
-                if var is None:
-                    names.append("obj_var")
-                    continue
                 if var.name in self._var_sets:
                     dom = ", ".join(s[0] for s in self._var_sets[var.name])
                     names.append(f"{var.name}({dom})")
                 else:
                     names.append(var.name)
-            lines.append(f"{type_kw[gtype]} {', '.join(names)};")
+            if names:
+                lines.append(f"{type_kw[gtype]} {', '.join(names)};")
 
         lines.append("")
 

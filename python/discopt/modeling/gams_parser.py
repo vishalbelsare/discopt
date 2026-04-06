@@ -16,6 +16,10 @@ import math
 import re
 import warnings
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from discopt.modeling.core import Model
 
 import numpy as np
 
@@ -1181,11 +1185,13 @@ class _ModelBuilder:
         # scalar values: name -> float
         self.scalar_values: dict[str, float] = {}
         # discopt variable references: (var_name, *indices) -> Expression
-        self.dvar_map: dict[str, object] = {}  # var_name -> discopt Variable
-        self.model: object = None  # discopt Model
+        from discopt.modeling.core import Variable
+
+        self.dvar_map: dict[str, Variable] = {}
+        self.model: Model | None = None
         self._initial_values: dict = {}  # var_name -> {flat_idx: float} or float
 
-    def build(self):
+    def build(self) -> Model:
         from discopt.modeling.core import Model
 
         # 1. Resolve sets (including aliases)
@@ -1208,7 +1214,7 @@ class _ModelBuilder:
         self._apply_bounds(m)
         # 8. Store initial values on the model
         if self._initial_values:
-            m._gams_initial_values = self._initial_values
+            m._gams_initial_values = self._initial_values  # type: ignore[attr-defined]
         return m
 
     def _resolve_sets(self):
@@ -1365,11 +1371,11 @@ class _ModelBuilder:
             if expr.op == "-":
                 return lv - rv
             if expr.op == "*":
-                return lv * rv
+                return float(lv * rv)
             if expr.op == "/":
-                return lv / rv if rv != 0 else None
+                return float(lv / rv) if rv != 0 else None
             if expr.op == "**":
-                return lv**rv
+                return float(lv**rv)
             # Comparison operators return 1.0 (true) or 0.0 (false)
             if expr.op == "<":
                 return 1.0 if lv < rv else 0.0
@@ -1384,26 +1390,27 @@ class _ModelBuilder:
             if expr.op == "<>":
                 return 1.0 if lv != rv else 0.0
         if isinstance(expr, ExprFunc):
-            args = [self._eval_const_expr(a) for a in expr.args]
-            if any(a is None for a in args):
+            raw_args = [self._eval_const_expr(a) for a in expr.args]
+            if any(a is None for a in raw_args):
                 return None
+            fargs: list[float] = [a for a in raw_args if a is not None]
             fn = expr.func.lower()
             if fn == "exp":
-                return math.exp(args[0])
+                return math.exp(fargs[0])
             if fn == "log":
-                return math.log(args[0])
+                return math.log(fargs[0])
             if fn == "sqrt":
-                return math.sqrt(args[0])
+                return math.sqrt(fargs[0])
             if fn == "sqr":
-                return args[0] ** 2
+                return float(fargs[0] ** 2)
             if fn == "abs":
-                return abs(args[0])
+                return float(abs(fargs[0]))
             if fn == "power":
-                return args[0] ** args[1]
+                return float(fargs[0] ** fargs[1])
             if fn == "sin":
-                return math.sin(args[0])
+                return math.sin(fargs[0])
             if fn == "cos":
-                return math.cos(args[0])
+                return math.cos(fargs[0])
         if isinstance(expr, ExprCard):
             elems = self.set_elements.get(expr.set_name, [])
             return float(len(elems))
@@ -2130,7 +2137,7 @@ class _ModelBuilder:
 
 
 # ── Public API ─────────────────────────────────────────────────
-def parse_gams(source: str):
+def parse_gams(source: str) -> "Model":
     """Parse GAMS source text and return a discopt Model.
 
     Parameters
@@ -2155,7 +2162,7 @@ def parse_gams(source: str):
     return builder.build()
 
 
-def parse_gams_file(path: str):
+def parse_gams_file(path: str) -> "Model":
     """Parse a GAMS .gms file and return a discopt Model.
 
     Parameters
