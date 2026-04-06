@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import re
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -368,6 +369,21 @@ class _Parser:
         "sos1",
         "sos2",
     }
+    _UNSUPPORTED_KW = {
+        "loop",
+        "for",
+        "while",
+        "repeat",
+        "if",
+        "else",
+        "elseif",
+        "put",
+        "file",
+        "execute",
+        "system",
+        "acronym",
+        "acronyms",
+    }
 
     def _cur_kw(self) -> str | None:
         t = self._cur()
@@ -406,6 +422,14 @@ class _Parser:
                 self._skip_to_semi()
             elif kw in self._ABORT_KW:
                 self._skip_to_semi()
+            elif kw in self._UNSUPPORTED_KW:
+                t = self._cur()
+                warnings.warn(
+                    f"GAMS '{t.value}' statement at line {t.line} is not supported "
+                    f"and was skipped. The resulting model may be incomplete.",
+                    stacklevel=2,
+                )
+                self._skip_to_semi()
             elif self._is_equation_def():
                 self._parse_equation_def()
             elif self._is_bound_assign():
@@ -413,7 +437,13 @@ class _Parser:
             elif self._is_param_assign():
                 self._parse_param_assign_stmt()
             else:
-                # skip unrecognized token
+                t = self._cur()
+                if t.kind == _Tok.IDENT:
+                    warnings.warn(
+                        f"Unrecognized GAMS statement '{t.value}' at line {t.line} "
+                        f"was skipped. The resulting model may be incomplete.",
+                        stacklevel=2,
+                    )
                 self._advance()
 
     def _skip_to_semi(self):

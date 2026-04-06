@@ -458,3 +458,44 @@ class TestGamsParseErrors:
         """)
         with pytest.raises(GamsParseError, match="Unknown set"):
             parse_gams(src)
+
+
+class TestGamsParseWarnings:
+    def test_unsupported_loop_warns(self):
+        src = textwrap.dedent("""\
+            Free Variable x ;
+            Equations eq1 ;
+            loop(i, x.l = 0) ;
+            eq1.. x =e= 1 ;
+            Model m / all / ;
+            Solve m using NLP minimizing x ;
+        """)
+        with pytest.warns(UserWarning, match="'loop'.*not supported.*skipped"):
+            parse_gams(src)
+
+    def test_unrecognized_ident_warns(self):
+        src = textwrap.dedent("""\
+            Free Variable x ;
+            Equations eq1 ;
+            somethingWeird ;
+            eq1.. x =e= 1 ;
+            Model m / all / ;
+            Solve m using NLP minimizing x ;
+        """)
+        with pytest.warns(UserWarning, match="Unrecognized.*somethingWeird.*skipped"):
+            parse_gams(src)
+
+    def test_no_warning_for_valid_model(self):
+        """A clean model should produce no warnings."""
+        import warnings as w
+
+        src = textwrap.dedent("""\
+            Free Variable x ;
+            Equations eq1 ;
+            eq1.. x =e= 1 ;
+            Model m / all / ;
+            Solve m using NLP minimizing x ;
+        """)
+        with w.catch_warnings():
+            w.simplefilter("error")
+            parse_gams(src)
