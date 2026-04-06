@@ -2008,6 +2008,27 @@ class Model:
 
         return to_gams(self, path, model_type)
 
+    def to_nl(self, path: Union[str, None] = None) -> Union[str, None]:
+        """Export the model to AMPL .nl text format.
+
+        Supports all model types including MINLP with nonlinear expressions.
+        Produces text-mode .nl files compatible with AMPL-compatible solvers
+        (Ipopt, BARON, Couenne, SCIP) and the discopt Rust .nl parser.
+
+        Parameters
+        ----------
+        path : str, optional
+            File path to write. If ``None``, return the .nl string.
+
+        Returns
+        -------
+        str or None
+            .nl string if *path* is ``None``, otherwise ``None``.
+        """
+        from discopt.export.nl import to_nl
+
+        return to_nl(self, path)
+
     def _check_name(self, name: str):
         """Ensure variable/parameter name is unique."""
         existing = {v.name for v in self._variables} | {p.name for p in self._parameters}
