@@ -175,6 +175,20 @@ class _BoundsProxy:
 # ── NLP Subproblem Solvers ────────────────────────────────────
 
 
+def _is_primal_feasible(evaluator, x, tol: float = 1e-4) -> bool:
+    """Return True if x satisfies all constraints within tol."""
+    if evaluator.n_constraints == 0:
+        return True
+    try:
+        from discopt.solvers.nlp_ipopt import _infer_constraint_bounds
+
+        cl, cu = _infer_constraint_bounds(evaluator._model)
+        cons = np.asarray(evaluator.evaluate_constraints(x))
+        return bool(np.all(cons >= cl - tol) and np.all(cons <= cu + tol))
+    except Exception:
+        return False
+
+
 def _solve_nlp(evaluator, lb, ub, nlp_solver: str, max_iter: int = 200):
     """Solve an NLP with given bounds. Returns (x, obj) or (None, None)."""
     lb_clip = np.clip(lb, -1e8, 1e8)
@@ -195,6 +209,13 @@ def _solve_nlp(evaluator, lb, ub, nlp_solver: str, max_iter: int = 200):
 
         if result.status == SolveStatus.OPTIMAL:
             return result.x, float(evaluator.evaluate_objective(result.x))
+
+        # Accept iteration-limited results if the solution is primal feasible.
+        # The IPM may not certify dual convergence (code 4: stalled) yet still
+        # find a valid primal point, which is sufficient for OA linearization cuts.
+        if result.status == SolveStatus.ITERATION_LIMIT and result.x is not None:
+            if _is_primal_feasible(evaluator, result.x):
+                return result.x, float(evaluator.evaluate_objective(result.x))
     except Exception:
         pass
     return None, None
