@@ -2236,10 +2236,18 @@ def _solve_continuous(
 
     x_dict = _unpack_solution(model, nlp_result.x) if nlp_result.x is not None else None
 
+    # Negate objective back for maximization (NLPEvaluator solves minimization of -f)
+    from discopt.modeling.core import ObjectiveSense
+
+    assert model._objective is not None
+    obj_val = nlp_result.objective
+    if obj_val is not None and model._objective.sense == ObjectiveSense.MAXIMIZE:
+        obj_val = -obj_val
+
     return SolveResult(
         status=status,
-        objective=nlp_result.objective,
-        bound=nlp_result.objective if status == "optimal" else None,
+        objective=obj_val,
+        bound=obj_val if status == "optimal" else None,
         gap=0.0 if status == "optimal" else None,
         x=x_dict,
         wall_time=wall_time,

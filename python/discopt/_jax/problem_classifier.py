@@ -1023,6 +1023,7 @@ def extract_qp_data(model: Model) -> QPData:
 def _extract_qp_data_autodiff(model: Model) -> QPData:
     """Extract QP standard form using autodiff (original slow path)."""
     from discopt._jax.dag_compiler import compile_objective
+    from discopt.modeling.core import ObjectiveSense
 
     n_orig = sum(v.size for v in model._variables)
     obj_fn = compile_objective(model)
@@ -1051,6 +1052,13 @@ def _extract_qp_data_autodiff(model: Model) -> QPData:
     else:
         Q_full = Q
         c_full = c_vec
+
+    # Handle objective sense: negate for maximization (solvers always minimize)
+    assert model._objective is not None
+    if model._objective.sense == ObjectiveSense.MAXIMIZE:
+        Q_full = -Q_full
+        c_full = -c_full
+        obj_const = -obj_const
 
     return QPData(
         Q=Q_full,

@@ -147,12 +147,24 @@ class TestConvexFastPathSolutions:
         assert result.status == "optimal"
         assert result.convex_fast_path is True
 
-        # Optimal: x = 5. The solver internally negates for maximization,
-        # but result.objective should be the original (un-negated) value.
-        # The actual sign depends on the solver's convention.
+        # Optimal: x = 5, objective = log(5) ≈ 1.6094 (must be positive — not negated)
         assert result.objective is not None
-        # Check the magnitude matches log(5) ~ 1.6094
-        assert abs(abs(result.objective) - np.log(5.0)) < 1e-2
+        assert abs(result.objective - np.log(5.0)) < 1e-2
+
+    def test_maximize_objective_sign_not_negated(self):
+        """Regression test for issue #28: maximize result.objective must not be negated.
+
+        max -(x-1)^2 + 4  s.t. x in [0,2] → optimal value = 4.0 at x=1.
+        _solve_continuous was returning -4.0 (the internal minimization value).
+        """
+        m = Model("maximize_mwe")
+        x = m.continuous("x", lb=0.0, ub=2.0)
+        m.maximize(-((x - 1.0) ** 2) + 4.0)
+        result = m.solve()
+        assert result.status == "optimal"
+        assert result.objective is not None
+        assert result.objective > 0, f"Expected +4.0, got {result.objective}"
+        assert abs(result.objective - 4.0) < 1e-4
 
     def test_gap_is_zero_for_convex(self):
         """Convex fast path should report zero gap (global optimality)."""
