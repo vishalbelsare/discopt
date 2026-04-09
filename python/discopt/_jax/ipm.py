@@ -102,6 +102,7 @@ class IPMProblemData(NamedTuple):
     is_eq: jnp.ndarray  # (m,) float mask: 1 for equality
     has_g_lb: jnp.ndarray  # (m,) float mask
     has_g_ub: jnp.ndarray  # (m,) float mask
+    is_fixed: jnp.ndarray  # (n,) float mask: 1 for lb==ub (fixed vars)
     n: int
     m: int
 
@@ -208,6 +209,9 @@ def _make_problem_data(x_l, x_u, g_l, g_u) -> IPMProblemData:
     has_g_lb = (g_l > -_INF).astype(jnp.float64)
     has_g_ub = (g_u < _INF).astype(jnp.float64)
     is_eq = (has_g_lb * has_g_ub * (jnp.abs(g_u - g_l) < 1e-12)).astype(jnp.float64)
+    # Fixed variables: lb == ub. Their bound multipliers are ill-determined
+    # (both slacks ≈ 0) and should be excluded from dual convergence checks.
+    is_fixed = (has_lb * has_ub * (jnp.abs(x_u - x_l) < 1e-12)).astype(jnp.float64)
     return IPMProblemData(
         x_l=x_l,
         x_u=x_u,
@@ -218,6 +222,7 @@ def _make_problem_data(x_l, x_u, g_l, g_u) -> IPMProblemData:
         is_eq=is_eq,
         has_g_lb=has_g_lb,
         has_g_ub=has_g_ub,
+        is_fixed=is_fixed,
         n=n,
         m=m,
     )
@@ -873,7 +878,11 @@ def _make_iteration_body(obj_fn, con_fn, pd, opts):
         else:
             primal_inf = jnp.array(0.0)
 
-        dual_inf = jnp.max(jnp.abs(grad_L))
+        # Exclude fixed variables (lb==ub) from dual infeasibility: their
+        # bound multipliers z_l, z_u are ill-determined (both slacks ≈ 0)
+        # and oscillate, blocking convergence (issue #31).
+        grad_L_free = jnp.where(pd.is_fixed > 0.5, 0.0, grad_L)
+        dual_inf = jnp.max(jnp.abs(grad_L_free))
         compl_inf = jnp.minimum(avg_compl, mu_new)
 
         optimal = (primal_inf <= opts.tol) & (dual_inf <= opts.tol) & (compl_inf <= opts.tol)
