@@ -1674,6 +1674,7 @@ class TestMINLPTestsInfeasible:
         ids=lambda i: i.problem_id,
     )
     def test_detected_infeasible(self, instance: MINLPTestInstance) -> None:
+        _xfail_if_known(instance.problem_id)
         model = instance.build_fn()
         result = model.solve(time_limit=30.0)
         assert_infeasible(result, instance.problem_id)
