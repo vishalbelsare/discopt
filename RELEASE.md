@@ -29,10 +29,10 @@ The next planned release is **`v0.2.6`** (patch on top of `v0.2.5`).
 - [ ] `pytest discopt_benchmarks/tests/ -v` -- benchmark suite green.
 - [ ] `pytest python/tests/test_correctness.py -v` -- **`incorrect_count == 0`**. Non-negotiable per `CLAUDE.md`.
 - [ ] `make bench-smoke` -- smoke benchmark passes.
-- [ ] Phase gates relevant to this release:
-  - [ ] `python discopt_benchmarks/run_benchmarks.py --gate phase1`
-  - [ ] `python scripts/phase3_gate.py`
-  - [ ] `python scripts/phase4_gate.py`
+- [ ] Phase gates relevant to this release. Each `--gate phaseN` check reads the matching suite's most recent results in `results/`, so run `--suite phaseN` first. These runs are expensive (each suite uses a 3600 s per-instance time limit) and are typically a CI-only step for patch releases:
+  - [ ] `python discopt_benchmarks/run_benchmarks.py --suite phase1 && python discopt_benchmarks/run_benchmarks.py --gate phase1`
+  - [ ] `python discopt_benchmarks/run_benchmarks.py --suite phase3 && python discopt_benchmarks/run_benchmarks.py --gate phase3`
+  - [ ] `phase4` currently has gate criteria but no registered suite in `discopt_benchmarks/config/benchmarks.toml`. Skip until a `[suites.phase4]` entry is added; if relevant to the release, fix the suite definition first.
   - [ ] Review `reports/phase*_gate_report.md` -- no regressions vs. the previous release.
 
 ## 3. Lint, format, types
