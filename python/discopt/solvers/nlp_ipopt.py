@@ -18,7 +18,7 @@ from typing import Optional
 import numpy as np
 
 from discopt._jax.nlp_evaluator import NLPEvaluator
-from discopt.modeling.core import Model
+from discopt.modeling.core import Constraint, Model
 from discopt.solvers import NLPResult, SolveStatus
 
 # Ipopt status code mapping
@@ -100,37 +100,47 @@ class _IpoptCallbacks:
         return (rows, cols)
 
 
-def _infer_constraint_bounds(
-    model: Model,
-) -> tuple[np.ndarray, np.ndarray]:
+def _infer_constraint_bounds(source) -> tuple[np.ndarray, np.ndarray]:
     """Infer constraint bounds (cl, cu) from model constraint senses.
 
-    The NLPEvaluator compiles constraints as `body - rhs`, so we need:
-      - For `<=` constraints: body - rhs <= 0, so cl = -inf, cu = 0
-      - For `==` constraints: body - rhs == 0, so cl = 0, cu = 0
-      - For `>=` constraints: these are already normalized to <= by the
-        Expression.__ge__ method, so we only see <= and == here.
-    """
-    from discopt.modeling.core import Constraint
+    Accepts either a :class:`Model` or an :class:`NLPEvaluator`.
 
-    cl_list = []
-    cu_list = []
-    for c in model._constraints:
-        if not isinstance(c, Constraint):
-            continue
+    The NLPEvaluator compiles constraints as ``body - rhs``, so we need:
+      - For ``<=`` constraints: ``body - rhs <= 0``, so ``cl=-inf, cu=0``.
+      - For ``==`` constraints: ``body - rhs == 0``, so ``cl=0, cu=0``.
+      - For ``>=`` constraints: ``body - rhs >= 0``, so ``cl=0, cu=inf``.
+
+    When an NLPEvaluator is supplied, each source Constraint's bounds are
+    repeated to match the evaluator's ``_constraint_flat_sizes`` (needed
+    for vector-valued bodies such as DAEBuilder's vectorized collocation
+    residual). When a Model is supplied directly, each source Constraint
+    contributes exactly one row (legacy scalar behavior).
+    """
+    if isinstance(source, Model):
+        constraints = [c for c in source._constraints if isinstance(c, Constraint)]
+        sizes = np.ones(len(constraints), dtype=np.intp)
+    else:
+        constraints = source._source_constraints
+        sizes = source._constraint_flat_sizes
+
+    cl_parts: list[np.ndarray] = []
+    cu_parts: list[np.ndarray] = []
+    for c, sz in zip(constraints, sizes):
+        sz_int = int(sz)
         if c.sense == "<=":
-            cl_list.append(-1e20)
-            cu_list.append(0.0)
+            lo, hi = -1e20, 0.0
         elif c.sense == "==":
-            cl_list.append(0.0)
-            cu_list.append(0.0)
+            lo, hi = 0.0, 0.0
         elif c.sense == ">=":
-            cl_list.append(0.0)
-            cu_list.append(1e20)
+            lo, hi = 0.0, 1e20
         else:
             raise ValueError(f"Unknown constraint sense: {c.sense}")
+        cl_parts.append(np.full(sz_int, lo, dtype=np.float64))
+        cu_parts.append(np.full(sz_int, hi, dtype=np.float64))
 
-    return np.array(cl_list, dtype=np.float64), np.array(cu_list, dtype=np.float64)
+    if not cl_parts:
+        return np.empty(0, dtype=np.float64), np.empty(0, dtype=np.float64)
+    return np.concatenate(cl_parts), np.concatenate(cu_parts)
 
 
 def solve_nlp(
@@ -172,7 +182,7 @@ def solve_nlp(
         cl = np.array([b[0] for b in constraint_bounds], dtype=np.float64)
         cu = np.array([b[1] for b in constraint_bounds], dtype=np.float64)
     elif m > 0:
-        cl, cu = _infer_constraint_bounds(evaluator._model)
+        cl, cu = _infer_constraint_bounds(evaluator)
     else:
         cl = np.empty(0, dtype=np.float64)
         cu = np.empty(0, dtype=np.float64)

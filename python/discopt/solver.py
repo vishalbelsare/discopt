@@ -154,9 +154,40 @@ class _AugmentedEvaluator:
         return augmented_con
 
 
+def _evaluator_fingerprint(model: Model) -> tuple:
+    """Structural fingerprint of a model for evaluator-cache validity.
+
+    Captures identity of the objective, constraints, variables, and parameters.
+    Mutating ``Parameter.value`` does NOT change the fingerprint, so repeated
+    solves that only rebind parameter values reuse the same JITed callables
+    and hit the XLA cache.
+    """
+    return (
+        id(model._objective),
+        tuple(id(c) for c in model._constraints),
+        tuple(id(v) for v in model._variables),
+        tuple(id(p) for p in model._parameters),
+    )
+
+
 def _make_evaluator(model: Model):
-    """Create the appropriate evaluator for the model."""
-    return NLPEvaluator(model)
+    """Create or reuse a cached NLPEvaluator for the model.
+
+    The first call builds a fresh ``NLPEvaluator`` (which JITs obj/grad/hess/
+    cons/jac/lag_hess). Subsequent calls return the same evaluator as long as
+    the model's structural fingerprint is unchanged, so the underlying jit
+    objects (and their XLA caches) are preserved across solves. Parameter
+    value changes are threaded through at call time as a runtime pytree.
+    """
+    fingerprint = _evaluator_fingerprint(model)
+    cached = getattr(model, "_nlp_evaluator_cache", None)
+    if cached is not None:
+        ev, cached_fp = cached
+        if cached_fp == fingerprint:
+            return ev
+    ev = NLPEvaluator(model)
+    model._nlp_evaluator_cache = (ev, fingerprint)
+    return ev
 
 
 def _estimate_alpha_fd(evaluator, lb, ub, n_samples=30):
@@ -449,30 +480,42 @@ def _tighten_node_bounds(evaluator, node_lb, node_ub, cl_list, cu_list, max_roun
     return lb, ub
 
 
-def _infer_constraint_bounds(model: Model):
+def _infer_constraint_bounds(model: Model, evaluator=None):
     """Infer (cl, cu) arrays from model constraint senses.
 
     The NLPEvaluator compiles constraints as `body - rhs`, so:
       - '<=' constraints: body - rhs <= 0 => cl = -inf, cu = 0
       - '==' constraints: body - rhs == 0 => cl = 0, cu = 0
       - '>=' constraints: body - rhs >= 0 => cl = 0, cu = inf
+
+    If an ``evaluator`` is passed, its per-constraint flat sizes are used
+    to expand each source Constraint's bounds to ``flat_size`` rows so
+    vector-valued bodies (e.g. DAEBuilder's vectorized collocation
+    residuals) line up with cyipopt's row count. Without an evaluator,
+    each source Constraint contributes one row (legacy scalar behavior).
     """
     cl_list = []
     cu_list = []
+    sizes = None
+    if evaluator is not None and hasattr(evaluator, "_constraint_flat_sizes"):
+        sizes = evaluator._constraint_flat_sizes
+
+    k = 0
     for c in model._constraints:
         if not isinstance(c, Constraint):
             continue
         if c.sense == "<=":
-            cl_list.append(-1e20)
-            cu_list.append(0.0)
+            lo, hi = -1e20, 0.0
         elif c.sense == "==":
-            cl_list.append(0.0)
-            cu_list.append(0.0)
+            lo, hi = 0.0, 0.0
         elif c.sense == ">=":
-            cl_list.append(0.0)
-            cu_list.append(1e20)
+            lo, hi = 0.0, 1e20
         else:
             raise ValueError(f"Unknown constraint sense: {c.sense}")
+        n = int(sizes[k]) if sizes is not None else 1
+        cl_list.extend([lo] * n)
+        cu_list.extend([hi] * n)
+        k += 1
 
     return cl_list, cu_list
 
@@ -1419,7 +1462,7 @@ def solve_model(
     jax_time += time.perf_counter() - t_jax_start
 
     # --- Infer constraint bounds ---
-    cl_list, cu_list = _infer_constraint_bounds(model)
+    cl_list, cu_list = _infer_constraint_bounds(model, evaluator)
     constraint_bounds = list(zip(cl_list, cu_list)) if cl_list else None
 
     # Pre-compute constraint bounds as JAX arrays for batch IPM
@@ -2451,7 +2494,7 @@ def _solve_nlp_bb(
     jax_time += time.perf_counter() - t_jax_start
 
     # --- Infer constraint bounds ---
-    cl_list, cu_list = _infer_constraint_bounds(model)
+    cl_list, cu_list = _infer_constraint_bounds(model, evaluator)
     constraint_bounds = list(zip(cl_list, cu_list)) if cl_list else None
 
     g_l_jax = None

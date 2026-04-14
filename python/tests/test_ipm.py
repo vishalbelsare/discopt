@@ -572,7 +572,7 @@ def _solve_with_cyipopt(build_fn):
 
     m = evaluator.n_constraints
     if m > 0:
-        cl, cu = _infer_constraint_bounds(model)
+        cl, cu = _infer_constraint_bounds(evaluator)
         constraint_bounds = list(zip(cl, cu))
     else:
         constraint_bounds = None

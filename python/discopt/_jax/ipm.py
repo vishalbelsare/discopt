@@ -1336,7 +1336,7 @@ def solve_nlp_ipm(
     elif m > 0:
         from discopt.solvers.nlp_ipopt import _infer_constraint_bounds
 
-        cl, cu = _infer_constraint_bounds(evaluator._model)
+        cl, cu = _infer_constraint_bounds(evaluator)
         g_l = jnp.array(cl, dtype=jnp.float64)
         g_u = jnp.array(cu, dtype=jnp.float64)
     else:
