@@ -410,10 +410,8 @@ impl TreeManager {
         for i in 0..self.pool.total_count() {
             let node = self.pool.get(NodeId(i));
             match node.status {
-                NodeStatus::Pending | NodeStatus::Evaluated => {
-                    if node.local_lower_bound < min_lb {
-                        min_lb = node.local_lower_bound;
-                    }
+                NodeStatus::Pending | NodeStatus::Evaluated if node.local_lower_bound < min_lb => {
+                    min_lb = node.local_lower_bound;
                 }
                 _ => {}
             }
