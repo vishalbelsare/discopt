@@ -16,8 +16,11 @@ discopt.estimate : Parameter estimation using the same Experiment interface.
 """
 
 from discopt.doe.design import (
+    BatchDesignResult,
+    BatchStrategy,
     DesignCriterion,
     DesignResult,
+    batch_optimal_experiment,
     optimal_experiment,
 )
 from discopt.doe.exploration import (
@@ -36,11 +39,14 @@ from discopt.doe.sequential import (
 )
 
 __all__ = [
+    "BatchDesignResult",
+    "BatchStrategy",
     "DesignCriterion",
     "DesignResult",
     "ExplorationResult",
     "FIMResult",
     "IdentifiabilityResult",
+    "batch_optimal_experiment",
     "check_identifiability",
     "compute_fim",
     "explore_design_space",

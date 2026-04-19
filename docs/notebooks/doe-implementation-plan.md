@@ -891,3 +891,45 @@ No new external dependencies required. Everything builds on:
 | Phase 3 done | `optimal_experiment()` beats random designs | D-optimal > 95th percentile of random |
 | Phase 4 done | Full sequential loop, public API | Integration test: 5 rounds, CI shrinks |
 | Phase 5 done | Notebooks build, citations resolve | `jupyter-book build docs/` zero warnings |
+
+---
+
+## Phase 7: Batch / Parallel DoE (delivered)
+
+Adds batch experimental design on top of the Phase 3 / 4 FIM machinery.
+Follows the joint-FIM formulation of {cite}`Galvanin2007`; compare with
+the modern framework in {cite}`Sandrin2025`. For an alternative route
+via parallel Bayesian optimization (gray-box, level-set partitioning),
+see {cite}`Gonzalez2023`.
+
+**Public API:**
+
+- `batch_optimal_experiment(..., n_experiments, strategy, ...)` in
+  `python/discopt/doe/design.py` — returns `BatchDesignResult`.
+- `BatchStrategy.GREEDY | JOINT | PENALIZED` selection constants.
+- `sequential_doe(..., experiments_per_round, batch_strategy)` kwargs
+  to run batched rounds; `DoERound.design` widens to
+  `DesignResult | BatchDesignResult`.
+
+**Internal changes:**
+
+- `optimal_experiment` now actually performs scipy L-BFGS-B local
+  refinement after multi-start seeding (previously documented but not
+  implemented). Controlled by `local_refine=True`.
+- New helpers in `design.py`: `_multi_start_candidates`,
+  `_scan_candidates`, `_refine_single_design`, `_greedy_batch`,
+  `_joint_batch`, `_penalized_batch`, `_metrics_from_fim`,
+  `_criterion_from_fim`, `_normalized_distance`.
+
+**Tests** (`python/tests/test_batch_doe.py`): greedy correctness,
+FIM additivity, monotone criterion, N=1 equivalence with
+`optimal_experiment`, prior respect, joint ≥ greedy on the linear-Gaussian
+toy, joint boundary recovery, penalized min-distance enforcement, and
+`sequential_doe` batched integration.
+
+**Out of scope for v1:** robust / expected-information designs under
+parameter uncertainty, mixed-integer candidate-pool batching,
+heterogeneous experiments in one batch, and end-to-end JAX autograd
+through the joint objective (scipy finite differences for now).
+
+**Tutorial:** `docs/notebooks/tutorial_batch_doe.ipynb`.
