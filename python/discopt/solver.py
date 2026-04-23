@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Any, Optional
 
 import numpy as np
 from scipy.optimize import minimize as scipy_minimize
@@ -589,11 +589,16 @@ def _solve_root_node_multistart_ipm(
     g_u_jax,
     options,
     n_random=2,
+    convex=False,
 ):
     """Solve root NLP relaxation from multiple starting points via vmap'd IPM.
 
     Uses jax.vmap to solve all starting points in parallel, giving ~Nx speedup
     over the serial loop when using the pure-JAX IPM backend.
+
+    When ``convex=True``, iterates whose best code is 3 (max_iter) or 4
+    (stalled) are polished with cyipopt; IPM's non-KKT obj is not a valid
+    lower bound for convex NLP-BB (issue #39).
     """
     import jax.numpy as jnp
 
@@ -649,10 +654,41 @@ def _solve_root_node_multistart_ipm(
         # Among feasible, pick the one with lowest objective
         masked_obj = np.where(feasible_mask, obj_vals, np.inf)
         best_idx = int(np.argmin(masked_obj))
+        best_code = int(converged[best_idx])
+        best_obj = float(obj_vals[best_idx])
+        best_x = np.asarray(x_vals[best_idx], dtype=np.float64)
+
+        # Convex polish: codes 3 (max_iter) / 4 (stalled) don't certify
+        # KKT stationarity — objective is not a valid LB for convex NLP-BB.
+        if convex and best_code in (3, 4):
+            try:
+                polish = _solve_node_nlp_ipopt(
+                    evaluator,
+                    best_x,
+                    np.asarray(node_lb),
+                    np.asarray(node_ub),
+                    constraint_bounds,
+                    options,
+                )
+            except Exception as e:
+                logger.debug("Root IPM convex polish failed: %s", e)
+                polish = None
+            if polish is not None and polish.status in (
+                SolveStatus.OPTIMAL,
+                SolveStatus.ITERATION_LIMIT,
+            ):
+                p_obj = float(polish.objective)
+                if np.isfinite(p_obj) and p_obj < _SENTINEL_THRESHOLD:
+                    return NLPResult(
+                        status=polish.status,
+                        x=np.asarray(polish.x),
+                        objective=p_obj,
+                    )
+
         return NLPResult(
             status=SolveStatus.OPTIMAL,
-            x=x_vals[best_idx],
-            objective=float(obj_vals[best_idx]),
+            x=best_x,
+            objective=best_obj,
         )
     else:
         # All starts infeasible or NaN — attempt feasibility restoration.
@@ -1349,7 +1385,7 @@ def solve_model(
 
     if problem_class is not None:
         if problem_class == ProblemClass.LP:
-            return _solve_lp(model, t_start)
+            return _solve_lp(model, t_start, time_limit)
         elif problem_class == ProblemClass.QP:
             return _solve_qp(model, t_start)
         elif problem_class == ProblemClass.MILP:
@@ -1386,7 +1422,12 @@ def solve_model(
         try:
             from discopt._jax.convexity import classify_model as _classify_convexity
 
-            is_convex, _ = _classify_convexity(model)
+            # use_certificate=True enables the sound interval-Hessian
+            # fallback for constraints/objective the syntactic walker
+            # leaves unproven — tightens UNKNOWN to CONVEX when provable
+            # on the root box, enabling the single-NLP fast path for
+            # models whose convexity isn't visible at the DAG level.
+            is_convex, _ = _classify_convexity(model, use_certificate=True)
             if is_convex:
                 logger.info(
                     "Convex NLP detected — solving with single NLP (global optimality guaranteed)"
@@ -1424,7 +1465,7 @@ def solve_model(
         try:
             from discopt._jax.convexity import classify_model as _cls_conv
 
-            _is_conv, _ = _cls_conv(model)
+            _is_conv, _ = _cls_conv(model, use_certificate=True)
             if _is_conv:
                 logger.info("Convex MINLP detected, using NLP-BB (nonlinear Branch and Bound)")
                 return _solve_nlp_bb(
@@ -1512,7 +1553,13 @@ def solve_model(
     try:
         from discopt._jax.convexity import classify_model as _classify_model
 
-        _model_is_convex, _convex_constraint_mask = _classify_model(model)
+        # use_certificate consults the sound interval-Hessian fallback
+        # for constraints the syntactic walker leaves unproven. Tightens
+        # _convex_constraint_mask entries to True when the certificate
+        # proves convexity on the root box — enabling OA cuts and the
+        # αBB skip below for structurally-convex problems whose
+        # convexity the DCP walker alone cannot recognise.
+        _model_is_convex, _convex_constraint_mask = _classify_model(model, use_certificate=True)
         if _model_is_convex:
             logger.info("Model detected as convex — NLP solutions are valid lower bounds")
         if cutting_planes and any(_convex_constraint_mask):
@@ -1521,6 +1568,18 @@ def solve_model(
         logger.debug("Convexity detection failed: %s", exc)
         if cutting_planes and model._constraints:
             _convex_constraint_mask = [False] * len(model._constraints)
+
+    # Per-node certificate refresh imported lazily so the main
+    # classification import above stays the single-point-of-truth for
+    # "convexity is available at all". ``None`` disables per-node
+    # refresh below (the root mask is then used verbatim).
+    _refresh_mask: Any = None
+    try:
+        from discopt._jax.convexity import refresh_convex_mask as _refresh_mask_import
+
+        _refresh_mask = _refresh_mask_import
+    except Exception:
+        pass
 
     # Enable nonconvex spatial branching so integer-feasible nodes are not
     # prematurely fathomed.  The NLP local optimum at such a node may not
@@ -1707,6 +1766,7 @@ def solve_model(
                 _active_gu,
                 batch_psols=batch_psols,
                 multistart=True,  # IPM needs multistart even for convex models
+                convex=_model_is_convex,
             )
             # Constraint feasibility post-check for batch IPM results.
             # When the IPM solution violates constraints (e.g. due to hitting
@@ -2062,6 +2122,32 @@ def solve_model(
                 if result_lbs[i] < _SENTINEL_THRESHOLD:  # skip infeasible nodes
                     node_lb_i = np.array(batch_lb[i])
                     node_ub_i = np.array(batch_ub[i])
+                    # Refresh the convex-constraint mask on this node's
+                    # tightened box: a constraint UNKNOWN at the root
+                    # may be provably convex on the subtree. The
+                    # refresh only flips False -> True (soundness
+                    # preserved) and is skipped when every root entry
+                    # is already True (nothing to tighten).
+                    node_mask = _convex_constraint_mask
+                    node_oa_enabled = _oa_enabled
+                    if (
+                        _refresh_mask is not None
+                        and _convex_constraint_mask is not None
+                        and not all(_convex_constraint_mask)
+                    ):
+                        try:
+                            node_mask = _refresh_mask(
+                                model, _convex_constraint_mask, node_lb_i, node_ub_i
+                            )
+                        except Exception as exc:
+                            logger.debug("Per-node convexity refresh failed: %s", exc)
+                            node_mask = _convex_constraint_mask
+                        if (
+                            node_mask is not _convex_constraint_mask
+                            and node_mask is not None
+                            and any(node_mask)
+                        ):
+                            node_oa_enabled = True
                     new_cuts = _generate_cuts(
                         evaluator,
                         model,
@@ -2070,8 +2156,8 @@ def solve_model(
                         node_ub_i,
                         constraint_senses=_constraint_senses,
                         bilinear_terms=_bilinear_terms,
-                        oa_enabled=_oa_enabled,
-                        convex_constraint_mask=_convex_constraint_mask,
+                        oa_enabled=node_oa_enabled,
+                        convex_constraint_mask=node_mask,
                     )
                     _cut_pool.add_many(new_cuts)
                     # Age and purge stale cuts
@@ -2467,7 +2553,7 @@ def _solve_nlp_bb(
     try:
         from discopt._jax.convexity import classify_model as _classify_model
 
-        _model_is_convex, _ = _classify_model(model)
+        _model_is_convex, _ = _classify_model(model, use_certificate=True)
     except Exception:
         _model_is_convex = False
 
@@ -2583,6 +2669,7 @@ def _solve_nlp_bb(
                 g_u_jax,
                 batch_psols=batch_psols,
                 multistart=True,  # IPM needs multistart even for convex models
+                convex=_model_is_convex,
             )
             # Constraint feasibility post-check
             if cl_list:
@@ -2631,6 +2718,7 @@ def _solve_nlp_bb(
                         g_u_jax,
                         opts,
                         n_random=n_random,
+                        convex=_model_is_convex,
                     )
                 elif iteration == 0:
                     nlp_result = _solve_root_node_multistart(
@@ -2657,6 +2745,7 @@ def _solve_nlp_bb(
                         constraint_bounds,
                         opts,
                         nlp_solver=nlp_solver,
+                        convex=_model_is_convex,
                     )
 
                 result_ids[i] = int(batch_ids[i])
@@ -2849,6 +2938,7 @@ def _solve_node_nlp(
     constraint_bounds: Optional[list[tuple[float, float]]],
     options: dict,
     nlp_solver: str = "ipopt",
+    convex: bool = False,
 ):
     """Solve the NLP relaxation at a single B&B node with tightened bounds.
 
@@ -2901,7 +2991,9 @@ def _solve_node_nlp(
             return _solve_node_nlp_ipopt(
                 evaluator, x0, node_lb, node_ub, constraint_bounds, options
             )
-        return _solve_node_nlp_ipm(evaluator, x0, node_lb, node_ub, constraint_bounds, options)
+        return _solve_node_nlp_ipm(
+            evaluator, x0, node_lb, node_ub, constraint_bounds, options, convex=convex
+        )
     return _solve_node_nlp_ipopt(evaluator, x0, node_lb, node_ub, constraint_bounds, options)
 
 
@@ -2960,8 +3052,14 @@ def _solve_node_nlp_ipm(
     node_ub: np.ndarray,
     constraint_bounds: Optional[list[tuple[float, float]]],
     options: dict,
+    convex: bool = False,
 ):
-    """Solve node NLP with the pure-JAX IPM."""
+    """Solve node NLP with the pure-JAX IPM.
+
+    When ``convex=True``, iterates that hit ``max_iter`` / stall (codes 3,
+    4) are polished with cyipopt because a non-KKT IPM objective is not a
+    valid lower bound for the convex NLP (issue #39).
+    """
     import jax.numpy as jnp
 
     from discopt._jax.ipm import IPMOptions, ipm_solve
@@ -3061,6 +3159,28 @@ def _solve_node_nlp_ipm(
             objective=_INFEASIBILITY_SENTINEL,
         )
 
+    # Convex polish: codes 3/4 are not KKT, so obj_val is not a valid LB
+    # for a convex NLP. Re-solve with cyipopt. See issue #39.
+    if convex and conv in (3, 4):
+        try:
+            polish = _solve_node_nlp_ipopt(
+                evaluator, x_sol, node_lb, node_ub, constraint_bounds, options
+            )
+        except Exception as e:
+            logger.debug("IPM convex polish failed (single-node): %s", e)
+            polish = None
+        if polish is not None and polish.status in (
+            SolveStatus.OPTIMAL,
+            SolveStatus.ITERATION_LIMIT,
+        ):
+            p_obj = float(polish.objective)
+            if np.isfinite(p_obj) and p_obj < _SENTINEL_THRESHOLD:
+                return NLPResult(
+                    status=polish.status,
+                    x=np.asarray(polish.x),
+                    objective=p_obj,
+                )
+
     return NLPResult(
         status=status,
         x=x_sol,
@@ -3080,12 +3200,19 @@ def _solve_batch_ipm(
     g_u_jax,
     batch_psols=None,
     multistart=False,
+    convex=False,
 ):
     """Solve a batch of NLP relaxations simultaneously via vmap'd IPM.
 
     When multistart=True, each node gets 3 starting points (warm-start,
     midpoint, random) solved in parallel, with the best converged solution
     selected per node.
+
+    When ``convex=True``, the caller is treating the NLP objective at each
+    node as a valid lower bound (sound only for convex models). IPM
+    iterates that hit ``max_iter`` (code 3) or stall (code 4) are not at
+    KKT stationarity and their objective is not a reliable lower bound, so
+    those nodes get a polish pass with cyipopt.
     """
     import jax.numpy as jnp
 
@@ -3186,6 +3313,36 @@ def _solve_batch_ipm(
             np.where(any_feasible, result_obj, _INFEASIBILITY_SENTINEL), dtype=np.float64
         )
         result_sols = result_x  # already writable np.array
+
+        # Convex polish: IPM codes 3 (max_iter) / 4 (stalled) don't certify
+        # KKT stationarity, so their objective is not a valid lower bound
+        # for a convex NLP. Re-solve those nodes with cyipopt and use its
+        # (reliable) optimum as the LB. See issue #39 (synthes2 B&B node
+        # stalls at 92.10 vs true 73.04).
+        if convex:
+            best_codes = np.array([int(converged[i, best_per_node[i]]) for i in range(n_batch)])
+            polish_needed = any_feasible & ((best_codes == 3) | (best_codes == 4))
+            for i in np.where(polish_needed)[0]:
+                row = int(i * n_starts)
+                node_lb_i = np.asarray(xl_batch[row])
+                node_ub_i = np.asarray(xu_batch[row])
+                try:
+                    polish = _solve_node_nlp_ipopt(
+                        evaluator,
+                        result_sols[i],
+                        node_lb_i,
+                        node_ub_i,
+                        constraint_bounds,
+                        options,
+                    )
+                except Exception as e:
+                    logger.debug("IPM convex polish failed at node %d: %s", i, e)
+                    continue
+                if polish.status in (SolveStatus.OPTIMAL, SolveStatus.ITERATION_LIMIT):
+                    polished_obj = float(polish.objective)
+                    if np.isfinite(polished_obj) and polished_obj < _SENTINEL_THRESHOLD:
+                        result_lbs[i] = polished_obj
+                        result_sols[i] = np.asarray(polish.x, dtype=np.float64)
     else:
         conv_mask = (converged == 1) | (converged == 2) | (converged == 3) | (converged == 4)
         ok_mask = conv_mask & np.isfinite(obj_vals)
@@ -3371,8 +3528,18 @@ def _decompose_eq_slack_form(
     return A_ub, b_ub, A_eq, b_eq
 
 
-def _solve_lp(model: Model, t_start: float) -> SolveResult:
-    """Solve an LP using the pure-JAX LP IPM (no NLP evaluator needed)."""
+def _solve_lp(model: Model, t_start: float, time_limit: float | None = None) -> SolveResult:
+    """Solve an LP, preferring HiGHS and falling back to the pure-JAX LP IPM.
+
+    The pure-JAX IPM struggles on problems whose declared bounds exceed
+    ~1e15 (it returns NaN via Newton blow-up on unbounded variables); HiGHS
+    handles unbounded columns natively and is also usually faster. We try
+    HiGHS first and fall back to the IPM only when HiGHS is unavailable.
+    """
+    highs_result = _solve_lp_highs(model, t_start, time_limit)
+    if highs_result is not None:
+        return highs_result
+
     from discopt._jax.lp_ipm import lp_ipm_solve
     from discopt._jax.problem_classifier import extract_lp_data
 
@@ -3401,7 +3568,7 @@ def _solve_lp(model: Model, t_start: float) -> SolveResult:
     else:
         status = "error"
 
-    return SolveResult(
+    sr = SolveResult(
         status=status,
         objective=obj_val,
         bound=obj_val if status == "optimal" else None,
@@ -3413,6 +3580,87 @@ def _solve_lp(model: Model, t_start: float) -> SolveResult:
         jax_time=jax_time,
         python_time=wall_time - jax_time,
     )
+    # LPs are convex by definition; mark for parity with the QP/NLP fast paths.
+    sr.convex_fast_path = True
+    return sr
+
+
+def _solve_lp_highs(
+    model: Model,
+    t_start: float,
+    time_limit: float | None = None,
+) -> SolveResult | None:
+    """Solve an LP using HiGHS. Returns None when HiGHS is unavailable or
+    the HiGHS wrapper fails, so the caller can fall back to the JAX IPM."""
+    try:
+        from discopt.solvers.lp_highs import solve_lp as _highs_solve_lp
+    except ImportError:
+        return None
+
+    from discopt._jax.problem_classifier import extract_lp_data
+    from discopt.modeling.core import ObjectiveSense
+    from discopt.solvers import SolveStatus
+
+    lp_data = extract_lp_data(model)
+    n_orig = sum(v.size for v in model._variables)
+
+    bounds = list(
+        zip(
+            np.asarray(lp_data.x_l[:n_orig]).tolist(),
+            np.asarray(lp_data.x_u[:n_orig]).tolist(),
+        )
+    )
+
+    n_total = lp_data.A_eq.shape[1] if lp_data.A_eq.shape[0] > 0 else n_orig
+    n_slack = n_total - n_orig
+    A_eq_full = np.asarray(lp_data.A_eq)
+    b_eq_full = np.asarray(lp_data.b_eq)
+    A_ub, b_ub, A_eq, b_eq = _decompose_eq_slack_form(A_eq_full, b_eq_full, n_orig, n_slack)
+
+    try:
+        result = _highs_solve_lp(
+            c=np.asarray(lp_data.c[:n_orig]),
+            A_ub=A_ub,
+            b_ub=b_ub,
+            A_eq=A_eq,
+            b_eq=b_eq,
+            bounds=bounds,
+            time_limit=time_limit,
+        )
+    except Exception as e:
+        logger.debug("HiGHS LP solve failed: %s", e)
+        return None
+
+    wall_time = time.perf_counter() - t_start
+
+    if result.status == SolveStatus.OPTIMAL:
+        assert result.x is not None and result.objective is not None
+        obj_val = float(result.objective) + float(lp_data.obj_const)
+        assert model._objective is not None
+        if model._objective.sense == ObjectiveSense.MAXIMIZE:
+            obj_val = -obj_val
+
+        sr = SolveResult(
+            status="optimal",
+            objective=obj_val,
+            bound=obj_val,
+            gap=0.0,
+            x=_unpack_solution(model, np.asarray(result.x[:n_orig])),
+            wall_time=wall_time,
+            node_count=0,
+            rust_time=0.0,
+            jax_time=0.0,
+            python_time=wall_time,
+        )
+        sr.convex_fast_path = True
+        return sr
+    if result.status == SolveStatus.INFEASIBLE:
+        return SolveResult(status="infeasible", wall_time=wall_time)
+    if result.status == SolveStatus.UNBOUNDED:
+        return SolveResult(status="unbounded", wall_time=wall_time)
+    if result.status == SolveStatus.TIME_LIMIT:
+        return SolveResult(status="time_limit", wall_time=wall_time)
+    return None
 
 
 def _solve_qp(model: Model, t_start: float) -> SolveResult:
