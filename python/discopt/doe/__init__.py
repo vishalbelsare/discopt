@@ -30,6 +30,16 @@ from discopt.doe.design import (
     batch_optimal_experiment,
     optimal_experiment,
 )
+from discopt.doe.discrimination import (
+    DiscriminationCriterion,
+    DiscriminationDesignResult,
+    discriminate_compound,
+    discriminate_design,
+)
+from discopt.doe.discrimination_sequential import (
+    DiscriminationRound,
+    sequential_discrimination,
+)
 from discopt.doe.estimability import (
     EstimabilityResult,
     collinearity_index,
@@ -53,6 +63,12 @@ from discopt.doe.profile import (
     profile_all,
     profile_likelihood,
 )
+from discopt.doe.selection import (
+    ModelSelectionResult,
+    likelihood_ratio_test,
+    model_selection,
+    vuong_test,
+)
 from discopt.doe.sequential import (
     DoERound,
     sequential_doe,
@@ -63,12 +79,16 @@ __all__ = [
     "BatchStrategy",
     "DesignCriterion",
     "DesignResult",
+    "DiscriminationCriterion",
+    "DiscriminationDesignResult",
+    "DiscriminationRound",
     "DoERound",
     "EstimabilityResult",
     "ExplorationResult",
     "FIMResult",
     "IdentifiabilityDiagnostics",
     "IdentifiabilityResult",
+    "ModelSelectionResult",
     "ProfileLikelihoodResult",
     "batch_optimal_experiment",
     "check_identifiability",
@@ -76,10 +96,16 @@ __all__ = [
     "compute_fim",
     "d_optimal_subset",
     "diagnose_identifiability",
+    "discriminate_compound",
+    "discriminate_design",
     "estimability_rank",
     "explore_design_space",
+    "likelihood_ratio_test",
+    "model_selection",
     "optimal_experiment",
     "profile_all",
     "profile_likelihood",
+    "sequential_discrimination",
     "sequential_doe",
+    "vuong_test",
 ]
