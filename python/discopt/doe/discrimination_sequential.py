@@ -111,7 +111,9 @@ def sequential_discrimination(
         ``design -> new_data`` simulator / lab runner. When ``None``,
         the loop returns after the first design is proposed.
     criterion : DiscriminationCriterion, default BF
+        Discrimination criterion used to score candidate designs each round.
     selection_method : {"aic", "bic"}, default "aic"
+        Information criterion used to weight competing models from the fits.
     stop_when_dominant : float, default 0.95
         Early-stop threshold on the maximum selection weight.
     initial_guesses : dict[str, dict[str, float]], optional

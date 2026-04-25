@@ -128,7 +128,7 @@ def weighted_sum(
     anchors: Optional[list[dict[str, np.ndarray]]] = None,
     **solve_kwargs,
 ) -> ParetoFront:
-    """Weighted-sum scalarization sweep.
+    r"""Weighted-sum scalarization sweep.
 
     Minimizes ``sum_i w_i * g_i(x)`` across a grid of weights, where
     ``g_i = (f_i - z*_i) / (z^N_i - z*_i)`` when ``normalize=True`` (default)
@@ -145,16 +145,22 @@ def weighted_sum(
     Parameters
     ----------
     model : discopt.modeling.Model
+        Discopt model whose objective is replaced for each scalarized solve.
     objectives : list of Expression
+        Objective expressions, one per criterion.
     senses : iterable of {"min", "max"}, optional
+        Per-objective sense; defaults to all-``"min"``.
     objective_names : iterable of str, optional
+        Display names attached to the resulting :class:`ParetoFront`.
     weights : numpy.ndarray, optional
         ``(n, k)`` array of convex weights. If omitted, a uniform simplex-
         lattice grid of approximately ``n_weights`` points is used.
     n_weights : int, default 21
         Target grid size (exact for ``k == 2``, approximate otherwise).
     normalize : bool, default True
+        Scale objectives to ``[0, 1]`` using ideal/nadir before weighting.
     warm_start : bool, default True
+        Re-use the previous solve's primal as the next initial point.
     filter : bool, default True
         Strip weakly dominated points from the returned front.
     ideal, nadir : numpy.ndarray, optional
@@ -163,7 +169,7 @@ def weighted_sum(
         :func:`~discopt.mo.utils.nadir_point`.
     anchors : list of dict, optional
         Pre-computed anchor solutions (from a prior ``ideal_point`` call).
-    **solve_kwargs
+    \*\*solve_kwargs : dict
         Forwarded to :meth:`discopt.modeling.Model.solve`.
     """
     senses_list = _as_senses(senses, len(objectives))

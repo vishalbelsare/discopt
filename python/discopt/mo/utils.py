@@ -82,7 +82,7 @@ def ideal_point(
     warm_start: bool = True,
     **solve_kwargs,
 ) -> tuple[np.ndarray, list[dict[str, np.ndarray]]]:
-    """Compute the ideal point and per-objective anchor solutions.
+    r"""Compute the ideal point and per-objective anchor solutions.
 
     For each objective ``f_i`` in order, sets the model objective to
     ``minimize f_i`` (or ``maximize f_i``) and solves, restoring the original
@@ -101,7 +101,7 @@ def ideal_point(
     warm_start : bool, default True
         Pass each anchor's solution as ``initial_solution`` to the next anchor
         solve.
-    **solve_kwargs
+    \*\*solve_kwargs : dict
         Forwarded to :meth:`discopt.modeling.Model.solve`.
 
     Returns
@@ -173,10 +173,13 @@ def nadir_point(
     Parameters
     ----------
     model : discopt.modeling.Model
+        Model carrying the decision variables and constraints.
     objectives : list of Expression
+        Length-``k`` list of objective expressions.
     anchors : list of dict
         Solution dicts returned by :func:`ideal_point`, length ``k``.
     senses : iterable of {"min", "max"}, optional
+        One sense per objective; default is all ``"min"``.
 
     Returns
     -------

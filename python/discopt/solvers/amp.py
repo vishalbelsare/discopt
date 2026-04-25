@@ -11,7 +11,7 @@ Algorithm loop (per iteration k):
   1. Solve MILP relaxation → lower bound LB_k
   2. Fix continuous variables' interval assignments from MILP solution,
      solve NLP subproblem → upper bound UB_k
-  3. Check gap: if (UB_k - LB_k) / |UB_k| ≤ rel_gap → CERTIFIED OPTIMAL
+  3. Check gap: if ``(UB_k - LB_k) / abs(UB_k) ≤ rel_gap`` → CERTIFIED OPTIMAL
   4. Refine partitions adaptively around the MILP solution point
   5. Repeat until gap closed, max_iter reached, or time_limit exceeded
 
@@ -510,7 +510,7 @@ def solve_amp(
     model : Model
         A validated discopt Model.
     rel_gap : float
-        Relative gap tolerance: terminate when (UB-LB)/|UB| ≤ rel_gap.
+        Relative gap tolerance: terminate when ``(UB-LB)/abs(UB) ≤ rel_gap``.
     abs_tol : float
         Absolute gap tolerance: terminate when UB-LB ≤ abs_tol.
     time_limit : float

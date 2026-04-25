@@ -213,7 +213,7 @@ def discriminate_compound(
     mi_samples: int = 2000,
     seed: int | None = None,
 ) -> DiscriminationDesignResult:
-    """DT-compound design balancing precision and discrimination.
+    r"""DT-compound design balancing precision and discrimination.
 
     Optimises ``(1 - λ) * Φ_precision(M_p) + λ * Φ_discrimination``
     where ``Φ_precision`` is one of the standard FIM criteria
@@ -229,12 +229,13 @@ def discriminate_compound(
     precision_criterion : DesignCriterion, default D_OPTIMAL
         FIM criterion used for the precision term.
     discrimination_criterion : DiscriminationCriterion, default BF
+        Discrimination objective `Φ_discrimination`.
     precision_model : str, optional
         Which model anchors the precision objective. Defaults to the
         lexicographically first key in ``experiments`` and a warning
         is added to ``result.warnings``.
-    Other parameters
-        See :func:`discriminate_design`.
+    \*\*kwargs : dict
+        Additional parameters; see :func:`discriminate_design`.
 
     Returns
     -------

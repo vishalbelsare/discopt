@@ -45,6 +45,7 @@ class ModelSelectionResult:
     Attributes
     ----------
     method : {"aic", "aicc", "bic", "lrt", "vuong"}
+        Selection method that produced this result.
     scores : dict[str, float]
         Per-model score (lower is better for AIC/BIC).
     weights : dict[str, float] or None
@@ -58,6 +59,7 @@ class ModelSelectionResult:
     z_statistic : float or None
         Vuong test statistic only.
     warnings : list[str]
+        Diagnostic messages accumulated during selection.
     """
 
     method: SelectionMethod
@@ -90,6 +92,7 @@ def model_selection(
     estimation_results : dict[str, EstimationResult]
         Per-model fitted results keyed by user-chosen names.
     method : {"aic", "aicc", "bic"}, default "aic"
+        Information criterion used to score models.
 
     Returns
     -------

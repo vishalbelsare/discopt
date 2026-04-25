@@ -151,6 +151,7 @@ def hypervolume(
     Parameters
     ----------
     front : ParetoFront
+        Front whose dominated hypervolume is computed.
     reference : numpy.ndarray, optional
         Reference point in the original senses of the front. If ``None``,
         uses the nadir (if available) or the per-objective worst value of
@@ -161,6 +162,7 @@ def hypervolume(
     n_samples : int
         Monte-Carlo sample count when the MC branch is used.
     rng : numpy.random.Generator, optional
+        Random generator used by the Monte-Carlo branch.
 
     Returns
     -------
