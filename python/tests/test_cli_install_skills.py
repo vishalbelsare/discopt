@@ -24,10 +24,13 @@ class TestSkillsPackage:
 
     def test_iter_commands_nonempty(self):
         names = [p.name for p in skills.iter_commands()]
-        assert len(names) >= 10
+        assert len(names) >= 5
         assert "formulate.md" in names
         assert "doe.md" in names
-        assert "adversary.md" in names
+        # Dev-only commands (discoptbot, adversary) intentionally don't ship
+        # in the bundled skills; they live in `.claude/commands/` only.
+        assert "discoptbot.md" not in names
+        assert "adversary.md" not in names
 
     def test_iter_agents_nonempty(self):
         names = [p.name for p in skills.iter_agents()]
