@@ -31,6 +31,92 @@ The high-level pitch: build a presolve pipeline that treats the MINLP
 components (relaxation compiler, branching, primal heuristics) consume that
 structure.
 
+## Research grounding
+
+Quantified evidence from the literature anchors the phasing below. Each
+number is an upper bound on what the corresponding pass has achieved on
+established benchmarks; realized impact in discopt depends on whether the
+orchestrator amortizes the work.
+
+- **Full MIP presolve, on vs. off** — Achterberg, Bixby, Gu, Rothberg,
+  Weninger (2020), *Presolve Reductions in MIP*, INFORMS J. Computing 32(2),
+  reports 10.7× shifted geomean speedup on MIPLIB and 40–60% nonzero
+  reduction. Sets the ceiling for what Tracks C and F can deliver on the
+  linear part of MINLP.
+- **OBBT on hard NLP/MINLP** — Puranik & Sahinidis (2017), *Domain reduction
+  techniques for global NLP and MINLP optimization*, Constraints 22:338–376,
+  reports ~17–19% average speedup, with much larger gains on hard
+  instances. Motivates Track B and the OBBT improvements in E2.
+- **OBBT enhancements** — Gleixner, Berthold, Mueller, Weltge (2017),
+  *Three enhancements for optimization-based bound tightening*, J. Global
+  Optim. 67:731–757. Filtering, grouping, and FBBT/OBBT interleaving
+  deliver ~2–3× on OBBT alone and are now standard in SCIP. Direct input
+  to `obbt.rs` and the orchestrator design (A1).
+- **AC-OPF bound tightening** — Coffrin & Roald (2018), *Bound tightening
+  for the alternating current optimal power flow problem*. Closes 20–80%
+  of the optimality gap depending on instance class. Operational evidence
+  for the LANL-flavored "tight loops on structured nonlinearity" pitch.
+- **Polynomial→quadratic reformulation** — Karia, Adjiman, Chachuat (2022),
+  *Assessment of a two-step approach for global optimization of
+  mixed-integer polynomial programs using quadratic reformulation*, Comput.
+  Chem. Eng. 165:107909. POPs comparable to or better than BARON post
+  reformulation. Directly motivates D2.
+- **FBBT as a fixed-point LP** — Belotti, Cafieri, Lee, Liberti (2010),
+  *Feasibility-based bounds tightening via fixed points*, shows iterative
+  FBBT can be cast as a single LP that converges exactly. Couenne ships
+  this; current `fbbt.rs` does iterative-with-cap. Motivates new item B4.
+
+## What's distinctive vs. MIP presolve
+
+Most of Tracks C and F are ports of well-understood MIP reductions
+(Achterberg et al. 2020). High leverage, but no research novelty — port
+and ship. The genuinely NLP-distinctive opportunities, where an "NLP
+preprocessing layer" buys something MIP presolve cannot, are:
+
+1. **Expression-DAG-aware bound tightening as a fixed-point LP** (B4
+   below). Belotti–Cafieri–Lee–Liberti 2010 cast iterative FBBT as a
+   convergent LP. Couenne implements it; SCIP only partially. Replaces
+   capped iteration with provable termination at the true fixed point.
+2. **Polynomial→quadratic reformulation** (D2). Almost no deployed solver
+   actually rewrites high-degree monomials before relaxing; discopt's
+   `term_classifier.py` already detects the structure.
+3. **Convex-block reformulation as a rewrite, not a label** (D1). Epigraph
+   rewrites for log-sum-exp, perspective lifts for indicators, SOC lifts
+   for PSD-quadratics. discopt's `convexity/` machinery already produces
+   certificates that today are discarded.
+4. **Hybrid linear/nonlinear presolve handshake** (A1+A2 + B1).
+   Bound tightening through a nonlinear constraint should feed back into
+   MIP-style aggregation and dominated-row detection. No deployed solver
+   does this loop tightly: SCIP runs MIP presolve and `cons_nonlinear`
+   propagation as orthogonal phases (`scip/src/scip/cons_nonlinear.c`).
+   Genuinely under-explored research territory.
+5. **Symmetry on the expression graph** (D4). Margot 2010 and Liberti &
+   Ostrowski 2014 cover constraint-matrix symmetry; permutation symmetry
+   of nonlinear operator subgraphs (interchangeable reactor stages with
+   shared kinetics, identical NN ensemble members) is wide open.
+
+### LANL prior art
+
+The "NLP preprocessing layer" framing in the original pitch tracks the
+PowerModels / LANL line of work on AC-OPF and conic reformulation. The
+common thread is *tight bound-tightening loops on structured
+nonlinearities, plus reformulation-as-presolve where the relaxation is
+deliberately tightened before the tree starts*. Concrete pointers:
+
+- Coffrin, Hijazi, Van Hentenryck (2017), *The QC relaxation: theoretical
+  and computational results on optimal power flow*, IEEE Trans. Power
+  Systems 31:3008–3018. Bound tightening loop is the operational
+  realization of the layer.
+- Coffrin & Roald (2018), bound tightening for AC-OPF (cited above).
+- Lubin, Yamangil, Bent, Vielma (2018), *Polyhedral approximation in
+  mixed-integer convex optimization*, Math. Prog. 172. Pajarito's
+  outer-approximation pipeline is effectively a conic preprocessing pass.
+  Already referenced under D1; flagged here as the LANL-flavored item.
+
+The implementable distillation: D1 (convex reformulation) + E2 (dual-based
+reduction) + a real orchestrator (A1) is the LANL-flavored core of this
+roadmap.
+
 ## Current state
 
 ### Rust side (`crates/discopt-core/src/presolve/`)
@@ -191,6 +277,23 @@ only does incremental work.
 
 **Dependencies.** A1.
 
+#### B4. FBBT as a fixed-point LP (M)
+
+Replace the current iterative-with-cap FBBT in `fbbt.rs` with the LP
+formulation of Belotti, Cafieri, Lee, Liberti (2010). The iterative
+variant is potentially non-terminating on cyclic dependencies in the
+expression DAG and currently relies on `max_iter` to bail; the LP
+formulation converges exactly to the true fixed point in a single solve.
+Couenne ships this; SCIP partially. Tightens the existing pass without
+adding new scope to the orchestrator.
+
+**Where.** `crates/discopt-core/src/presolve/fbbt.rs`.
+
+**References.**
+- Belotti, Cafieri, Lee, Liberti (2010), *Feasibility-based bounds tightening via fixed points*.
+
+**Dependencies.** None — local refactor of `fbbt.rs`. A1 useful but not required.
+
 ### Track C — Aggregation, substitution, redundancy
 
 #### C1. Variable aggregation and substitution (S–M)
@@ -313,6 +416,33 @@ parallel relaxation evaluation and decomposition methods.
 
 **Dependencies.** A3.
 
+#### D6. Neural-network-embedded MINLP presolve (M)
+
+discopt-distinctive. The `nn/` module embeds trained feed-forward networks
+as algebraic constraints (FullSpace, ReluBigM, ReducedSpace formulations).
+Today, big-M expansion uses bounds from `nn/bounds.py` interval propagation
+once. A presolve pass would (a) tighten activation bounds via interval AD
+on the NN graph using current variable bounds, (b) detect dead ReLUs
+(always-on / always-off) and eliminate them, (c) feed tightened activation
+bounds back to a smaller big-M, and (d) participate in the orchestrator's
+fixed-point loop so that downstream variable bound tightening triggers
+re-tightening of NN activations. No prior solver embeds NNs as first-class
+constraints, so this is genuinely new territory.
+
+**Where.** `python/discopt/nn/presolve.py` (new), called from
+`formulations/relu_bigm.py` and integrated with the Python-side presolve
+package (A3).
+
+**References.**
+- Tjeng, Xiao, Tedrake (2019), *Evaluating robustness of neural networks
+  with mixed integer programming*, ICLR. Tight ReLU bound tightening for
+  big-M MIP encodings.
+- Grimstad & Andersson (2019), *ReLU networks as surrogate models in
+  mixed-integer linear programs*, Comput. Chem. Eng. 131. Discusses the
+  big-M tightness issue this pass addresses.
+
+**Dependencies.** A3, ideally B2 (interval AD on JAX DAG).
+
 ### Track E — Numerics and scaling
 
 #### E1. Presolve-time row/column equilibration (S)
@@ -370,7 +500,13 @@ explicit clique constraints to tighten the LP relaxation.
 
 ## Phasing
 
-A suggested three-phase rollout. Each phase is independently shippable.
+A four-phase rollout, revised in light of the literature evidence and the
+"what's distinctive" analysis above. Each phase is independently shippable.
+The key shifts from the original phasing: D1, D2, and E2 move up because
+they carry the strongest published evidence and overlap with already-built
+discopt machinery; B4 is added as a contained quick win; D6 is added for
+discopt-distinctive NN-embedded MINLPs; D4 moves down per its known
+scaling risk.
 
 ### Phase P1 — Foundations (orchestrator + delta protocol)
 
@@ -379,30 +515,54 @@ A suggested three-phase rollout. Each phase is independently shippable.
   is deterministic, has golden-file tests.
 - Risk: low. Pure refactor.
 
-### Phase P2 — Quick wins (aggregation, redundancy, implied bounds)
+### Phase P2 — Evidence-backed quick wins
 
-- C1, C3, B1, E1, E2.
+- C1, C3, B1, B4, E1, E2, F2.
+- Adds B4 (FBBT-as-fixed-point-LP) and pulls E2 (reduced-cost fixing) and
+  F2 (clique extraction) up. All five carry direct published evidence
+  (Achterberg 2020, Puranik–Sahinidis 2017, Belotti et al. 2010,
+  Gleixner et al. 2017).
 - Deliverable: measurable reduction in variables/constraints on MINLPLib;
-  measurable reduction in root LP gap from tighter bounds.
-- Risk: low–medium. Standard MIP-style techniques, NLP extensions are
-  incremental.
+  measurable reduction in root LP gap from tighter bounds; FBBT converges
+  to true fixed point.
+- Risk: low–medium. Mostly MIP-style techniques plus one local refactor of
+  `fbbt.rs`.
 
-### Phase P3 — Structural detection layer
+### Phase P3 — Structural detection layer (the LANL-flavored core)
 
-- D1, D2, D3, A3, B2, F1, F2.
+- A3, B2, D1, D2, D3, D6, F1.
+- D1 (convex reformulation as a rewrite) and D2 (polynomial→quadratic) are
+  the two items where discopt has unique leverage: `convexity/` and
+  `term_classifier.py` already detect the structure; the gap is a
+  rewrite pass. D6 (NN-embedded presolve) is genuinely new territory tied
+  to discopt's `nn/` module.
 - Deliverable: presolve emits a structural manifest. Relaxation compiler
-  consumes it to produce tighter relaxations on convex blocks and high-degree
-  polynomials.
+  consumes it to produce tighter relaxations on convex blocks, high-degree
+  polynomials, and NN-embedded constraints.
 - Risk: medium. D2 is architecturally invasive. D1 requires non-trivial
   integration between Python-side convexity detection and the Rust IR.
 
 ### Phase P4 — Advanced (symmetry, in-tree presolve, factorable elimination)
 
 - B3, C2, C4, D4, D5.
+- D4 deferred from P3 per its known scaling cliffs (open question 3
+  below).
 - Deliverable: persistent presolve in the tree; symmetry-breaking on
   combinatorial MINLPs.
 - Risk: medium–high. Symmetry detection has known scaling cliffs; in-tree
   presolve interacts with branching heuristics in subtle ways.
+
+### Anti-priorities
+
+Some items in this roadmap are MIP-presolve boilerplate that should be
+ported and shipped, but should not be billed as research contributions:
+**C1 (aggregation/substitution), C3 (redundancy detection), C4
+(coefficient strengthening), and F2 (clique extraction)** are all direct
+ports of techniques exhaustively documented in Achterberg et al. (2020).
+They belong in P2 because they are high-leverage, but the novelty in this
+roadmap lives in P3 (D1, D2, D6) and the FBBT-as-LP refactor (B4) — not
+here. Treat the porting of C/F items as engineering work; treat the
+P3 items as research-grade.
 
 ## Success metrics
 
@@ -453,3 +613,6 @@ correctness suite (per the project-wide invariant).
   models, multivariate McCormick). Items D2 and D3 here cross-reference
   items 4 and 5 in that issue and should be treated as the presolve
   formulation of the same work.
+- GitHub issue #53 — tracking checklist for the items in this roadmap.
+  This document is the source of truth; #53 mirrors the phasing for
+  progress visibility.
