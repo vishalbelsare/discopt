@@ -25,8 +25,9 @@ from pathlib import Path
 from typing import Callable
 
 import discopt.modeling as dm
+import numpy as np
 import pytest
-from discopt.modeling.core import Model
+from discopt.modeling.core import Model, ObjectiveSense, VarType
 
 # ── Failure tracking ─────────────────────────────────────────────────────────
 
@@ -65,6 +66,9 @@ def _xfail_if_known(problem_id: str, mode: str = "primary") -> None:
 # ── Result assertion helpers ──────────────────────────────────────────────────
 
 _OBJ_TOL = 1e-6  # matches MINLPTests.jl default
+_PRIMAL_TOL = 1e-6  # absolute constraint residual tolerance
+_BOUND_TOL = 1e-6  # absolute variable bound violation tolerance
+_INTEGRALITY_TOL = 1e-5  # max |x - round(x)| for integer/binary vars
 
 
 def assert_optimal(result, expected_obj: float, name: str) -> None:
@@ -85,6 +89,105 @@ def assert_infeasible(result, name: str) -> None:
     assert result.status == "infeasible", (
         f"[{name}] Expected infeasible, got status={result.status!r}"
     )
+
+
+def assert_feasible_at(result, model: Model, name: str) -> None:
+    """Independently re-validate the returned primal point against the model.
+
+    Complements ``assert_optimal`` (which only checks status + objective vs. the
+    MINLPTests oracle) by re-evaluating the model at ``result.x`` to catch:
+      - bound violations
+      - constraint residuals beyond ``_PRIMAL_TOL``
+      - integer/binary variables returned as non-integral
+      - returned objective drifting from the value re-evaluated at ``x``
+
+    Failure messages identify which check rejected the solution and by how much,
+    so benchmark output distinguishes wrong-objective from infeasible-point bugs.
+    """
+    assert result.x is not None, f"[{name}] No primal solution to validate"
+
+    # Lazy import to keep the module importable without JAX in environments
+    # that only consume the build functions.
+    from discopt._jax.nlp_evaluator import NLPEvaluator
+
+    parts = []
+    for v in model._variables:
+        assert v.name in result.x, f"[{name}] Variable {v.name!r} missing from result.x"
+        parts.append(np.asarray(result.x[v.name], dtype=float).reshape(-1))
+    x_flat = np.concatenate(parts) if parts else np.empty(0, dtype=float)
+
+    evaluator = NLPEvaluator(model)
+
+    # 1. Variable bounds.
+    lb, ub = evaluator.variable_bounds
+    if x_flat.size:
+        lb_viol = float(np.max(np.maximum(lb - x_flat, 0.0)))
+        ub_viol = float(np.max(np.maximum(x_flat - ub, 0.0)))
+        worst_bound = max(lb_viol, ub_viol)
+        assert worst_bound <= _BOUND_TOL, (
+            f"[{name}] bound violation {worst_bound:.3e} > tol {_BOUND_TOL:.1e} "
+            f"(lb_viol={lb_viol:.3e}, ub_viol={ub_viol:.3e})"
+        )
+
+    # 2. Constraint residuals. Body is concatenated across source constraints;
+    # expand sense/rhs to match each body's flat size.
+    body = evaluator.evaluate_constraints(x_flat)
+    if body.size:
+        senses: list[str] = []
+        rhss: list[float] = []
+        for c, sz in zip(evaluator._source_constraints, evaluator._constraint_flat_sizes):
+            senses.extend([c.sense] * int(sz))
+            rhss.extend([float(c.rhs)] * int(sz))
+        sense_arr = np.asarray(senses)
+        rhs_arr = np.asarray(rhss, dtype=float)
+
+        viol = np.zeros_like(body)
+        le = sense_arr == "<="
+        ge = sense_arr == ">="
+        eq = sense_arr == "=="
+        viol[le] = np.maximum(body[le] - rhs_arr[le], 0.0)
+        viol[ge] = np.maximum(rhs_arr[ge] - body[ge], 0.0)
+        viol[eq] = np.abs(body[eq] - rhs_arr[eq])
+
+        # Per-row tolerance scales with the magnitudes involved so a 10^6 RHS
+        # is not held to the same absolute tolerance as a unit RHS.
+        scale = np.maximum(np.abs(body), np.abs(rhs_arr))
+        tol = _PRIMAL_TOL + 1e-4 * scale
+        excess = viol - tol
+        worst = int(np.argmax(excess))
+        assert excess[worst] <= 0, (
+            f"[{name}] constraint violation {viol[worst]:.3e} > tol {tol[worst]:.3e} "
+            f"(body={body[worst]:.6g} {sense_arr[worst]} {rhs_arr[worst]:.6g})"
+        )
+
+    # 3. Integrality for binary/integer variables.
+    offset = 0
+    for v in model._variables:
+        sz = int(v.size)
+        if v.var_type in (VarType.BINARY, VarType.INTEGER):
+            chunk = x_flat[offset : offset + sz]
+            int_resid = float(np.max(np.abs(chunk - np.round(chunk)))) if chunk.size else 0.0
+            assert int_resid <= _INTEGRALITY_TOL, (
+                f"[{name}] {v.var_type.value} variable {v.name!r}: "
+                f"integrality residual {int_resid:.3e} > tol {_INTEGRALITY_TOL:.1e}"
+            )
+        offset += sz
+
+    # 4. Objective consistency: returned obj should match the value re-evaluated
+    # at the returned x. Catches a stale-incumbent or sign-flip class of bugs.
+    if result.objective is not None:
+        re_obj_min = evaluator.evaluate_objective(x_flat)
+        # NLPEvaluator negates internally for maximize; undo to get user-facing.
+        if model._objective.sense == ObjectiveSense.MAXIMIZE:
+            re_obj = -re_obj_min
+        else:
+            re_obj = re_obj_min
+        drift = abs(re_obj - result.objective)
+        obj_tol = _OBJ_TOL + 1e-4 * abs(result.objective)
+        assert drift <= obj_tol, (
+            f"[{name}] returned obj {result.objective:.10g} differs from re-eval "
+            f"{re_obj:.10g} at returned x by {drift:.3e} > tol {obj_tol:.3e}"
+        )
 
 
 # ── Instance descriptor ───────────────────────────────────────────────────────
@@ -1649,6 +1752,7 @@ class TestMINLPTestsNLPCvx:
         model = instance.build_fn()
         result = model.solve(time_limit=60.0, gap_tolerance=1e-6)
         assert_optimal(result, instance.expected_obj, instance.problem_id)
+        assert_feasible_at(result, model, instance.problem_id)
         if instance.is_convex:
             assert result.convex_fast_path is True, (
                 f"[{instance.problem_id}] Expected discopt convex fast path "
@@ -1667,6 +1771,7 @@ class TestMINLPTestsNLP:
         model = instance.build_fn()
         result = model.solve(time_limit=120.0, gap_tolerance=1e-6)
         assert_optimal(result, instance.expected_obj, instance.problem_id)
+        assert_feasible_at(result, model, instance.problem_id)
 
 
 @pytest.mark.minlptests
@@ -1680,6 +1785,7 @@ class TestMINLPTestsMI:
         model = instance.build_fn()
         result = model.solve(time_limit=120.0, gap_tolerance=1e-6)
         assert_optimal(result, instance.expected_obj, instance.problem_id)
+        assert_feasible_at(result, model, instance.problem_id)
 
 
 @pytest.mark.minlptests
