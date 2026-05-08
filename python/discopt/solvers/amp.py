@@ -699,9 +699,7 @@ def solve_amp(
             # Tighten only the variables that appear in nonlinear terms — these
             # drive every envelope's tightness.  Tightening linear-only vars
             # rarely helps the relaxation and just costs LPs.
-            _candidates: list[int] = sorted(
-                set(part_vars) | set(terms.partition_candidates)
-            )
+            _candidates: list[int] = sorted(set(part_vars) | set(terms.partition_candidates))
             _per_lp = max(0.05, min(1.0, obbt_time_limit / max(1, 2 * len(_candidates))))
             _obbt = run_obbt_on_relaxation(
                 _root_relax,
@@ -747,8 +745,7 @@ def solve_amp(
     # refinement on a width-0 variable cannot tighten anything.
     if part_vars:
         part_vars = [
-            i for i in part_vars
-            if float(flat_ub[i]) - float(flat_lb[i]) > disc_abs_width_tol
+            i for i in part_vars if float(flat_ub[i]) - float(flat_lb[i]) > disc_abs_width_tol
         ]
 
     # ── Initialize partitions ────────────────────────────────────────────────
@@ -961,7 +958,8 @@ def solve_amp(
                             # collapsed below disc_abs_width_tol; refinement
                             # cannot improve them.
                             part_vars = [
-                                i for i in part_vars
+                                i
+                                for i in part_vars
                                 if float(flat_ub[i]) - float(flat_lb[i]) > disc_abs_width_tol
                             ]
                             part_lbs = [float(flat_lb[i]) for i in part_vars]
@@ -980,9 +978,7 @@ def solve_amp(
                                     )
                                     continue
                                 clipped = np.clip(pts, new_lo, new_hi)
-                                merged = np.unique(
-                                    np.concatenate([[new_lo], clipped, [new_hi]])
-                                )
+                                merged = np.unique(np.concatenate([[new_lo], clipped, [new_hi]]))
                                 disc_state.partitions[v_idx] = np.sort(merged)
                             logger.info(
                                 "AMP cutoff OBBT @ iter %d: %d/%d bounds tightened "
