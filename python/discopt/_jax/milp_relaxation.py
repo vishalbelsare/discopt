@@ -1004,6 +1004,85 @@ def build_milp_relaxation(
             row[j] -= xi_lb_g
             _add_row(row, -xi_lb_g * xj_ub_g)
 
+    # ── β-driven piecewise McCormick on bilinear-with-fp ────────────────────
+    # For pairs y = w * z where z = β^p is a fractional-power aux, the standard
+    # bilinear McCormick uses z's GLOBAL bounds, so it stays loose even after w
+    # is heavily partitioned.  When β has a piecewise structure we can derive
+    # per-β-interval tight bounds on z (z ∈ [p_k^p, p_{k+1}^p] when β ∈
+    # [p_k, p_{k+1}]) and add per-interval big-M McCormick on top of the
+    # existing standard or w-piecewise relaxation.  Their intersection is at
+    # least as tight, and is dramatically tighter inside each β cell.
+    for lin_idx, fp_key in terms.bilinear_with_fp:
+        if fp_key not in fractional_power_var_map:
+            continue
+        fp_col = fractional_power_var_map[fp_key]
+        beta_var, p_exp = fp_key
+        beta_var = int(beta_var)
+        p_exp = float(p_exp)
+        pw_intervals = piecewise_var_map.get(beta_var)
+        if not pw_intervals:
+            continue
+        pair_key = (min(lin_idx, fp_col), max(lin_idx, fp_col))
+        if pair_key not in bilinear_var_map:
+            continue
+        y_col = bilinear_var_map[pair_key]
+        w_lb, w_ub = [float(v) for v in all_bounds[lin_idx]]
+        z_lb_global, z_ub_global = [float(v) for v in all_bounds[fp_col]]
+        for delta_col, _xbar_col, p_lo, p_hi in pw_intervals:
+            try:
+                z_at_lo = p_lo**p_exp
+                z_at_hi = p_hi**p_exp
+            except (ValueError, OverflowError):
+                continue
+            if not (np.isfinite(z_at_lo) and np.isfinite(z_at_hi)):
+                continue
+            z_lb_k = min(z_at_lo, z_at_hi)
+            z_ub_k = max(z_at_lo, z_at_hi)
+            # Skip degenerate intervals.
+            if z_ub_k - z_lb_k < 1e-12:
+                continue
+            corners = [w_lb * z_lb_k, w_lb * z_ub_k, w_ub * z_lb_k, w_ub * z_ub_k]
+            # Big-M sized to dominate the global y range when δ_k = 0; use the
+            # max global corner so the relaxation is automatically slack on
+            # inactive intervals.
+            global_corners = [
+                w_lb * z_lb_global,
+                w_lb * z_ub_global,
+                w_ub * z_lb_global,
+                w_ub * z_ub_global,
+            ]
+            M_k = _compute_piecewise_big_m(global_corners + corners)
+            # cv1: y ≥ z_lb_k*w + w_lb*z - z_lb_k*w_lb  (relaxed by M when δ=0)
+            #   →  -y + z_lb_k*w + w_lb*z + M*δ_k ≤ z_lb_k*w_lb + M
+            row = np.zeros(n_total)
+            row[y_col] = -1.0
+            row[lin_idx] += z_lb_k
+            row[fp_col] += w_lb
+            row[delta_col] = M_k
+            _add_row(row, z_lb_k * w_lb + M_k)
+            # cv2: y ≥ z_ub_k*w + w_ub*z - z_ub_k*w_ub
+            row = np.zeros(n_total)
+            row[y_col] = -1.0
+            row[lin_idx] += z_ub_k
+            row[fp_col] += w_ub
+            row[delta_col] = M_k
+            _add_row(row, z_ub_k * w_ub + M_k)
+            # cc1: y ≤ z_ub_k*w + w_lb*z - z_ub_k*w_lb
+            #   →  y - z_ub_k*w - w_lb*z + M*δ_k ≤ M - z_ub_k*w_lb
+            row = np.zeros(n_total)
+            row[y_col] = 1.0
+            row[lin_idx] -= z_ub_k
+            row[fp_col] -= w_lb
+            row[delta_col] = M_k
+            _add_row(row, M_k - z_ub_k * w_lb)
+            # cc2: y ≤ z_lb_k*w + w_ub*z - z_lb_k*w_ub
+            row = np.zeros(n_total)
+            row[y_col] = 1.0
+            row[lin_idx] -= z_lb_k
+            row[fp_col] -= w_ub
+            row[delta_col] = M_k
+            _add_row(row, M_k - z_lb_k * w_ub)
+
     # Monomial constraints
     for var_idx, n in terms.monomial:
         lb_i = float(flat_lb[var_idx])
