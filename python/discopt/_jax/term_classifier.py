@@ -78,9 +78,7 @@ class NonlinearTerms:
     # ``(linear_var_idx, (base_var_idx, exponent))``.  The MILP relaxation lifts
     # the fractional power to an aux column and adds a McCormick envelope on the
     # resulting (linear, aux) bilinear product.
-    bilinear_with_fp: list[tuple[_VarIdx, tuple[_VarIdx, float]]] = field(
-        default_factory=list
-    )
+    bilinear_with_fp: list[tuple[_VarIdx, tuple[_VarIdx, float]]] = field(default_factory=list)
     general_nl: list[Expression] = field(default_factory=list)
     term_incidence: dict[_VarIdx, set[int]] = field(default_factory=dict)
     partition_candidates: list[_VarIdx] = field(default_factory=list)
@@ -482,6 +480,11 @@ def classify_nonlinear_terms(model: Model) -> NonlinearTerms:
         candidates.add(fp_base)
     for fp_base, _exp in result.fractional_power:
         candidates.add(fp_base)
+    # Monomial-base variables benefit from partitioning too: refining the partition
+    # tightens both the tangent under-estimators (more tangent points) and, when the
+    # MILP relaxation supports piecewise secants, the over-estimator as well.
+    for mono_base, _n in result.monomial:
+        candidates.add(mono_base)
     result.partition_candidates = sorted(candidates)
 
     return result

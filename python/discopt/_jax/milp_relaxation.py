@@ -675,6 +675,40 @@ def build_milp_relaxation(
                 "mode": convhull_mode,
             }
 
+    # ── Piecewise-secant aux columns for monomials s = x^2 ──────────────────
+    # When the global secant ``s ≤ (lb+ub)*x - lb*ub`` is loose, replace it with
+    # a piecewise secant per partition interval.  Each interval k introduces a
+    # binary indicator δ_k and a disaggregated continuous x̄_k so that exactly
+    # one interval is active and ``s ≤ (p_k+p_{k+1})*x̄_k - p_k*p_{k+1}*δ_k``
+    # is tight on whichever interval contains x.
+    monomial_pw_map: dict[tuple[int, int], list[tuple[int, int, float, float]]] = {}
+    for var_idx, n in terms.monomial:
+        if n != 2:
+            continue
+        if var_idx not in disc_state.partitions:
+            continue
+        pts = list(disc_state.partitions[var_idx])
+        if len(pts) < 3:
+            # With only 2 breakpoints there's just one interval; the global
+            # secant already coincides with the piecewise secant.
+            continue
+        intervals: list[tuple[int, int, float, float]] = []
+        for k in range(len(pts) - 1):
+            p_lo = float(pts[k])
+            p_hi = float(pts[k + 1])
+            delta_col = col_idx
+            all_bounds.append((0.0, 1.0))
+            integrality_flags.append(1)
+            col_idx += 1
+            xbar_col = col_idx
+            xbar_lb = min(p_lo, 0.0)
+            xbar_ub = max(p_hi, 0.0)
+            all_bounds.append((xbar_lb, xbar_ub))
+            integrality_flags.append(0)
+            col_idx += 1
+            intervals.append((delta_col, xbar_col, p_lo, p_hi))
+        monomial_pw_map[(var_idx, n)] = intervals
+
     n_total = col_idx
 
     # ── Constraint rows (A_ub @ z ≤ b_ub) ───────────────────────────────────
@@ -959,12 +993,53 @@ def build_milp_relaxation(
                 row[var_idx] = 2.0 * t
                 _add_row(row, t * t)
 
-            # Global secant overestimator: s ≤ (lb+ub)*x - lb*ub
-            # → s - (lb+ub)*x ≤ -lb*ub
-            row = np.zeros(n_total)
-            row[s_col] = 1.0
-            row[var_idx] = -(lb_i + ub_i)
-            _add_row(row, -lb_i * ub_i)
+            pw_intervals = monomial_pw_map.get((var_idx, n))
+            if pw_intervals:
+                # Piecewise secant: introduce δ_k, x̄_k per interval, with
+                #   sum δ_k = 1,  x = sum x̄_k,
+                #   p_k δ_k ≤ x̄_k ≤ p_{k+1} δ_k,
+                #   s ≤ Σ_k ((p_k + p_{k+1}) x̄_k − p_k p_{k+1} δ_k).
+                #
+                # Encoded as ≤ rows (and pairs for equalities).
+                # 1) sum δ_k = 1
+                row = np.zeros(n_total)
+                for delta_col, _xbar_col, _plo, _phi in pw_intervals:
+                    row[delta_col] = 1.0
+                _add_row(row, 1.0)
+                _add_row(-row, -1.0)
+                # 2) x = sum x̄_k  →  x − sum x̄_k = 0
+                row = np.zeros(n_total)
+                row[var_idx] = 1.0
+                for _delta_col, xbar_col, _plo, _phi in pw_intervals:
+                    row[xbar_col] = -1.0
+                _add_row(row, 0.0)
+                _add_row(-row, 0.0)
+                # 3) Per-interval bounds: p_k δ_k ≤ x̄_k ≤ p_{k+1} δ_k
+                for delta_col, xbar_col, p_lo, p_hi in pw_intervals:
+                    # x̄_k ≤ p_hi δ_k  →  x̄_k − p_hi δ_k ≤ 0
+                    row = np.zeros(n_total)
+                    row[xbar_col] = 1.0
+                    row[delta_col] = -p_hi
+                    _add_row(row, 0.0)
+                    # x̄_k ≥ p_lo δ_k  →  −x̄_k + p_lo δ_k ≤ 0
+                    row = np.zeros(n_total)
+                    row[xbar_col] = -1.0
+                    row[delta_col] = p_lo
+                    _add_row(row, 0.0)
+                # 4) Piecewise secant: s − Σ_k ((p_k+p_{k+1}) x̄_k − p_k p_{k+1} δ_k) ≤ 0
+                row = np.zeros(n_total)
+                row[s_col] = 1.0
+                for delta_col, xbar_col, p_lo, p_hi in pw_intervals:
+                    row[xbar_col] -= p_lo + p_hi
+                    row[delta_col] += p_lo * p_hi
+                _add_row(row, 0.0)
+            else:
+                # Global secant overestimator: s ≤ (lb+ub)*x - lb*ub
+                # → s - (lb+ub)*x ≤ -lb*ub
+                row = np.zeros(n_total)
+                row[s_col] = 1.0
+                row[var_idx] = -(lb_i + ub_i)
+                _add_row(row, -lb_i * ub_i)
 
         else:
             # General n: secant overestimator
