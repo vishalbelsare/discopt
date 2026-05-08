@@ -24,7 +24,6 @@ from __future__ import annotations
 import math
 
 import pytest
-
 from test_correctness import (
     ProblemInstance,
     _build_binary_knapsack,

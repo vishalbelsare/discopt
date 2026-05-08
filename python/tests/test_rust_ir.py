@@ -10,10 +10,6 @@ Validates:
 import discopt.modeling as dm
 import numpy as np
 import pytest
-
-pytestmark = pytest.mark.unit
-
-# Import the Rust bindings
 from discopt._rust import PyModelRepr, model_to_repr
 from discopt.modeling.examples import (
     example_parametric,
@@ -21,6 +17,8 @@ from discopt.modeling.examples import (
     example_reactor_design,
     example_simple_minlp,
 )
+
+pytestmark = pytest.mark.unit
 
 # ─────────────────────────────────────────────────────────────
 # Fixtures: build example models
