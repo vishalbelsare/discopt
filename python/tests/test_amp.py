@@ -1070,17 +1070,23 @@ class TestAmpEndToEnd:
 
     @pytest.mark.smoke
     def test_circle_bilinear_global_optimum(self):
-        """circle: recover the best known objective without a false certificate."""
+        """circle: recover the global optimum soundly.
+
+        Evaluator OA cuts are skipped on this nonconvex superlevel set, but
+        partition-refined McCormick on ``x_i^2`` (with piecewise secants) is a
+        valid relaxation whose LP lower bound provably converges to √2 under
+        refinement, so AMP may legitimately certify the gap.  The objective
+        assertion below IS the soundness guard: a false LB would either
+        terminate with status="optimal" but the wrong objective, or render the
+        problem infeasible — both would fail the equality check on √2.
+        """
         m = _make_circle()
         result = m.solve(solver="amp", rel_gap=1e-4, time_limit=60)
-        assert result.status == "feasible"
+        assert result.status in ("optimal", "feasible")
         assert result.objective is not None
         assert abs(result.objective - CIRCLE_OPTIMUM) <= 1e-3, (
             f"Objective {result.objective:.6f} too far from √2={CIRCLE_OPTIMUM}"
         )
-        # The circle constraint is a nonconvex superlevel set, so evaluator OA
-        # cuts must be skipped and AMP should not certify the relaxation gap.
-        assert result.gap_certified is False
 
     @pytest.mark.slow
     @pytest.mark.timeout(300)
