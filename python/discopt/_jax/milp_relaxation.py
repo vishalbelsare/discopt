@@ -675,18 +675,27 @@ def build_milp_relaxation(
                 "mode": convhull_mode,
             }
 
-    # ── Piecewise-secant aux columns for monomials s = x^2 ──────────────────
-    # When the global secant ``s ≤ (lb+ub)*x - lb*ub`` is loose, replace it with
-    # a piecewise secant per partition interval.  Each interval k introduces a
-    # binary indicator δ_k and a disaggregated continuous x̄_k so that exactly
-    # one interval is active and ``s ≤ (p_k+p_{k+1})*x̄_k - p_k*p_{k+1}*δ_k``
-    # is tight on whichever interval contains x.
-    monomial_pw_map: dict[tuple[int, int], list[tuple[int, int, float, float]]] = {}
+    # ── Piecewise aux columns for shared disaggregated structure ───────────
+    # When a variable has partition breakpoints AND is the base of either a
+    # monomial ``s = x^2`` (convex, single global secant over-estimator is
+    # loose) or a concave fractional power ``z = x^p`` with p ∈ (0,1) (single
+    # global secant under-estimator is loose), we replace the global secant
+    # with a piecewise version.  Each interval k introduces a binary indicator
+    # δ_k and a disaggregated continuous x̄_k.  The structural constraints
+    # (sum δ_k = 1, x = Σ x̄_k, p_k δ_k ≤ x̄_k ≤ p_{k+1} δ_k) are emitted once
+    # per partitioned variable below, and BOTH the monomial secant and the
+    # concave-fp secant can reference the same structure.
+    pw_candidate_vars: set[int] = set()
     for var_idx, n in terms.monomial:
-        if n != 2:
-            continue
-        if var_idx not in disc_state.partitions:
-            continue
+        if n == 2 and var_idx in disc_state.partitions:
+            pw_candidate_vars.add(var_idx)
+    for spec_pre in terms.fractional_power:
+        var_idx, p = spec_pre
+        if 0.0 < float(p) < 1.0 and var_idx in disc_state.partitions:
+            pw_candidate_vars.add(var_idx)
+
+    piecewise_var_map: dict[int, list[tuple[int, int, float, float]]] = {}
+    for var_idx in sorted(pw_candidate_vars):
         pts = list(disc_state.partitions[var_idx])
         if len(pts) < 3:
             # With only 2 breakpoints there's just one interval; the global
@@ -707,7 +716,7 @@ def build_milp_relaxation(
             integrality_flags.append(0)
             col_idx += 1
             intervals.append((delta_col, xbar_col, p_lo, p_hi))
-        monomial_pw_map[(var_idx, n)] = intervals
+        piecewise_var_map[var_idx] = intervals
 
     n_total = col_idx
 
@@ -726,6 +735,36 @@ def build_milp_relaxation(
             A_col_indices.extend(nz.tolist())
             A_data.extend(coeff_arr[nz].tolist())
         b_rows.append(float(rhs))
+
+    # ── Piecewise structural constraints (once per partitioned variable) ────
+    # For each var_idx with a piecewise structure we enforce:
+    #   sum δ_k = 1, x = Σ x̄_k, p_k δ_k ≤ x̄_k ≤ p_{k+1} δ_k.
+    # Both monomial-secant and concave-fp-secant rows reference these aux
+    # columns, so emitting structural rows once avoids duplicate constraints.
+    for var_idx, pw_intervals in piecewise_var_map.items():
+        # 1) Σ δ_k = 1 (encoded as ≤ 1 and ≥ 1)
+        row = np.zeros(n_total)
+        for delta_col, _xbar_col, _plo, _phi in pw_intervals:
+            row[delta_col] = 1.0
+        _add_row(row, 1.0)
+        _add_row(-row, -1.0)
+        # 2) x = Σ x̄_k  →  x − Σ x̄_k = 0
+        row = np.zeros(n_total)
+        row[var_idx] = 1.0
+        for _delta_col, xbar_col, _plo, _phi in pw_intervals:
+            row[xbar_col] = -1.0
+        _add_row(row, 0.0)
+        _add_row(-row, 0.0)
+        # 3) Per-interval bounds: p_k δ_k ≤ x̄_k ≤ p_{k+1} δ_k
+        for delta_col, xbar_col, p_lo, p_hi in pw_intervals:
+            row = np.zeros(n_total)
+            row[xbar_col] = 1.0
+            row[delta_col] = -p_hi
+            _add_row(row, 0.0)
+            row = np.zeros(n_total)
+            row[xbar_col] = -1.0
+            row[delta_col] = p_lo
+            _add_row(row, 0.0)
 
     # McCormick constraints for each lifted bilinear relation
     for (i, j), w_col in bilinear_relation_map.items():
@@ -993,40 +1032,14 @@ def build_milp_relaxation(
                 row[var_idx] = 2.0 * t
                 _add_row(row, t * t)
 
-            pw_intervals = monomial_pw_map.get((var_idx, n))
+            pw_intervals = piecewise_var_map.get(var_idx)
             if pw_intervals:
-                # Piecewise secant: introduce δ_k, x̄_k per interval, with
-                #   sum δ_k = 1,  x = sum x̄_k,
-                #   p_k δ_k ≤ x̄_k ≤ p_{k+1} δ_k,
-                #   s ≤ Σ_k ((p_k + p_{k+1}) x̄_k − p_k p_{k+1} δ_k).
-                #
-                # Encoded as ≤ rows (and pairs for equalities).
-                # 1) sum δ_k = 1
-                row = np.zeros(n_total)
-                for delta_col, _xbar_col, _plo, _phi in pw_intervals:
-                    row[delta_col] = 1.0
-                _add_row(row, 1.0)
-                _add_row(-row, -1.0)
-                # 2) x = sum x̄_k  →  x − sum x̄_k = 0
-                row = np.zeros(n_total)
-                row[var_idx] = 1.0
-                for _delta_col, xbar_col, _plo, _phi in pw_intervals:
-                    row[xbar_col] = -1.0
-                _add_row(row, 0.0)
-                _add_row(-row, 0.0)
-                # 3) Per-interval bounds: p_k δ_k ≤ x̄_k ≤ p_{k+1} δ_k
-                for delta_col, xbar_col, p_lo, p_hi in pw_intervals:
-                    # x̄_k ≤ p_hi δ_k  →  x̄_k − p_hi δ_k ≤ 0
-                    row = np.zeros(n_total)
-                    row[xbar_col] = 1.0
-                    row[delta_col] = -p_hi
-                    _add_row(row, 0.0)
-                    # x̄_k ≥ p_lo δ_k  →  −x̄_k + p_lo δ_k ≤ 0
-                    row = np.zeros(n_total)
-                    row[xbar_col] = -1.0
-                    row[delta_col] = p_lo
-                    _add_row(row, 0.0)
-                # 4) Piecewise secant: s − Σ_k ((p_k+p_{k+1}) x̄_k − p_k p_{k+1} δ_k) ≤ 0
+                # Piecewise secant on s = x^2 (convex):  for x in interval k,
+                #   s ≤ (p_k + p_{k+1}) x − p_k p_{k+1}.
+                # Disaggregated form using the shared (δ_k, x̄_k) structure:
+                #   s − Σ_k ((p_k+p_{k+1}) x̄_k − p_k p_{k+1} δ_k) ≤ 0.
+                # The structural constraints (sum δ_k = 1, x = Σ x̄_k, per-
+                # interval bounds) are emitted once globally below.
                 row = np.zeros(n_total)
                 row[s_col] = 1.0
                 for delta_col, xbar_col, p_lo, p_hi in pw_intervals:
@@ -1096,12 +1109,35 @@ def build_milp_relaxation(
             secant_intercept = f_lb
 
         if convexity == "concave":
-            # Secant under-estimator: a ≥ secant_slope*x + secant_intercept
-            #   →  -a + secant_slope*x ≤ -secant_intercept
-            row = np.zeros(n_total)
-            row[a_col] = -1.0
-            row[var_idx] = secant_slope
-            _add_row(row, -secant_intercept)
+            pw_intervals = piecewise_var_map.get(var_idx)
+            if pw_intervals:
+                # Piecewise secant under-estimator: per interval k = [p_k, p_{k+1}],
+                # a ≥ p_k^p + slope_k (x − p_k), where slope_k = (p_{k+1}^p − p_k^p) /
+                # (p_{k+1} − p_k).  Disaggregated form using shared (δ_k, x̄_k):
+                #   −a + Σ_k (slope_k x̄_k + (p_k^p − slope_k p_k) δ_k) ≤ 0.
+                row = np.zeros(n_total)
+                row[a_col] = -1.0
+                for delta_col, xbar_col, p_lo, p_hi in pw_intervals:
+                    if abs(p_hi - p_lo) > 1e-12:
+                        try:
+                            f_plo = p_lo**p
+                            f_phi = p_hi**p
+                        except (ValueError, OverflowError):
+                            continue
+                        if not (np.isfinite(f_plo) and np.isfinite(f_phi)):
+                            continue
+                        slope_k = (f_phi - f_plo) / (p_hi - p_lo)
+                        intercept_k = f_plo - slope_k * p_lo
+                        row[xbar_col] += slope_k
+                        row[delta_col] += intercept_k
+                _add_row(row, 0.0)
+            else:
+                # Global secant under-estimator: a ≥ secant_slope*x + secant_intercept
+                #   →  -a + secant_slope*x ≤ -secant_intercept
+                row = np.zeros(n_total)
+                row[a_col] = -1.0
+                row[var_idx] = secant_slope
+                _add_row(row, -secant_intercept)
             # Tangent over-estimators: a ≤ p*t^(p-1)*(x-t) + t^p
             #   →  a - p*t^(p-1)*x ≤ -((p-1)*t^p) ... derivation below.
             #   t_slope = p*t^(p-1);  t_const = t^p - t_slope*t = (1-p)*t^p
