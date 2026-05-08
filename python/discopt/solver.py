@@ -1294,6 +1294,8 @@ def solve_model(
             "disc_add_partition_method",
             "disc_abs_width_tol",
             "convhull_formulation",
+            "obbt_at_root",
+            "obbt_time_limit",
         )
         for key in amp_option_keys:
             if key in kwargs:
