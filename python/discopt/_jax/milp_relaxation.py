@@ -696,15 +696,15 @@ def build_milp_relaxation(
 
     piecewise_var_map: dict[int, list[tuple[int, int, float, float]]] = {}
     for var_idx in sorted(pw_candidate_vars):
-        pts = list(disc_state.partitions[var_idx])
-        if len(pts) < 3:
+        pw_pts = list(disc_state.partitions[var_idx])
+        if len(pw_pts) < 3:
             # With only 2 breakpoints there's just one interval; the global
             # secant already coincides with the piecewise secant.
             continue
-        intervals: list[tuple[int, int, float, float]] = []
-        for k in range(len(pts) - 1):
-            p_lo = float(pts[k])
-            p_hi = float(pts[k + 1])
+        pw_intervals_list: list[tuple[int, int, float, float]] = []
+        for k in range(len(pw_pts) - 1):
+            p_lo = float(pw_pts[k])
+            p_hi = float(pw_pts[k + 1])
             delta_col = col_idx
             all_bounds.append((0.0, 1.0))
             integrality_flags.append(1)
@@ -715,8 +715,8 @@ def build_milp_relaxation(
             all_bounds.append((xbar_lb, xbar_ub))
             integrality_flags.append(0)
             col_idx += 1
-            intervals.append((delta_col, xbar_col, p_lo, p_hi))
-        piecewise_var_map[var_idx] = intervals
+            pw_intervals_list.append((delta_col, xbar_col, p_lo, p_hi))
+        piecewise_var_map[var_idx] = pw_intervals_list
 
     n_total = col_idx
 
@@ -1019,7 +1019,7 @@ def build_milp_relaxation(
         beta_var, p_exp = fp_key
         beta_var = int(beta_var)
         p_exp = float(p_exp)
-        pw_intervals = piecewise_var_map.get(beta_var)
+        pw_intervals = piecewise_var_map.get(beta_var, [])
         if not pw_intervals:
             continue
         pair_key = (min(lin_idx, fp_col), max(lin_idx, fp_col))
@@ -1111,7 +1111,7 @@ def build_milp_relaxation(
                 row[var_idx] = 2.0 * t
                 _add_row(row, t * t)
 
-            pw_intervals = piecewise_var_map.get(var_idx)
+            pw_intervals = piecewise_var_map.get(var_idx, [])
             if pw_intervals:
                 # Piecewise secant on s = x^2 (convex):  for x in interval k,
                 #   s ≤ (p_k + p_{k+1}) x − p_k p_{k+1}.
@@ -1188,7 +1188,7 @@ def build_milp_relaxation(
             secant_intercept = f_lb
 
         if convexity == "concave":
-            pw_intervals = piecewise_var_map.get(var_idx)
+            pw_intervals = piecewise_var_map.get(var_idx, [])
             if pw_intervals:
                 # Piecewise secant under-estimator: per interval k = [p_k, p_{k+1}],
                 # a ≥ p_k^p + slope_k (x − p_k), where slope_k = (p_{k+1}^p − p_k^p) /
