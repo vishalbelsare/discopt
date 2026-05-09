@@ -977,6 +977,54 @@ def _unpack_solution(model: Model, x_flat: np.ndarray):
     return result
 
 
+def _unpack_constraint_duals(
+    evaluator, mult_g: Optional[np.ndarray]
+) -> Optional[dict[str, np.ndarray]]:
+    """Slice a flat constraint-multiplier vector into a dict keyed by
+    Constraint.name (or ``c{idx}`` when anonymous), using the evaluator's
+    per-source-constraint flat sizes as the source of truth for layout.
+    Returns ``None`` if the input is missing or empty.
+    """
+    if mult_g is None or len(mult_g) == 0:
+        return None
+    out: dict[str, np.ndarray] = {}
+    offset = 0
+    for idx, (c, sz) in enumerate(
+        zip(evaluator._source_constraints, evaluator._constraint_flat_sizes)
+    ):
+        sz = int(sz)
+        chunk = np.asarray(mult_g[offset : offset + sz], dtype=float)
+        key = c.name if c.name else f"c{idx}"
+        out[key] = chunk if sz > 1 else chunk.reshape(())
+        offset += sz
+    if offset != len(mult_g):
+        return None
+    return out
+
+
+def _unpack_bound_duals(
+    model: Model, mult_x: Optional[np.ndarray]
+) -> Optional[dict[str, np.ndarray]]:
+    """Slice a flat bound-multiplier vector into a dict keyed by Variable.name.
+    Returns ``None`` if the input is missing or empty.
+    """
+    if mult_x is None or len(mult_x) == 0:
+        return None
+    out: dict[str, np.ndarray] = {}
+    offset = 0
+    for v in model._variables:
+        size = v.size
+        chunk = np.asarray(mult_x[offset : offset + size], dtype=float)
+        if v.shape == () or v.shape == (1,):
+            out[v.name] = chunk.reshape(v.shape) if v.shape == () else chunk
+        else:
+            out[v.name] = chunk.reshape(v.shape)
+        offset += size
+    if offset != len(mult_x):
+        return None
+    return out
+
+
 def _strong_branch_lp(
     evaluator,
     solution: np.ndarray,
@@ -2578,12 +2626,19 @@ def _solve_continuous(
     if obj_val is not None and model._objective.sense == ObjectiveSense.MAXIMIZE:
         obj_val = -obj_val
 
+    constraint_duals = _unpack_constraint_duals(evaluator, nlp_result.multipliers)
+    bound_duals_lower = _unpack_bound_duals(model, nlp_result.bound_multipliers_lower)
+    bound_duals_upper = _unpack_bound_duals(model, nlp_result.bound_multipliers_upper)
+
     return SolveResult(
         status=status,
         objective=obj_val,
         bound=obj_val if status == "optimal" else None,
         gap=0.0 if status == "optimal" else None,
         x=x_dict,
+        constraint_duals=constraint_duals,
+        bound_duals_lower=bound_duals_lower,
+        bound_duals_upper=bound_duals_upper,
         wall_time=wall_time,
         node_count=0,
         rust_time=0.0,
