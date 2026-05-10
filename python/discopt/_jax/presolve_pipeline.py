@@ -1,26 +1,36 @@
-"""Root-stage presolve orchestrator (wires M4+M5 and M10 of issue #51).
+"""Root-stage presolve orchestrator (P1 of issue #53).
 
-The Rust-side passes ``eliminate_variables`` and ``reformulate_polynomial``
-are pure ``ModelRepr -> ModelRepr`` transforms and are exposed individually
-through PyO3. This module sequences them at root, together with the
-existing FBBT pass, and returns a tightened ``PyModelRepr`` plus an
-aggregate stats dict suitable for logging / regression assertions.
+This module is the Python-side entry point into the Rust presolve
+pipeline. It used to drive the kernels (`eliminate_variables`,
+`reformulate_polynomial`, `fbbt_with_cutoff`) one-shot in a fixed
+sequence; that role has moved into the Rust orchestrator
+(`crates/discopt-core/src/presolve/orchestrator.rs`), exposed via
+``PyModelRepr.presolve``.
 
-Sequencing rationale (cheapest-and-most-shrinking first):
+The public API on this module is preserved exactly so that
+``solver.py`` does not have to change:
 
-1. ``eliminate_variables`` (M10) — pins continuous scalar variables that
-   are uniquely determined by a singleton equality and drops the
-   determining equality. Pure tightening, monotone, idempotent. Cheap.
-2. ``reformulate_polynomial`` (M4 + M5) — rewrites high-degree monomials
-   to nested bilinear products with auxiliary variables; derives
-   McCormick-style bounds for the new aux vars from interval AD. This
-   *changes the model topology* (adds aux vars and constraints), so it
-   is opt-in by default.
-3. ``fbbt`` — forward/backward bound propagation. Runs last so it sees
-   the tightened bounds and (when enabled) the new aux variables.
+- :func:`run_root_presolve` — runs the orchestrator at the root and
+  returns ``(new_model_repr, stats)`` with the same dict shape callers
+  already log against.
+- :func:`propagate_bounds_to_model` — pushes tightened per-element
+  bounds back into the Python ``Model`` object.
+- :func:`run_reverse_ad_tightening` — Python-side reverse-mode interval
+  AD pass (M9 of #51); kept here unchanged because it operates on the
+  Python ``Model`` object, not the Rust ``ModelRepr``.
 
-All passes produce a *new* ``ModelRepr``; nothing in-place. The caller is
-responsible for swapping in the returned object as the active repr.
+Sequencing (matches the orchestrator's default pass order):
+
+1. ``eliminate`` — singleton-equality variable fixing.
+2. ``polynomial_reform`` — opt-in; rewrites high-degree monomials to
+   nested bilinear products with auxiliary variables.
+3. ``simplify`` — integer rounding, big-M strengthening, redundant-
+   constraint detection.
+4. ``fbbt`` — forward/backward bound propagation.
+5. ``probing`` — binary-variable probing.
+
+The orchestrator iterates the list to a fixed point under a global
+budget rather than running each pass once.
 """
 
 from __future__ import annotations
@@ -32,47 +42,228 @@ def run_root_presolve(
     model_repr,
     *,
     eliminate: bool = True,
+    aggregate: bool = True,
+    redundancy: bool = True,
     polynomial: bool = False,
+    implied_bounds: bool = True,
+    scaling: bool = False,
+    cliques: bool = False,
+    reduced_cost: bool = False,
+    reduced_cost_info: dict | None = None,
+    reduction_constraints: bool = False,
+    coefficient_strengthening: bool = True,
+    factorable_elim: bool = True,
     fbbt: bool = True,
+    fbbt_fixed_point: bool = False,
     fbbt_max_iter: int = 20,
     fbbt_tol: float = 1e-8,
+    simplify: bool = True,
+    probing: bool = True,
+    max_iterations: int = 16,
+    time_limit_ms: int = 0,
+    python_passes=None,
 ) -> tuple[Any, dict]:
     """Run the root-stage presolve sequence on ``model_repr``.
 
     Args:
         model_repr: a ``PyModelRepr`` produced by ``model_to_repr``.
-        eliminate: run ``eliminate_variables`` (M10). Safe by default.
-        polynomial: run ``reformulate_polynomial`` (M4 + M5). Off by
+        eliminate: enable singleton-equality variable elimination (M10).
+        polynomial: enable polynomial reformulation (M4 + M5). Off by
             default because it adds auxiliary variables and changes the
             shape of the variable index space; downstream code that
             assumes a fixed n_vars must opt in.
-        fbbt: run FBBT after the structural rewrites.
-        fbbt_max_iter, fbbt_tol: forwarded to ``fbbt`` / ``fbbt_with_cutoff``.
+        fbbt: enable forward/backward bound tightening.
+        fbbt_max_iter, fbbt_tol: forwarded to the FBBT kernel.
+        simplify: enable integer rounding / big-M / redundancy pass.
+        probing: enable binary-variable probing.
+        max_iterations: cap on full sweeps over the pass list. The
+            orchestrator stops earlier if a sweep makes no progress.
+        time_limit_ms: wall-clock cap (0 disables).
 
     Returns:
-        ``(new_model_repr, stats)`` where ``stats`` is a dict with keys
-        ``elimination`` (or absent when skipped), ``polynomial`` (ditto),
-        and ``fbbt`` containing per-block ``lb``/``ub`` arrays. Empty
-        dict means no pass actually ran.
+        ``(new_model_repr, stats)`` where ``stats`` is a dict mirroring
+        the historical keys (``elimination``, ``polynomial``, ``fbbt``)
+        plus the new orchestrator metadata (``iterations``,
+        ``terminated_by``, ``deltas``). Callers that only inspect the
+        legacy keys keep working unchanged.
     """
-    stats: dict = {}
-    repr_ = model_repr
-
+    pass_names: list[str] = []
     if eliminate:
-        repr_, elim_stats = repr_.eliminate_variables()
-        stats["elimination"] = dict(elim_stats)
-
+        pass_names.append("eliminate")
+    if factorable_elim:
+        pass_names.append("factorable_elim")
+    if aggregate:
+        pass_names.append("aggregate")
+    if redundancy:
+        pass_names.append("redundancy")
     if polynomial:
-        repr_, poly_stats = repr_.reformulate_polynomial()
-        stats["polynomial"] = dict(poly_stats)
-
+        pass_names.append("polynomial_reform")
+    if simplify:
+        pass_names.append("simplify")
+    if coefficient_strengthening:
+        pass_names.append("coefficient_strengthening")
+    if scaling:
+        pass_names.append("scaling")
+    if implied_bounds:
+        pass_names.append("implied_bounds")
     if fbbt:
-        lbs, ubs = repr_.fbbt_with_cutoff(
-            max_iter=fbbt_max_iter, tol=fbbt_tol, incumbent_bound=None
-        )
-        stats["fbbt"] = {"lb": lbs, "ub": ubs}
+        pass_names.append("fbbt")
+    if fbbt_fixed_point:
+        pass_names.append("fbbt_fixed_point")
+    if probing:
+        pass_names.append("probing")
+    if cliques:
+        pass_names.append("cliques")
+    if reduced_cost:
+        pass_names.append("reduced_cost_fixing")
+    if reduction_constraints:
+        pass_names.append("reduction_constraints")
 
-    return repr_, stats
+    if not pass_names and not python_passes:
+        return model_repr, {}
+
+    if python_passes:
+        # A3 handshake path: interleave Python passes between Rust
+        # orchestrator sweeps to a fixed point.
+        from discopt._jax.presolve.orchestrator import run_orchestrated_presolve
+
+        new_repr, raw = run_orchestrated_presolve(
+            model_repr,
+            rust_passes=pass_names,
+            python_passes=python_passes,
+            max_iterations=max_iterations,
+            time_limit_ms=time_limit_ms,
+            rust_kwargs={
+                "fbbt_max_iter": fbbt_max_iter,
+                "fbbt_tol": fbbt_tol,
+                "reduced_cost_info": reduced_cost_info,
+            },
+        )
+    else:
+        new_repr, raw = model_repr.presolve(
+            passes=pass_names,
+            max_iterations=max_iterations,
+            time_limit_ms=time_limit_ms,
+            work_unit_budget=0,
+            fbbt_max_iter=fbbt_max_iter,
+            fbbt_tol=fbbt_tol,
+            reduced_cost_info=reduced_cost_info,
+        )
+
+    stats: dict = {
+        "iterations": raw["iterations"],
+        "terminated_by": raw["terminated_by"],
+        "deltas": list(raw["deltas"]),
+    }
+
+    # Synthesize legacy per-pass dicts from the delta log for backward
+    # compatibility with callers that grep for "elimination",
+    # "polynomial", "fbbt".
+    elim_total = {"variables_fixed": 0, "constraints_removed": 0, "candidates_examined": 0}
+    poly_total = {
+        "constraints_rewritten": 0,
+        "constraints_skipped": 0,
+        "aux_variables_introduced": 0,
+        "aux_constraints_introduced": 0,
+        "aux_bounds_derived": 0,
+    }
+    agg_total = {
+        "variables_aggregated": 0,
+        "equalities_dropped": 0,
+        "candidates_examined": 0,
+        "aggregations": [],
+    }
+    redundancy_total = {
+        "constraints_removed": 0,
+        "pairs_examined": 0,
+    }
+    implied_total = {
+        "bounds_tightened": 0,
+        "linear_rows_examined": 0,
+    }
+    scaling_total: dict = {
+        "row_scales": None,
+        "col_scales": None,
+        "linear_rows_sampled": 0,
+    }
+    cliques_total: dict = {
+        "edges": [],
+        "linear_rows_scanned": 0,
+    }
+    rcf_total: dict = {
+        "bounds_tightened": 0,
+        "vars_fixed": [],
+        "blocks_examined": 0,
+    }
+    rc_total: dict = {
+        "bounds_tightened": 0,
+        "vars_fixed_to_zero": [],
+        "constraints_made_redundant": [],
+    }
+    for d in raw["deltas"]:
+        if d["pass_name"] == "eliminate":
+            elim_total["constraints_removed"] += len(d.get("constraints_removed", []))
+            elim_total["candidates_examined"] += int(d.get("work_units", 0))
+            elim_total["variables_fixed"] += int(d.get("bounds_tightened", 0)) // 2
+        elif d["pass_name"] == "polynomial_reform":
+            poly_total["aux_variables_introduced"] += int(d.get("aux_vars_introduced", 0))
+            poly_total["aux_constraints_introduced"] += int(d.get("aux_constraints_introduced", 0))
+        elif d["pass_name"] == "aggregate":
+            entries = d.get("vars_aggregated", []) or []
+            agg_total["variables_aggregated"] += len(entries)
+            agg_total["equalities_dropped"] += len(d.get("constraints_removed", []))
+            agg_total["candidates_examined"] += int(d.get("work_units", 0))
+            agg_total["aggregations"].extend(entries)
+        elif d["pass_name"] == "redundancy":
+            redundancy_total["constraints_removed"] += len(d.get("constraints_removed", []))
+            redundancy_total["pairs_examined"] += int(d.get("work_units", 0))
+        elif d["pass_name"] == "implied_bounds":
+            implied_total["bounds_tightened"] += int(d.get("bounds_tightened", 0))
+            implied_total["linear_rows_examined"] += int(d.get("work_units", 0))
+        elif d["pass_name"] == "scaling":
+            if d.get("row_scales") is not None:
+                scaling_total["row_scales"] = list(d["row_scales"])
+            if d.get("col_scales") is not None:
+                scaling_total["col_scales"] = list(d["col_scales"])
+            scaling_total["linear_rows_sampled"] = int(d.get("work_units", 0))
+        elif d["pass_name"] == "cliques":
+            edges = d.get("cliques", []) or []
+            cliques_total["edges"] = list(edges)
+            cliques_total["linear_rows_scanned"] = int(d.get("work_units", 0))
+        elif d["pass_name"] == "reduced_cost_fixing":
+            rcf_total["bounds_tightened"] += int(d.get("bounds_tightened", 0))
+            rcf_total["blocks_examined"] += int(d.get("work_units", 0))
+            rcf_total["vars_fixed"].extend(d.get("vars_fixed", []) or [])
+        elif d["pass_name"] == "reduction_constraints":
+            rc_total["bounds_tightened"] += int(d.get("bounds_tightened", 0))
+            rc_total["vars_fixed_to_zero"].extend(
+                idx for idx, _ in (d.get("vars_fixed", []) or [])
+            )
+            rc_total["constraints_made_redundant"].extend(
+                d.get("constraints_removed", []) or []
+            )
+    if eliminate:
+        stats["elimination"] = elim_total
+    if aggregate:
+        stats["aggregation"] = agg_total
+    if redundancy:
+        stats["redundancy"] = redundancy_total
+    if implied_bounds:
+        stats["implied_bounds"] = implied_total
+    if scaling:
+        stats["scaling"] = scaling_total
+    if cliques:
+        stats["cliques"] = cliques_total
+    if reduced_cost:
+        stats["reduced_cost_fixing"] = rcf_total
+    if reduction_constraints:
+        stats["reduction_constraints"] = rc_total
+    if polynomial:
+        stats["polynomial"] = poly_total
+    if fbbt:
+        stats["fbbt"] = {"lb": raw["bounds_lo"], "ub": raw["bounds_hi"]}
+
+    return new_repr, stats
 
 
 def propagate_bounds_to_model(model, model_repr) -> int:
@@ -81,9 +272,9 @@ def propagate_bounds_to_model(model, model_repr) -> int:
     This is the bridge that lets the Rust-side presolve outcome influence
     the Python-side relaxation compiler / branch-and-bound initialisation.
     Only blocks whose count and flat element count are unchanged from the
-    original model are touched. Aux variables introduced by
-    ``reformulate_polynomial`` have no Python-side counterpart and are
-    silently skipped.
+    original model are touched. Aux variables introduced by polynomial
+    reformulation have no Python-side counterpart and are silently
+    skipped.
 
     Returns the number of *scalar elements* whose ``lb`` or ``ub`` was
     strictly tightened. Equal-or-looser updates are ignored.

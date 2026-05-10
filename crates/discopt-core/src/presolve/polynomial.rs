@@ -452,6 +452,38 @@ pub fn reformulate_polynomial(model: &ModelRepr) -> (ModelRepr, ReformulationSta
     (out, stats)
 }
 
+/// Build `x^n` (n ≥ 1) using squaring decomposition (Karia 2022,
+/// two-step approach). Reuses the bilinear cache so identical
+/// `x^(2^k)` powers across monomials share an aux variable. Returns
+/// the arena id whose value equals `x^n`.
+///
+/// The recursion tree corresponds to the binary expansion of `n`:
+/// e.g. `x^8 = ((x^2)^2)^2` introduces 3 aux variables instead of 7
+/// from a linear fold; `x^5 = x · (x^2)^2` introduces 3 instead of 4.
+fn power_via_squaring(
+    model: &mut ModelRepr,
+    stats: &mut ReformulationStats,
+    var_bounds: &mut Vec<Interval>,
+    aux_cache: &mut HashMap<(usize, usize), ExprId>,
+    base: ExprId,
+    n: u32,
+) -> ExprId {
+    debug_assert!(n >= 1);
+    if n == 1 {
+        return base;
+    }
+    if n == 2 {
+        return get_or_make_aux(model, stats, var_bounds, aux_cache, base, base);
+    }
+    let half = power_via_squaring(model, stats, var_bounds, aux_cache, base, n / 2);
+    let squared = get_or_make_aux(model, stats, var_bounds, aux_cache, half, half);
+    if n % 2 == 0 {
+        squared
+    } else {
+        get_or_make_aux(model, stats, var_bounds, aux_cache, squared, base)
+    }
+}
+
 /// Construct the rewritten polynomial body as a list of arena ids
 /// (each a degree-≤-2 monomial term).
 fn build_quadratic_body(
@@ -463,14 +495,24 @@ fn build_quadratic_body(
 ) -> Vec<ExprId> {
     let mut terms: Vec<ExprId> = Vec::with_capacity(poly.monomials.len());
     for mono in &poly.monomials {
-        // Expand factors to a flat list, then fold pairs into aux vars.
-        let mut flat: Vec<ExprId> = Vec::new();
+        // Per-factor: collapse `x^e` to a single arena id via squaring
+        // decomposition. For e ≥ 3 this produces ⌈log2(e)⌉ aux vars
+        // instead of e − 1 from linear folding and shares cleanly across
+        // monomials via aux_cache. For e ≤ 2 the result is base / base²
+        // with at most one aux, matching the prior behaviour exactly.
+        let mut flat: Vec<ExprId> = Vec::with_capacity(mono.factors.len());
         for (id, e) in &mono.factors {
-            for _ in 0..*e {
+            if *e == 1 {
                 flat.push(*id);
+            } else {
+                // e ≥ 2: emit `x^e` as a single aux (degree 1 in the
+                // reformulated arena) and let the cross-factor fold below
+                // pair it with the other factors.
+                let id_e = power_via_squaring(model, stats, var_bounds, aux_cache, *id, *e);
+                flat.push(id_e);
             }
         }
-        // Fold from the right so we keep introducing aux for the tail.
+        // Fold from the right to combine independent factors.
         while flat.len() > 2 {
             let last = flat.pop().unwrap();
             let prev = flat.pop().unwrap();
@@ -801,6 +843,67 @@ mod tests {
         assert_eq!(s1.constraints_rewritten, 1);
         let (_m2, s2) = reformulate_polynomial(&m1);
         assert_eq!(s2.constraints_rewritten, 0);
+    }
+
+    #[test]
+    fn squaring_decomposition_uses_log2_aux_for_x8() {
+        // x^8 should decompose as ((x^2)^2)^2 → 3 aux vars, not 7.
+        // Karia 2022 two-step approach (D2 of #53).
+        let mut arena = ExprArena::new();
+        let x = make_var(&mut arena, "x", 0);
+        let eight = arena.add(ExprNode::Constant(8.0));
+        let body = arena.add(ExprNode::BinaryOp {
+            op: BinOp::Pow,
+            left: x,
+            right: eight,
+        });
+        let model = ModelRepr {
+            arena,
+            objective: x,
+            objective_sense: ObjectiveSense::Minimize,
+            constraints: vec![ConstraintRepr {
+                body,
+                sense: ConstraintSense::Le,
+                rhs: 256.0,
+                name: None,
+            }],
+            variables: vec![varinfo("x", -2.0, 2.0)],
+            n_vars: 1,
+        };
+        let (_m, stats) = reformulate_polynomial(&model);
+        assert_eq!(stats.constraints_rewritten, 1);
+        // Linear fold would introduce 7 aux vars (x*x*x*x*x*x*x*x);
+        // squaring uses 3 (x^2, x^4, x^8).
+        assert_eq!(stats.aux_variables_introduced, 3);
+    }
+
+    #[test]
+    fn squaring_decomposition_handles_odd_powers() {
+        // x^5 = x · (x^2)^2 → 3 aux vars (x^2, x^4, x^5).
+        let mut arena = ExprArena::new();
+        let x = make_var(&mut arena, "x", 0);
+        let five = arena.add(ExprNode::Constant(5.0));
+        let body = arena.add(ExprNode::BinaryOp {
+            op: BinOp::Pow,
+            left: x,
+            right: five,
+        });
+        let model = ModelRepr {
+            arena,
+            objective: x,
+            objective_sense: ObjectiveSense::Minimize,
+            constraints: vec![ConstraintRepr {
+                body,
+                sense: ConstraintSense::Le,
+                rhs: 32.0,
+                name: None,
+            }],
+            variables: vec![varinfo("x", -2.0, 2.0)],
+            n_vars: 1,
+        };
+        let (_m, stats) = reformulate_polynomial(&model);
+        assert_eq!(stats.constraints_rewritten, 1);
+        assert!(stats.aux_variables_introduced <= 3);
     }
 
     #[test]

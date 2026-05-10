@@ -1238,6 +1238,7 @@ def solve_model(
     presolve: bool = True,
     presolve_polynomial: bool = False,
     presolve_reverse_ad: bool = False,
+    in_tree_presolve_stride: int = 0,
     eigenvalue_root_bound: bool = False,
     relaxation_arithmetic: str = "mccormick",
     **kwargs,
@@ -1594,6 +1595,8 @@ def solve_model(
             lazy_constraints=lazy_constraints,
             incumbent_callback=incumbent_callback,
             node_callback=node_callback,
+            in_tree_presolve_stride=in_tree_presolve_stride,
+            in_tree_presolve_repr=_model_repr,
         )
 
     # --- Problem classification: dispatch LP/QP to specialized solvers ---
@@ -1704,6 +1707,8 @@ def solve_model(
                     lazy_constraints=lazy_constraints,
                     incumbent_callback=incumbent_callback,
                     node_callback=node_callback,
+                    in_tree_presolve_stride=in_tree_presolve_stride,
+                    in_tree_presolve_repr=_model_repr,
                 )
         except Exception:
             pass
@@ -2776,6 +2781,8 @@ def _solve_nlp_bb(
     lazy_constraints=None,
     incumbent_callback=None,
     node_callback=None,
+    in_tree_presolve_stride: int = 0,
+    in_tree_presolve_repr=None,
 ) -> SolveResult:
     """Solve a MINLP via nonlinear Branch & Bound (NLP-BB).
 
@@ -2902,6 +2909,28 @@ def _solve_nlp_bb(
                 t_lb, t_ub = _tighten_node_bounds(evaluator, node_lb_i, node_ub_i, cl_list, cu_list)
                 batch_lb[i] = t_lb.tolist()
                 batch_ub[i] = t_ub.tolist()
+
+        # B3: persistent in-tree FBBT via the Rust kernel, gated by
+        # depth-stride. Best-effort — silently skipped if shape doesn't
+        # match (models with array variable blocks aren't supported by
+        # the kernel yet).
+        if in_tree_presolve_stride and in_tree_presolve_repr is not None:
+            try:
+                n_blocks = in_tree_presolve_repr.n_var_blocks
+                for i in range(n_batch):
+                    if len(batch_lb[i]) != n_blocks:
+                        continue
+                    delta = in_tree_presolve_repr.in_tree_presolve(
+                        np.asarray(batch_lb[i], dtype=np.float64),
+                        np.asarray(batch_ub[i], dtype=np.float64),
+                        node_depth=0,
+                        depth_stride=in_tree_presolve_stride,
+                    )
+                    if delta["ran"] and not delta["infeasible"]:
+                        batch_lb[i] = list(delta["lb"])
+                        batch_ub[i] = list(delta["ub"])
+            except Exception as _e:
+                logger.debug("in-tree presolve skipped: %s", _e)
 
         # Solve NLP at each node (no relaxation, no multistart for convex)
         t_jax_start = time.perf_counter()
