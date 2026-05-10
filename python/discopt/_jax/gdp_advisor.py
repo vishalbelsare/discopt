@@ -165,10 +165,7 @@ def recommend_method(
             why = "nonlinear+unbounded body ⇒ big-m with default M"
         elif effective_M > big_m_tight_threshold:
             rec = "mbigm"
-            why = (
-                f"nonlinear, big-M ≈ {effective_M:.3g} > "
-                f"{big_m_tight_threshold} ⇒ tighten via LP"
-            )
+            why = f"nonlinear, big-M ≈ {effective_M:.3g} > {big_m_tight_threshold} ⇒ tighten via LP"
         else:
             rec = "big-m"
             why = f"nonlinear, big-M ≈ {effective_M:.3g} already tight"
@@ -190,15 +187,11 @@ def recommend_method(
         if any_unbounded_M:
             rec = "big-m"
             why = (
-                f"linear but hull cost {hull_aux_cost} > "
-                f"{hull_aux_budget}, body unbounded ⇒ big-m"
+                f"linear but hull cost {hull_aux_cost} > {hull_aux_budget}, body unbounded ⇒ big-m"
             )
         else:
             rec = "mbigm"
-            why = (
-                f"linear but hull cost {hull_aux_cost} > "
-                f"{hull_aux_budget} ⇒ tighten big-m via LP"
-            )
+            why = f"linear but hull cost {hull_aux_cost} > {hull_aux_budget} ⇒ tighten big-m via LP"
         return GdpAdvice(
             disjunction_index=-1,
             name=name,
@@ -217,8 +210,7 @@ def recommend_method(
         name=name,
         recommendation="hull",
         rationale=(
-            f"linear, hull cost {hull_aux_cost} ≤ "
-            f"{hull_aux_budget} ⇒ hull (tightest LP relaxation)"
+            f"linear, hull cost {hull_aux_cost} ≤ {hull_aux_budget} ⇒ hull (tightest LP relaxation)"
         ),
         n_disjuncts=n_disjuncts,
         n_common_vars=n_common_vars,

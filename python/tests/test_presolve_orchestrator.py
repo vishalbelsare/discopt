@@ -794,7 +794,6 @@ def _force_dead_relu_network():
     (pre-activation always negative on the input box) and neuron 1 is
     dead-active (pre-activation always positive)."""
     import numpy as np
-
     from discopt.nn.network import Activation, DenseLayer, NetworkDefinition
 
     # input shape (2,), output of layer is (3,):
@@ -837,7 +836,6 @@ def test_d6_tighten_network_uses_input_box_override():
     activation envelopes must match that tighter box, not the network's
     declared one."""
     import numpy as np
-
     from discopt.nn.network import Activation, DenseLayer, NetworkDefinition
     from discopt.nn.presolve import tighten_network
 
@@ -868,7 +866,6 @@ def test_d6_nn_presolve_pass_emits_dead_relu_implications():
     """Run NNPresolvePass on a model whose input variables match the
     network's input layer; check the delta carries dead-relu
     implications for every dead neuron."""
-    import numpy as np
 
     from discopt.nn.presolve import NNPresolvePass
 
@@ -933,7 +930,6 @@ def test_d6_nn_presolve_pass_no_dead_relus_is_clean():
     """A network with all-live ReLUs over its input box yields a delta
     with zero implications and zero dead count."""
     import numpy as np
-
     from discopt.nn.network import Activation, DenseLayer, NetworkDefinition
     from discopt.nn.presolve import NNPresolvePass
 

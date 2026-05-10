@@ -236,12 +236,8 @@ def run_root_presolve(
             rcf_total["vars_fixed"].extend(d.get("vars_fixed", []) or [])
         elif d["pass_name"] == "reduction_constraints":
             rc_total["bounds_tightened"] += int(d.get("bounds_tightened", 0))
-            rc_total["vars_fixed_to_zero"].extend(
-                idx for idx, _ in (d.get("vars_fixed", []) or [])
-            )
-            rc_total["constraints_made_redundant"].extend(
-                d.get("constraints_removed", []) or []
-            )
+            rc_total["vars_fixed_to_zero"].extend(idx for idx, _ in (d.get("vars_fixed", []) or []))
+            rc_total["constraints_made_redundant"].extend(d.get("constraints_removed", []) or [])
     if eliminate:
         stats["elimination"] = elim_total
     if aggregate:

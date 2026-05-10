@@ -18,6 +18,8 @@ Top-level exports:
   delta dict in the same shape Rust passes emit.
 """
 
+from .convex_reform import ConvexReformPass
+from .orchestrator import run_orchestrated_presolve
 from .protocol import (
     PresolveDelta,
     PresolvePass,
@@ -25,8 +27,6 @@ from .protocol import (
     delta_made_progress,
     make_python_delta,
 )
-from .orchestrator import run_orchestrated_presolve
-from .convex_reform import ConvexReformPass
 from .reverse_ad import ReverseADPass
 from .separability import SeparabilityPass, SeparabilityReport, detect_separability
 

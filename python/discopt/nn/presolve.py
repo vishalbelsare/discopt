@@ -102,9 +102,7 @@ def detect_dead_relus(
         # big-M convention that lb=ub=0 fixes the output to 0.
         dead_active = dead_active & ~dead_zero
         if dead_zero.any() or dead_active.any():
-            out.append(
-                DeadReluLayer(layer_index=li, dead_zero=dead_zero, dead_active=dead_active)
-            )
+            out.append(DeadReluLayer(layer_index=li, dead_zero=dead_zero, dead_active=dead_active))
     return out
 
 
@@ -219,12 +217,8 @@ class NNPresolvePass:
             self.input_block_index is not None
             and 0 <= self.input_block_index < model_repr.n_var_blocks
         ):
-            input_lb = np.asarray(
-                model_repr.var_lb(self.input_block_index), dtype=np.float64
-            )
-            input_ub = np.asarray(
-                model_repr.var_ub(self.input_block_index), dtype=np.float64
-            )
+            input_lb = np.asarray(model_repr.var_lb(self.input_block_index), dtype=np.float64)
+            input_ub = np.asarray(model_repr.var_ub(self.input_block_index), dtype=np.float64)
             if input_lb.size != self.network.input_size:
                 # Block size doesn't match the network — fall back.
                 input_lb = None
