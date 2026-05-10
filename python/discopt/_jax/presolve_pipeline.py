@@ -167,7 +167,7 @@ def run_root_presolve(
         "aux_constraints_introduced": 0,
         "aux_bounds_derived": 0,
     }
-    agg_total = {
+    agg_total: dict = {
         "variables_aggregated": 0,
         "equalities_dropped": 0,
         "candidates_examined": 0,

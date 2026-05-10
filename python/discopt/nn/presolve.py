@@ -124,6 +124,8 @@ def tighten_network(
     # Snapshot the network's input bounds so we can restore them; we
     # do not mutate the input network's input_bounds in place because
     # callers may continue to use the original.
+    used_lb: Optional[np.ndarray]
+    used_ub: Optional[np.ndarray]
     if input_lb is not None or input_ub is not None:
         if input_lb is None or input_ub is None:
             raise ValueError("input_lb and input_ub must both be set or both None")

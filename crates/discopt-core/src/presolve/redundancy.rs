@@ -82,11 +82,11 @@ pub fn detect_row_redundancy(model: &ModelRepr) -> (ModelRepr, RedundancyStats) 
             Some(s) => s,
             None => continue,
         };
-        for j in (i + 1)..n {
+        for (j, sj_opt) in sigs.iter().enumerate().skip(i + 1) {
             if dropped.contains(&j) {
                 continue;
             }
-            let sj = match &sigs[j] {
+            let sj = match sj_opt {
                 Some(s) => s,
                 None => continue,
             };

@@ -123,9 +123,9 @@ pub fn fbbt_fixed_point(
     // pushing the same constraint twice.
     let mut queue: VecDeque<usize> = VecDeque::with_capacity(n_constr);
     let mut in_queue: Vec<bool> = vec![false; n_constr];
-    for ci in 0..n_constr {
+    for (ci, slot) in in_queue.iter_mut().enumerate() {
         queue.push_back(ci);
-        in_queue[ci] = true;
+        *slot = true;
     }
 
     while let Some(ci) = queue.pop_front() {

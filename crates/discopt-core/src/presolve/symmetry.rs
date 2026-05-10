@@ -145,7 +145,7 @@ pub fn detect_symmetries(model: &ModelRepr) -> (Vec<Orbit>, SymmetryStats) {
                 let mut tokens: Vec<(u8, u32)> = Vec::new();
                 for (fid, deg) in &m.factors {
                     if *fid == leaf {
-                        tokens.push((0xFE, *deg as u32));
+                        tokens.push((0xFE, *deg));
                     } else if let ExprNode::Variable {
                         index: other_idx,
                         size: 1,
@@ -159,12 +159,12 @@ pub fn detect_symmetries(model: &ModelRepr) -> (Vec<Orbit>, SymmetryStats) {
                                 VarType::Binary => 2,
                                 VarType::Integer => 3,
                             };
-                            tokens.push((ot, *deg as u32));
+                            tokens.push((ot, *deg));
                         } else {
-                            tokens.push((0xFD, *deg as u32));
+                            tokens.push((0xFD, *deg));
                         }
                     } else {
-                        tokens.push((0xFD, *deg as u32));
+                        tokens.push((0xFD, *deg));
                     }
                 }
                 tokens.sort();
@@ -195,9 +195,9 @@ pub fn detect_symmetries(model: &ModelRepr) -> (Vec<Orbit>, SymmetryStats) {
                 let mut tokens: Vec<(u8, u32)> = Vec::new();
                 for (fid, deg) in &m.factors {
                     if *fid == leaf {
-                        tokens.push((0xFE, *deg as u32));
+                        tokens.push((0xFE, *deg));
                     } else {
-                        tokens.push((0xFD, *deg as u32));
+                        tokens.push((0xFD, *deg));
                     }
                 }
                 tokens.sort();
