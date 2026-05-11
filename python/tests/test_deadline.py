@@ -98,14 +98,16 @@ def test_lp_ipm_honors_deadline():
     x_l = jnp.zeros(n)
     x_u = jnp.full(n, 1e6)
 
-    # Warm-compile.
+    # Warm-compile with the SAME options used in the timed call below.
+    # max_iter is a static_argnum for _lp_ipm_solve_jit, so a different value
+    # triggers a recompile that can dominate the wall-clock measurement on CI.
     state_ok = lp_ipm_solve(
         jnp.asarray(c),
         jnp.asarray(A),
         jnp.asarray(b),
         x_l,
         x_u,
-        options=LPIPMOptions(max_iter=200),
+        options=LPIPMOptions(max_iter=10_000),
     )
     assert int(state_ok.converged) in (1, 2, 3)
 
