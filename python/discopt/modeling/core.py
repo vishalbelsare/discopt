@@ -1906,27 +1906,33 @@ class Model:
                 time_limit=time_limit, gap_tolerance=gap_tolerance, **kwargs
             )
 
+        from discopt._jax.deadline import deadline_scope
         from discopt.solver import solve_model
 
         if solver is not None:
             kwargs["solver"] = solver
 
-        result = solve_model(
-            self,
-            time_limit=time_limit,
-            gap_tolerance=gap_tolerance,
-            threads=threads,
-            deterministic=deterministic,
-            partitions=partitions,
-            branching_policy=branching_policy,
-            initial_point=_x0_flat,
-            skip_convex_check=skip_convex_check,
-            nlp_bb=nlp_bb,
-            lazy_constraints=lazy_constraints,
-            incumbent_callback=incumbent_callback,
-            node_callback=node_callback,
-            **kwargs,
-        )
+        # Install a process-global wall-clock deadline that JAX-compiled
+        # while_loops (LP/QP/NLP IPM) can poll via host callback so they
+        # self-terminate within ``time_limit + ε`` instead of running to
+        # XLA convergence after Python's budget is gone (issue #80).
+        with deadline_scope(time_limit):
+            result = solve_model(
+                self,
+                time_limit=time_limit,
+                gap_tolerance=gap_tolerance,
+                threads=threads,
+                deterministic=deterministic,
+                partitions=partitions,
+                branching_policy=branching_policy,
+                initial_point=_x0_flat,
+                skip_convex_check=skip_convex_check,
+                nlp_bb=nlp_bb,
+                lazy_constraints=lazy_constraints,
+                incumbent_callback=incumbent_callback,
+                node_callback=node_callback,
+                **kwargs,
+            )
 
         # Attach model reference and auto-generate LLM explanation
         result._model = self
