@@ -865,12 +865,26 @@ class SolveResult:
     jax_time: float = 0.0
     python_time: float = 0.0
 
+    # KKT duals at the returned point, when the underlying solver exposes them.
+    # ``constraint_duals`` is keyed by Constraint.name; entries with a vector
+    # body have one multiplier per row. ``bound_duals_lower`` /
+    # ``bound_duals_upper`` are keyed by Variable.name. All values are in the
+    # internal-minimization sign convention (``>= 0`` at active bounds /
+    # binding-from-below inequalities). For maximize problems, the multipliers
+    # correspond to the negated objective the solver actually saw.
+    constraint_duals: Optional[dict[str, np.ndarray]] = None
+    bound_duals_lower: Optional[dict[str, np.ndarray]] = None
+    bound_duals_upper: Optional[dict[str, np.ndarray]] = None
+
     # Convex fast path indicator
     convex_fast_path: bool = False
 
     # NLP-BB indicator and gap certification
     nlp_bb: bool = False
     gap_certified: bool = True
+
+    # Examiner-style validation report (populated if validate=True).
+    validation_report: Optional[object] = None
 
     # LLM explanation (populated if llm=True)
     _explanation: Optional[str] = None
@@ -1793,6 +1807,7 @@ class Model:
         incumbent_callback: Optional[Callable] = None,
         node_callback: Optional[Callable] = None,
         solver: Optional[str] = None,
+        validate: bool = False,
         **kwargs,
     ) -> Union[SolveResult, Iterator["SolveUpdate"]]:
         r"""
@@ -1853,6 +1868,11 @@ class Model:
         node_callback : callable, optional
             Node callback. Called after each batch of nodes is processed.
             Should accept ``(ctx, model)`` and return ``None``.
+        validate : bool, default False
+            If True, run Examiner-style KKT validation on the returned
+            point and attach the :class:`~discopt.validation.ExaminerReport`
+            to ``result.validation_report``. Errors during validation are
+            swallowed and leave ``validation_report`` as ``None``.
         \*\*kwargs
             Additional keyword arguments passed to the solver backend.
 
@@ -1895,27 +1915,33 @@ class Model:
                 time_limit=time_limit, gap_tolerance=gap_tolerance, **kwargs
             )
 
+        from discopt._jax.deadline import deadline_scope
         from discopt.solver import solve_model
 
         if solver is not None:
             kwargs["solver"] = solver
 
-        result = solve_model(
-            self,
-            time_limit=time_limit,
-            gap_tolerance=gap_tolerance,
-            threads=threads,
-            deterministic=deterministic,
-            partitions=partitions,
-            branching_policy=branching_policy,
-            initial_point=_x0_flat,
-            skip_convex_check=skip_convex_check,
-            nlp_bb=nlp_bb,
-            lazy_constraints=lazy_constraints,
-            incumbent_callback=incumbent_callback,
-            node_callback=node_callback,
-            **kwargs,
-        )
+        # Install a process-global wall-clock deadline that JAX-compiled
+        # while_loops (LP/QP/NLP IPM) can poll via host callback so they
+        # self-terminate within ``time_limit + ε`` instead of running to
+        # XLA convergence after Python's budget is gone (issue #80).
+        with deadline_scope(time_limit):
+            result = solve_model(
+                self,
+                time_limit=time_limit,
+                gap_tolerance=gap_tolerance,
+                threads=threads,
+                deterministic=deterministic,
+                partitions=partitions,
+                branching_policy=branching_policy,
+                initial_point=_x0_flat,
+                skip_convex_check=skip_convex_check,
+                nlp_bb=nlp_bb,
+                lazy_constraints=lazy_constraints,
+                incumbent_callback=incumbent_callback,
+                node_callback=node_callback,
+                **kwargs,
+            )
 
         # Attach model reference and auto-generate LLM explanation
         result._model = self
@@ -1924,6 +1950,14 @@ class Model:
                 result._explanation = result._explain_with_llm()
             except Exception:
                 pass
+
+        if validate and result.x is not None:
+            try:
+                from discopt.validation.examiner import examine
+
+                result.validation_report = examine(result, self)
+            except Exception:
+                result.validation_report = None
 
         return result
 

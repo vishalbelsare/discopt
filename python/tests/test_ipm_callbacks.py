@@ -9,6 +9,7 @@ os.environ.setdefault("JAX_ENABLE_X64", "1")
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from discopt._jax.ipm_callbacks import IPMOptions, ipm_solve_callbacks
 
 # ---------------------------------------------------------------------------
@@ -626,6 +627,7 @@ class TestFeasibilityRestoration:
         )
         assert not success  # should skip
 
+    @pytest.mark.slow
     def test_restoration_recursion_guard(self):
         """_in_restoration=True prevents nested restoration calls."""
         # Run the solver with _in_restoration=True on a problem that would
@@ -649,6 +651,7 @@ class TestFeasibilityRestoration:
         # Just verify it completes without infinite recursion
         assert int(state.iteration) > 0
 
+    @pytest.mark.slow
     def test_hs106_runs_without_crash(self):
         """HS106 should converge to optimal objective ~7049.
 

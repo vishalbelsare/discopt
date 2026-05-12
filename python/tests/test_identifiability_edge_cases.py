@@ -29,6 +29,10 @@ from discopt.doe import (
 )
 from discopt.estimate import Experiment, ExperimentModel, estimate_parameters
 
+# Identifiability / profile-likelihood edge cases are research features; each
+# test runs a real estimation + profile sweep. Keep on the nightly slow lane.
+pytestmark = pytest.mark.slow
+
 
 class LinearExp(Experiment):
     def __init__(self, xs):
@@ -143,6 +147,7 @@ class TestProfileLikelihoodOptions:
         assert prof.theta_hat == est.parameters["b"]
         assert prof.objective_hat == est.objective
 
+    @pytest.mark.slow
     def test_confidence_level_monotonicity(self, linear_fit):
         """Higher confidence level -> wider interval."""
         exp, data, _, _ = linear_fit
@@ -275,6 +280,7 @@ class TestReparameterizationInvariance:
 
 
 class TestCoverageRate:
+    @pytest.mark.slow
     def test_profile_ci_covers_truth_on_linear_regression(self):
         """Across a handful of synthetic replicates, the 95% profile CI
         should cover the true slope in most of them. We use 10 seeds

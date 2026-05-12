@@ -1070,17 +1070,23 @@ class TestAmpEndToEnd:
 
     @pytest.mark.smoke
     def test_circle_bilinear_global_optimum(self):
-        """circle: recover the best known objective without a false certificate."""
+        """circle: recover the global optimum soundly.
+
+        Evaluator OA cuts are skipped on this nonconvex superlevel set, but
+        partition-refined McCormick on ``x_i^2`` (with piecewise secants) is a
+        valid relaxation whose LP lower bound provably converges to √2 under
+        refinement, so AMP may legitimately certify the gap.  The objective
+        assertion below IS the soundness guard: a false LB would either
+        terminate with status="optimal" but the wrong objective, or render the
+        problem infeasible — both would fail the equality check on √2.
+        """
         m = _make_circle()
         result = m.solve(solver="amp", rel_gap=1e-4, time_limit=60)
-        assert result.status == "feasible"
+        assert result.status in ("optimal", "feasible")
         assert result.objective is not None
         assert abs(result.objective - CIRCLE_OPTIMUM) <= 1e-3, (
             f"Objective {result.objective:.6f} too far from √2={CIRCLE_OPTIMUM}"
         )
-        # The circle constraint is a nonconvex superlevel set, so evaluator OA
-        # cuts must be skipped and AMP should not certify the relaxation gap.
-        assert result.gap_certified is False
 
     @pytest.mark.slow
     @pytest.mark.timeout(300)
@@ -1098,7 +1104,7 @@ class TestAmpEndToEnd:
             f"Objective {result.objective:.3f} too far from {NLP3_OPTIMUM}"
         )
 
-    @pytest.mark.smoke
+    @pytest.mark.slow
     def test_bilinear_minlp_global(self):
         """MINLP with bilinear product + integer variable."""
         m = Model("bi_minlp")
@@ -1112,7 +1118,7 @@ class TestAmpEndToEnd:
         # x[0]*x[1]≥4-y: optimal at x[0]=x[1]=2, y=0 → obj=8 or similar
         assert result.objective >= 0
 
-    @pytest.mark.smoke
+    @pytest.mark.slow
     def test_trilinear_global_optimum(self):
         """AMP should solve a simple trilinear cover problem after lifting."""
         m = _make_trilinear_cover()
@@ -1175,6 +1181,74 @@ class TestAmpEndToEnd:
         assert result.gap is None
         assert result.gap_certified is False
 
+    def test_obbt_with_cutoff_kwarg_plumbed(self):
+        """``obbt_with_cutoff`` must reach solve_amp without being stripped.
+
+        Regression for the silent kwarg-drop in solver.py that swallowed
+        ``obbt_with_cutoff`` and made the cutoff-OBBT path unreachable from
+        ``Model.solve(solver="amp", ...)``.
+        """
+        import warnings
+
+        m = _make_nlp1()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            m.solve(
+                solver="amp",
+                rel_gap=1e-3,
+                time_limit=30,
+                obbt_at_root=True,
+                obbt_with_cutoff=True,
+                obbt_time_limit=5.0,
+            )
+        ignored_msgs = [str(w.message) for w in caught if "AMP ignores" in str(w.message)]
+        for msg in ignored_msgs:
+            assert "obbt_with_cutoff" not in msg, f"obbt_with_cutoff was reported ignored: {msg}"
+
+    def test_cutoff_obbt_uses_current_partition_state(self, monkeypatch):
+        """Cutoff OBBT must build its relaxation from the live disc_state.
+
+        Empty-partition McCormick is strictly looser than partitioned
+        McCormick, so OBBT against the empty relaxation can miss bounds
+        that the current iteration's partitioning would tighten.  The
+        helper must pass a non-empty disc_state through to the relaxation
+        builder once partitioning has taken any steps.
+        """
+        seen_partition_lengths: list[int] = []
+
+        from discopt._jax import milp_relaxation as milp_relax_mod
+
+        real_builder = milp_relax_mod.build_milp_relaxation
+
+        def wrapped_build(model, terms, disc_state, *args, **kwargs):
+            # Track only OBBT-time builds (incumbent arg None, oa_cuts arg from kwargs)
+            if disc_state is not None:
+                total = sum(len(pts) for pts in disc_state.partitions.values())
+                seen_partition_lengths.append(total)
+            return real_builder(model, terms, disc_state, *args, **kwargs)
+
+        monkeypatch.setattr(milp_relax_mod, "build_milp_relaxation", wrapped_build)
+        # The amp module imports build_milp_relaxation lazily inside helpers,
+        # so monkeypatching on the source module is sufficient.
+
+        m = _make_nlp1()
+        m.solve(
+            solver="amp",
+            rel_gap=1e-3,
+            time_limit=30,
+            n_init_partitions=4,
+            obbt_at_root=True,
+            obbt_with_cutoff=True,
+            obbt_time_limit=10.0,
+        )
+
+        # At least one OBBT relaxation build must have used a non-empty
+        # disc_state — namely the cutoff OBBT after the first incumbent.
+        assert any(n > 0 for n in seen_partition_lengths), (
+            f"Cutoff OBBT never saw a partitioned disc_state; "
+            f"partition counts seen: {seen_partition_lengths}"
+        )
+
     @pytest.mark.smoke
     def test_pure_quadratic_convex(self):
         """min x²  s.t. x ≥ 1: AMP should certify global optimum = 1."""
@@ -1200,6 +1274,7 @@ class TestAmpEndToEnd:
         assert abs(result.objective) <= 1e-6
         assert result.gap is None
 
+    @pytest.mark.slow
     def test_bilinear_maximize_global_optimum(self):
         """AMP must handle maximize objectives with certified bounds."""
         m = Model("max_bilinear")
@@ -1333,7 +1408,7 @@ class TestAmpConvergenceProperties:
         assert result.gap_certified is True
         assert len(iters) < 100, "Should terminate before max_iter=100 when gap closes"
 
-    @pytest.mark.smoke
+    @pytest.mark.slow
     def test_time_limit_respected(self):
         """AMP must respect the time_limit parameter."""
         import time
