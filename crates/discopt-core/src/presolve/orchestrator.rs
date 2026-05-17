@@ -188,8 +188,7 @@ mod tests {
     #[test]
     fn orchestrator_honors_iteration_cap() {
         let model = trivial_model();
-        let mut opts =
-            OrchestratorOptions::with_passes(vec![Box::new(passes::AlwaysProgressPass)]);
+        let mut opts = OrchestratorOptions::with_passes(vec![Box::new(passes::AlwaysProgressPass)]);
         opts.max_iterations = 3;
         let result = run(model, opts);
         assert_eq!(result.terminated_by, TerminationReason::IterationCap);

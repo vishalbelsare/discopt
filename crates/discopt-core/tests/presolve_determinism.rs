@@ -276,7 +276,10 @@ fn deterministic_on_singleton_eq() {
 #[test]
 fn ten_repeats_byte_identical() {
     // Stronger test: 10 runs all identical.
-    let baseline = canon(&run_once(fixture_quartic_poly(), default_passes_with_polynomial()));
+    let baseline = canon(&run_once(
+        fixture_quartic_poly(),
+        default_passes_with_polynomial(),
+    ));
     for _ in 0..10 {
         let s = canon(&run_once(
             fixture_quartic_poly(),

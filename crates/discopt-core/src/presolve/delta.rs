@@ -179,7 +179,10 @@ impl PresolveDelta {
             || !self.constraints_removed.is_empty()
             || !self.constraints_rewritten.is_empty()
             || self.aux_constraints_introduced > 0
-            || !self.structure.reformulated_polynomial_constraints.is_empty()
+            || !self
+                .structure
+                .reformulated_polynomial_constraints
+                .is_empty()
             || !self.structure.implications.is_empty()
         // NOTE: `structure.cliques` and `structure.convex_constraints`
         // are intentionally NOT checked here. Both are diagnostic —

@@ -11,13 +11,15 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import numpy as np
 from scipy.optimize import minimize as scipy_minimize
 
 from discopt._jax.alphabb import estimate_alpha as _estimate_alpha_jax
+from discopt._jax.model_utils import flat_variable_bounds
 from discopt._jax.nlp_evaluator import NLPEvaluator
+from discopt._jax.nonlinear_bound_tightening import tighten_nonlinear_bounds
 from discopt._rust import PyTreeManager
 from discopt.constants import INFEASIBILITY_SENTINEL as _INFEASIBILITY_SENTINEL
 from discopt.constants import SENTINEL_THRESHOLD as _SENTINEL_THRESHOLD
@@ -152,6 +154,22 @@ class _AugmentedEvaluator:
                 return A_jax @ x - b_jax
 
         return augmented_con
+
+
+class _BoundOverrideEvaluator:
+    """Proxy an evaluator while overriding the variable bounds exposed to backends."""
+
+    def __init__(self, evaluator, lb: np.ndarray, ub: np.ndarray):
+        self._evaluator = evaluator
+        self._lb = np.asarray(lb, dtype=np.float64)
+        self._ub = np.asarray(ub, dtype=np.float64)
+
+    def __getattr__(self, name):
+        return getattr(self._evaluator, name)
+
+    @property
+    def variable_bounds(self):
+        return self._lb, self._ub
 
 
 def _evaluator_fingerprint(model: Model) -> tuple:
@@ -356,7 +374,17 @@ def _check_constraint_feasibility(evaluator, x, cl_list, cu_list, tol=1e-4):
     return max_viol <= tol
 
 
-def _tighten_node_bounds(evaluator, node_lb, node_ub, cl_list, cu_list, max_rounds=3):
+def _is_integer_feasible_solution(x, int_offsets, int_sizes, tol=1e-5):
+    """Return True if all discrete variables are integral within tolerance."""
+    for off, sz in zip(int_offsets, int_sizes):
+        for j in range(off, off + sz):
+            xj = x[j]
+            if not np.isfinite(xj) or abs(xj - round(xj)) > tol:
+                return False
+    return True
+
+
+def _tighten_node_bounds_with_status(evaluator, node_lb, node_ub, cl_list, cu_list, max_rounds=3):
     """Constraint-based bound tightening (FBBT) for a single B&B node.
 
     Uses the constraint Jacobian to propagate implied variable bounds.
@@ -379,12 +407,15 @@ def _tighten_node_bounds(evaluator, node_lb, node_ub, cl_list, cu_list, max_roun
     -------
     lb, ub : np.ndarray
         Tightened variable bounds.
+    infeasible : bool
+        True if nonlinear tightening proved the node infeasible.
     """
-    if evaluator.n_constraints == 0 or not cl_list:
-        return node_lb.copy(), node_ub.copy()
-
     lb = node_lb.copy()
     ub = node_ub.copy()
+
+    if evaluator.n_constraints == 0 or not cl_list:
+        return _apply_nonlinear_tightening_with_status(evaluator._model, lb, ub)
+
     n = len(lb)
     m = len(cl_list)
     cu = np.array(cu_list, dtype=np.float64)
@@ -405,13 +436,24 @@ def _tighten_node_bounds(evaluator, node_lb, node_ub, cl_list, cu_list, max_roun
         J_b = evaluator.evaluate_jacobian(pt_b)
         is_linear = np.all(np.abs(J_a - J_b) < 1e-8, axis=1)  # (m,) bool
     except Exception:
-        return lb, ub  # can't determine linearity, skip FBBT
+        return _apply_nonlinear_tightening_with_status(evaluator._model, lb, ub)
 
     if not np.any(is_linear):
-        return lb, ub  # no linear constraints to tighten
+        return _apply_nonlinear_tightening_with_status(evaluator._model, lb, ub)
 
     for _ in range(max_rounds):
         changed = False
+
+        tightened_lb, tightened_ub, infeasible = _apply_nonlinear_tightening_with_status(
+            evaluator._model, lb, ub
+        )
+        if infeasible:
+            return tightened_lb, tightened_ub, True
+        if np.any(np.abs(tightened_lb - lb) > 1e-12) or np.any(np.abs(tightened_ub - ub) > 1e-12):
+            lb = tightened_lb
+            ub = tightened_ub
+            changed = True
+
         # Evaluate Jacobian at midpoint of current bounds
         mid = np.clip(lb, -_SPC, _SPC)
         span = np.clip(ub, -_SPC, _SPC) - mid
@@ -483,7 +525,44 @@ def _tighten_node_bounds(evaluator, node_lb, node_ub, cl_list, cu_list, max_roun
         if not changed:
             break
 
+    return lb, ub, False
+
+
+def _tighten_node_bounds(evaluator, node_lb, node_ub, cl_list, cu_list, max_rounds=3):
+    """Constraint-based bound tightening without the infeasibility status."""
+    lb, ub, _infeasible = _tighten_node_bounds_with_status(
+        evaluator, node_lb, node_ub, cl_list, cu_list, max_rounds=max_rounds
+    )
     return lb, ub
+
+
+def _apply_nonlinear_tightening_with_status(
+    model: Model,
+    lb: np.ndarray,
+    ub: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Apply opportunistic nonlinear bound tightening without aborting node processing."""
+    try:
+        tightened_lb, tightened_ub, stats = tighten_nonlinear_bounds(model, lb, ub)
+    except Exception as exc:
+        logger.debug("Skipping nonlinear tightening after error: %s", exc)
+        return lb, ub, False
+
+    if stats.infeasible:
+        logger.debug("Nonlinear tightening proved infeasibility: %s", stats.infeasibility_reason)
+        return lb, ub, True
+
+    return tightened_lb, tightened_ub, False
+
+
+def _apply_nonlinear_tightening(
+    model: Model,
+    lb: np.ndarray,
+    ub: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Apply opportunistic nonlinear bound tightening without the infeasibility status."""
+    tightened_lb, tightened_ub, _infeasible = _apply_nonlinear_tightening_with_status(model, lb, ub)
+    return tightened_lb, tightened_ub
 
 
 def _infer_constraint_bounds(model: Model, evaluator=None):
@@ -1169,18 +1248,22 @@ def _strong_branch_lp(
 _BOUND_WARN_THRESHOLD = 1e15
 
 
-def _check_finite_bounds(model: Model) -> None:
-    """Warn if any variable has very large or infinite bounds.
+def _optimal_relative_gap(objective: float) -> Optional[float]:
+    """Return the relative gap for a certified optimum."""
+    return None if abs(float(objective)) <= 1e-10 else 0.0
 
-    Interior point methods use barrier terms that require reasonably sized
-    bounds. Bounds beyond 1e15 cause numerical difficulties (NaN gradients,
-    ill-conditioned KKT systems) and the solver silently produces NaN
-    objectives or reports iteration_limit. This check warns users early.
-    """
-    bad_vars = []
+
+def _format_bad_bound_entries(
+    model: Model,
+    flat_lb: np.ndarray,
+    flat_ub: np.ndarray,
+) -> list[str]:
+    """Return human-readable entries for scalar variables with problematic bounds."""
+    bad_vars: list[str] = []
+    offset = 0
     for v in model._variables:
-        lb_flat = v.lb.flatten()
-        ub_flat = v.ub.flatten()
+        lb_flat = np.asarray(flat_lb[offset : offset + v.size], dtype=np.float64)
+        ub_flat = np.asarray(flat_ub[offset : offset + v.size], dtype=np.float64)
         for j in range(v.size):
             lo, hi = float(lb_flat[j]), float(ub_flat[j])
             if (
@@ -1191,12 +1274,50 @@ def _check_finite_bounds(model: Model) -> None:
             ):
                 name = v.name if v.size == 1 else f"{v.name}[{j}]"
                 bad_vars.append(f"{name} (lb={lo:.2g}, ub={hi:.2g})")
+        offset += v.size
+    return bad_vars
+
+
+def _check_finite_bounds(model: Model) -> None:
+    """Warn if any variable has very large or infinite declared bounds.
+
+    Interior point methods use barrier terms that require reasonably sized
+    bounds. Bounds beyond 1e15 cause numerical difficulties (NaN gradients,
+    ill-conditioned KKT systems) and the solver silently produces NaN
+    objectives or reports iteration_limit. Nonlinear tightening is consumed by
+    some solver paths, but this warning remains conservative because not every
+    path applies the tightened box to the actual NLP solve.
+    """
+    raw_lb, raw_ub = flat_variable_bounds(model)
+    raw_bad_vars = _format_bad_bound_entries(model, raw_lb, raw_ub)
+    if not raw_bad_vars:
+        return
+
+    tightening_note = ""
+    try:
+        _tightened_lb, _tightened_ub, bt_stats = tighten_nonlinear_bounds(model, raw_lb, raw_ub)
+        if bt_stats.infeasible:
+            logger.info(
+                "Nonlinear tightening proved infeasibility before large-bound warning: %s",
+                bt_stats.infeasibility_reason,
+            )
+            return
+        if bt_stats.n_tightened > 0:
+            tightening_note = (
+                f" Nonlinear tightening can adjust {bt_stats.n_tightened} bounds"
+                f" via {', '.join(bt_stats.applied_rules)}."
+            )
+    except Exception as exc:
+        logger.debug("Skipping nonlinear tightening before large-bound warning: %s", exc)
+
+    bad_vars = raw_bad_vars
     if bad_vars:
         import warnings
 
         warnings.warn(
-            f"Variables with very large or infinite bounds: "
+            f"Variables with very large or infinite declared bounds: "
             f"{', '.join(bad_vars[:5])}. "
+            f"{tightening_note} "
             f"NLP solvers may fail (NaN, iteration_limit) when bounds "
             f"exceed ~1e15. Add tighter explicit bounds, e.g. "
             f"m.continuous('x', lb=0, ub=1000).",
@@ -1204,9 +1325,43 @@ def _check_finite_bounds(model: Model) -> None:
         )
 
 
+def _detect_nonlinear_bound_infeasibility(model: Model) -> Optional[str]:
+    """Return a nonlinear bound-tightening infeasibility proof when available."""
+    flat_lb, flat_ub = flat_variable_bounds(model)
+    try:
+        _tightened_lb, _tightened_ub, stats = tighten_nonlinear_bounds(model, flat_lb, flat_ub)
+    except Exception as exc:
+        logger.debug("Skipping nonlinear infeasibility precheck after error: %s", exc)
+        return None
+    if stats.infeasible:
+        return stats.infeasibility_reason or "nonlinear bound tightening proved infeasibility"
+    return None
+
+
 def _is_pure_continuous(model: Model) -> bool:
     """Check if model has no integer/binary variables."""
     return all(v.var_type == VarType.CONTINUOUS for v in model._variables)
+
+
+def _classify_model_convexity(
+    model: Model,
+    *,
+    failure_label: str = "Convexity detection failed",
+    log_nonconvex_continuous: bool = False,
+) -> tuple[bool, bool, list[bool] | None]:
+    """Run the sound model convexity classifier once for solver dispatch."""
+    try:
+        from discopt._jax.convexity import classify_model as _classify_convexity
+
+        # use_certificate=True enables the sound interval-Hessian fallback
+        # for constraints/objective the syntactic walker leaves unproven.
+        is_convex, constraint_mask = _classify_convexity(model, use_certificate=True)
+        if log_nonconvex_continuous and not is_convex:
+            logger.info("Nonconvex continuous model detected — using spatial Branch and Bound")
+        return True, bool(is_convex), list(constraint_mask)
+    except Exception as exc:
+        logger.debug("%s: %s", failure_label, exc)
+        return False, False, None
 
 
 def solve_model(
@@ -1308,6 +1463,16 @@ def solve_model(
     solver : str or None, default None
         Optional global-solver selector. Use ``"amp"`` to dispatch to
         Adaptive Multivariate Partitioning instead of branch-and-bound.
+    solver="amp" options
+        The AMP backend also accepts ``rel_gap``, ``abs_tol``, ``max_iter``,
+        ``n_init_partitions``, ``partition_method``, ``milp_time_limit``,
+        ``milp_gap_tolerance``, ``presolve_bt``, ``presolve_bt_algo``,
+        ``presolve_bt_time_limit``, ``presolve_bt_mip_time_limit``,
+        ``apply_partitioning``, ``disc_var_pick``, ``partition_scaling_factor``,
+        ``partition_scaling_factor_update``, ``disc_add_partition_method``,
+        ``disc_abs_width_tol``, ``convhull_formulation``, ``convhull_ebd``,
+        ``convhull_ebd_encoding``, ``use_start_as_incumbent``, ``obbt_at_root``,
+        ``obbt_with_cutoff``, ``alphabb_cutoff_obbt``, and ``obbt_time_limit``.
 
     Returns
     -------
@@ -1348,19 +1513,30 @@ def solve_model(
             "iteration_callback",
             "milp_time_limit",
             "milp_gap_tolerance",
+            "presolve_bt",
+            "presolve_bt_algo",
+            "presolve_bt_time_limit",
+            "presolve_bt_mip_time_limit",
             "apply_partitioning",
             "disc_var_pick",
             "partition_scaling_factor",
+            "partition_scaling_factor_update",
             "disc_add_partition_method",
             "disc_abs_width_tol",
             "convhull_formulation",
+            "convhull_ebd",
+            "convhull_ebd_encoding",
+            "use_start_as_incumbent",
             "obbt_at_root",
             "obbt_with_cutoff",
+            "alphabb_cutoff_obbt",
             "obbt_time_limit",
         )
         for key in amp_option_keys:
             if key in kwargs:
                 amp_kwargs[key] = kwargs.pop(key)
+        if initial_point is not None:
+            amp_kwargs["initial_point"] = initial_point
 
         ignored_amp_options = []
 
@@ -1381,7 +1557,6 @@ def solve_model(
         _note_ignored("use_learned_relaxations", use_learned_relaxations is not False)
         _note_ignored("mccormick_bounds", mccormick_bounds != "auto")
         _note_ignored("gdp_method", gdp_method != "big-m")
-        _note_ignored("initial_point", initial_point is not None)
         _note_ignored("nlp_bb", nlp_bb is not None)
         _note_ignored("lazy_constraints", lazy_constraints is not None)
         _note_ignored("incumbent_callback", incumbent_callback is not None)
@@ -1578,9 +1753,39 @@ def solve_model(
     # All solver paths (LP IPM, QP IPM, NLP) use barrier methods that
     # struggle with bounds beyond ~1e15. Check once before any dispatch.
     _check_finite_bounds(model)
+    nonlinear_infeasibility = _detect_nonlinear_bound_infeasibility(model)
+    if nonlinear_infeasibility is not None:
+        logger.info(
+            "Nonlinear bound tightening proved model infeasible: %s", nonlinear_infeasibility
+        )
+        return SolveResult(
+            status="infeasible",
+            wall_time=time.perf_counter() - t_start,
+            gap_certified=True,
+        )
+
+    _pure_continuous = _is_pure_continuous(model)
+    _pure_continuous_convexity_known = False
+    _pure_continuous_is_convex = False
+    _pure_continuous_constraint_mask = None
+    if _pure_continuous and not skip_convex_check:
+        # For QPs this must run before QP dispatch so indefinite
+        # pure-continuous QPs do not use the convex QP solver.
+        (
+            _pure_continuous_convexity_known,
+            _pure_continuous_is_convex,
+            _pure_continuous_constraint_mask,
+        ) = _classify_model_convexity(
+            model,
+            failure_label="Convex fast path detection failed",
+            log_nonconvex_continuous=True,
+        )
+    _root_convexity_known = _pure_continuous_convexity_known
+    _root_is_convex = _pure_continuous_is_convex
+    _root_constraint_mask = _pure_continuous_constraint_mask
 
     # --- Explicit NLP-BB override: bypass specialized solvers ---
-    if nlp_bb is True and not _is_pure_continuous(model):
+    if nlp_bb is True and not _pure_continuous:
         return _solve_nlp_bb(
             model,
             time_limit,
@@ -1608,11 +1813,17 @@ def solve_model(
         logger.debug("Problem classification failed: %s", e)
         problem_class = None
 
+    _pure_continuous_force_spatial = False
     if problem_class is not None:
         if problem_class == ProblemClass.LP:
             return _solve_lp(model, t_start, time_limit)
         elif problem_class == ProblemClass.QP:
-            return _solve_qp(model, t_start)
+            if _pure_continuous:
+                if _pure_continuous_convexity_known and _pure_continuous_is_convex:
+                    return _solve_qp(model, t_start)
+                _pure_continuous_force_spatial = True
+            else:
+                return _solve_qp(model, t_start)
         elif problem_class == ProblemClass.MILP:
             if use_highs_milp:
                 highs_result = _solve_milp_highs(model, t_start, time_limit, gap_tolerance)
@@ -1643,35 +1854,25 @@ def solve_model(
             )
 
     # --- Convex NLP fast path: skip B&B for convex continuous problems ---
-    if _is_pure_continuous(model) and not skip_convex_check:
-        try:
-            from discopt._jax.convexity import classify_model as _classify_convexity
+    if _pure_continuous and _pure_continuous_convexity_known and _pure_continuous_is_convex:
+        logger.info("Convex NLP detected — solving with single NLP (global optimality guaranteed)")
+        result = _solve_continuous(
+            model,
+            time_limit,
+            ipopt_options,
+            t_start,
+            nlp_solver,
+            initial_point=initial_point,
+        )
+        result.convex_fast_path = True
+        return result
 
-            # use_certificate=True enables the sound interval-Hessian
-            # fallback for constraints/objective the syntactic walker
-            # leaves unproven — tightens UNKNOWN to CONVEX when provable
-            # on the root box, enabling the single-NLP fast path for
-            # models whose convexity isn't visible at the DAG level.
-            is_convex, _ = _classify_convexity(model, use_certificate=True)
-            if is_convex:
-                logger.info(
-                    "Convex NLP detected — solving with single NLP (global optimality guaranteed)"
-                )
-                result = _solve_continuous(
-                    model,
-                    time_limit,
-                    ipopt_options,
-                    t_start,
-                    nlp_solver,
-                    initial_point=initial_point,
-                )
-                result.convex_fast_path = True
-                return result
-        except Exception as exc:
-            logger.debug("Convex fast path detection failed: %s", exc)
-
-    # --- Pure continuous: solve directly with NLP, no B&B needed ---
-    if _is_pure_continuous(model):
+    # --- Pure continuous: solve directly only when spatial search was not requested ---
+    if (
+        _pure_continuous
+        and not _pure_continuous_force_spatial
+        and (skip_convex_check or not _pure_continuous_convexity_known)
+    ):
         return _solve_continuous(
             model,
             time_limit,
@@ -1687,34 +1888,63 @@ def solve_model(
     # Also skip when lazy constraints are provided (they need the cut pool
     # infrastructure from the full spatial B&B loop).
     if nlp_bb is None and lazy_constraints is None:
-        try:
-            from discopt._jax.convexity import classify_model as _cls_conv
-
-            _is_conv, _ = _cls_conv(model, use_certificate=True)
-            if _is_conv:
-                logger.info("Convex MINLP detected, using NLP-BB (nonlinear Branch and Bound)")
-                return _solve_nlp_bb(
+        if not _root_convexity_known:
+            _root_convexity_known, _root_is_convex, _root_constraint_mask = (
+                _classify_model_convexity(
                     model,
-                    time_limit,
-                    gap_tolerance,
-                    batch_size,
-                    strategy,
-                    max_nodes,
-                    t_start,
-                    nlp_solver,
-                    skip_convex_check=skip_convex_check,
-                    initial_point=initial_point,
-                    lazy_constraints=lazy_constraints,
-                    incumbent_callback=incumbent_callback,
-                    node_callback=node_callback,
-                    in_tree_presolve_stride=in_tree_presolve_stride,
-                    in_tree_presolve_repr=_model_repr,
+                    failure_label="Convex MINLP detection failed",
                 )
-        except Exception:
-            pass
+            )
+        if _root_convexity_known and _root_is_convex:
+            logger.info("Convex MINLP detected, using NLP-BB (nonlinear Branch and Bound)")
+            return _solve_nlp_bb(
+                model,
+                time_limit,
+                gap_tolerance,
+                batch_size,
+                strategy,
+                max_nodes,
+                t_start,
+                nlp_solver,
+                skip_convex_check=skip_convex_check,
+                initial_point=initial_point,
+                lazy_constraints=lazy_constraints,
+                incumbent_callback=incumbent_callback,
+                node_callback=node_callback,
+                in_tree_presolve_stride=in_tree_presolve_stride,
+                in_tree_presolve_repr=_model_repr,
+            )
 
     # --- Extract variable info ---
     n_vars, lb, ub, int_offsets, int_sizes = _extract_variable_info(model)
+
+    # --- Root presolve: FBBT + integer-bound rounding before tree creation ---
+    t_rust_start = time.perf_counter()
+    from discopt.solvers._root_presolve import tighten_root_bounds_with_fbbt
+
+    lb, ub, root_infeasible, _ = tighten_root_bounds_with_fbbt(
+        model,
+        lb,
+        ub,
+        int_offsets,
+        int_sizes,
+        model_repr=_model_repr,
+    )
+    rust_time += time.perf_counter() - t_rust_start
+    if root_infeasible:
+        wall_time = time.perf_counter() - t_start
+        return SolveResult(
+            status="infeasible",
+            objective=None,
+            bound=None,
+            gap=None,
+            x=None,
+            wall_time=wall_time,
+            node_count=0,
+            rust_time=rust_time,
+            jax_time=jax_time,
+            python_time=wall_time - rust_time - jax_time,
+        )
 
     # --- Create PyTreeManager (Rust) ---
     t_rust_start = time.perf_counter()
@@ -1777,24 +2007,27 @@ def solve_model(
     _model_is_convex = False
     _oa_enabled = False
     _convex_constraint_mask = None
-    try:
-        from discopt._jax.convexity import classify_model as _classify_model
-
-        # use_certificate consults the sound interval-Hessian fallback
-        # for constraints the syntactic walker leaves unproven. Tightens
-        # _convex_constraint_mask entries to True when the certificate
-        # proves convexity on the root box — enabling OA cuts and the
-        # αBB skip below for structurally-convex problems whose
-        # convexity the DCP walker alone cannot recognise.
-        _model_is_convex, _convex_constraint_mask = _classify_model(model, use_certificate=True)
+    if _root_convexity_known:
+        _model_is_convex = _root_is_convex
+        _convex_constraint_mask = _root_constraint_mask or []
         if _model_is_convex:
             logger.info("Model detected as convex — NLP solutions are valid lower bounds")
         if cutting_planes and any(_convex_constraint_mask):
             _oa_enabled = True
-    except Exception as exc:
-        logger.debug("Convexity detection failed: %s", exc)
-        if cutting_planes and model._constraints:
-            _convex_constraint_mask = [False] * len(model._constraints)
+    else:
+        _root_convexity_known, _root_is_convex, _root_constraint_mask = _classify_model_convexity(
+            model
+        )
+        if _root_convexity_known:
+            _model_is_convex = _root_is_convex
+            _convex_constraint_mask = _root_constraint_mask or []
+            if _model_is_convex:
+                logger.info("Model detected as convex — NLP solutions are valid lower bounds")
+            if cutting_planes and any(_convex_constraint_mask):
+                _oa_enabled = True
+        else:
+            if cutting_planes and model._constraints:
+                _convex_constraint_mask = [False] * len(model._constraints)
 
     # Per-node certificate refresh imported lazily so the main
     # classification import above stays the single-point-of-truth for
@@ -1813,6 +2046,7 @@ def solve_model(
     # be the global optimum of the continuous subproblem.
     if not _model_is_convex:
         tree.set_nonconvex(True)
+    _gap_certified = True
 
     # --- Default Ipopt options ---
     opts = dict(ipopt_options) if ipopt_options else {}
@@ -1956,11 +2190,17 @@ def solve_model(
             break
 
         # Tighten node bounds via constraint propagation (FBBT).
+        node_infeasible_mask = np.zeros(n_batch, dtype=bool)
         if cl_list:
             for i in range(n_batch):
                 node_lb_i = np.array(batch_lb[i])
                 node_ub_i = np.array(batch_ub[i])
-                t_lb, t_ub = _tighten_node_bounds(evaluator, node_lb_i, node_ub_i, cl_list, cu_list)
+                t_lb, t_ub, node_infeasible = _tighten_node_bounds_with_status(
+                    evaluator, node_lb_i, node_ub_i, cl_list, cu_list
+                )
+                if node_infeasible:
+                    node_infeasible_mask[i] = True
+                    continue
                 batch_lb[i] = t_lb.tolist()
                 batch_ub[i] = t_ub.tolist()
 
@@ -2023,25 +2263,20 @@ def solve_model(
             # used.  For integer-feasible nodes, inject the NLP solution as
             # an incumbent candidate via tree.inject_incumbent() and let the
             # Rust tree continue spatial branching on continuous variables.
-            _int_feas_mask = np.zeros(n_batch, dtype=bool)
             if not _model_is_convex:
                 _nlp_obj_backup = result_lbs.copy()
                 for i in range(n_batch):
                     if result_lbs[i] < _SENTINEL_THRESHOLD:
-                        sol_is_int_feas = True
-                        for off, sz in zip(int_offsets, int_sizes):
-                            for j in range(off, off + sz):
-                                if abs(result_sols[i, j] - round(result_sols[i, j])) > 1e-5:
-                                    sol_is_int_feas = False
-                                    break
-                            if not sol_is_int_feas:
-                                break
-                        _int_feas_mask[i] = sol_is_int_feas
+                        sol_is_int_feas = _is_integer_feasible_solution(
+                            result_sols[i], int_offsets, int_sizes
+                        )
                         if sol_is_int_feas:
                             # Inject NLP solution as incumbent candidate.
                             # The Rust tree will update its incumbent if this
                             # objective improves on the current best.
-                            tree.inject_incumbent(result_sols[i].copy(), float(_nlp_obj_backup[i]))
+                            nlp_obj = float(_nlp_obj_backup[i])
+                            if np.isfinite(nlp_obj):
+                                tree.inject_incumbent(result_sols[i].copy(), nlp_obj)
                         # Reset ALL nonconvex nodes to -inf; convex bounds
                         # computed below will provide valid lower bounds.
                         result_lbs[i] = -np.inf
@@ -2085,6 +2320,7 @@ def solve_model(
                                 lb_jax,
                                 ub_jax,
                                 negate=_mc_negate,
+                                deadline=t_start + time_limit,
                             )
                         )
                     elif _mc_mode != "nlp":
@@ -2109,12 +2345,12 @@ def solve_model(
                                 result_lbs[i] = max(result_lbs[i], float(mc_lbs[i]))
                 except (ValueError, ArithmeticError, RuntimeError) as e:
                     logger.debug("Batch McCormick bound failed: %s", e)
-            # For nonconvex problems with no convex relaxation available,
-            # fall back to NLP objective as best-effort bound.
             if not _model_is_convex:
                 for i in range(n_batch):
-                    if result_lbs[i] == -np.inf and _nlp_obj_backup[i] < _SENTINEL_THRESHOLD:
-                        result_lbs[i] = _nlp_obj_backup[i]
+                    if result_lbs[i] == -np.inf:
+                        _gap_certified = False
+                    elif not np.isfinite(result_lbs[i]):
+                        result_lbs[i] = _INFEASIBILITY_SENTINEL
         else:
             result_ids = np.empty(n_batch, dtype=np.int64)
             result_lbs = np.empty(n_batch, dtype=np.float64)
@@ -2183,7 +2419,8 @@ def solve_model(
                 result_ids[i] = int(batch_ids[i])
 
                 if nlp_result.status in (SolveStatus.OPTIMAL, SolveStatus.ITERATION_LIMIT):
-                    nlp_lb = nlp_result.objective
+                    nlp_obj = float(nlp_result.objective)
+                    nlp_lb = nlp_obj
                     convex_lb = -np.inf  # accumulate valid convex lower bound
 
                     if _use_alphabb:
@@ -2191,7 +2428,8 @@ def solve_model(
                             relax_lb = _compute_alphabb_bound(
                                 evaluator, node_lb, node_ub, _alphabb_alpha
                             )
-                            nlp_lb = max(nlp_lb, relax_lb)
+                            if _model_is_convex:
+                                nlp_lb = max(nlp_lb, relax_lb)
                             convex_lb = max(convex_lb, relax_lb)
                         except (ValueError, ArithmeticError, RuntimeError) as e:
                             logger.debug("alphaBB bound failed: %s", e)
@@ -2217,6 +2455,7 @@ def solve_model(
                                     lb_j,
                                     ub_j,
                                     negate=_mc_negate,
+                                    deadline=t_start + time_limit,
                                 )
                             elif _mc_mode != "nlp":
                                 from discopt._jax.mccormick_nlp import (
@@ -2232,61 +2471,42 @@ def solve_model(
                             else:
                                 mc_lb = -np.inf
                             if np.isfinite(mc_lb):
-                                nlp_lb = max(nlp_lb, mc_lb)
+                                if _model_is_convex:
+                                    nlp_lb = max(nlp_lb, mc_lb)
                                 convex_lb = max(convex_lb, mc_lb)
                         except (ValueError, ArithmeticError, RuntimeError) as e:
                             logger.debug("McCormick bound failed: %s", e)
 
                     # For nonconvex problems: NLP local min is NOT a valid
                     # lower bound (can exceed global opt → premature pruning).
-                    # Use convex relaxation bound for non-integer-feasible
-                    # nodes, but keep NLP objective for integer-feasible ones
-                    # (the Rust tree uses result_lbs for incumbent values).
-                    sol_is_int_feas = False
-                    if not _model_is_convex:
-                        sol_is_int_feas = True
-                        for off, sz in zip(int_offsets, int_sizes):
-                            for j in range(off, off + sz):
-                                xj = nlp_result.x[j]
-                                if not np.isfinite(xj) or abs(xj - round(xj)) > 1e-5:
-                                    sol_is_int_feas = False
-                                    break
-                            if not sol_is_int_feas:
-                                break
-                        if not sol_is_int_feas and convex_lb > -np.inf:
-                            nlp_lb = convex_lb
-
-                    # Constraint feasibility post-check
-                    con_feasible = True
-                    if cl_list and not _check_constraint_feasibility(
+                    # Inject integer-feasible NLP solutions as incumbent
+                    # candidates, but import only convex-relaxation lower
+                    # bounds into the tree.
+                    con_feasible = not cl_list or _check_constraint_feasibility(
                         _active_evaluator, nlp_result.x, cl_list, cu_list
-                    ):
-                        con_feasible = False
+                    )
+                    if not con_feasible:
                         nlp_lb = _INFEASIBILITY_SENTINEL
                         logger.debug(
                             "Node %d: NLP solution violates constraints, marking infeasible",
                             int(batch_ids[i]),
                         )
+                    elif not _model_is_convex:
+                        if _is_integer_feasible_solution(nlp_result.x, int_offsets, int_sizes):
+                            if np.isfinite(nlp_obj) and nlp_obj < _SENTINEL_THRESHOLD:
+                                tree.inject_incumbent(
+                                    np.asarray(nlp_result.x).copy(), float(nlp_obj)
+                                )
+                        nlp_lb = convex_lb if convex_lb > -np.inf else -np.inf
 
-                    # Inject NLP solution as incumbent candidate for nonconvex
-                    # integer-feasible nodes. The Rust tree's process_evaluated
-                    # explicitly skips auto-promotion of node_lb in nonconvex
-                    # mode (see tree_manager.rs::process_evaluated), so this
-                    # injection is required to surface feasible incumbents.
-                    # Mirrors the batch-IPM path above.
-                    if (
-                        not _model_is_convex
-                        and sol_is_int_feas
-                        and con_feasible
-                        and np.isfinite(nlp_result.objective)
-                        and nlp_result.objective < _SENTINEL_THRESHOLD
-                    ):
-                        tree.inject_incumbent(nlp_result.x.copy(), float(nlp_result.objective))
-
-                    # Guard: NaN lower bounds corrupt the Rust B&B tree
-                    # (NaN comparisons always return False in IEEE 754).
-                    if not np.isfinite(nlp_lb):
+                    # Guard: NaN and +inf lower bounds corrupt the Rust B&B
+                    # tree.  Keep -inf for nonconvex nodes without a valid
+                    # relaxation bound; that makes the reported gap
+                    # uncertified instead of pretending the NLP point is a LB.
+                    if np.isnan(nlp_lb) or nlp_lb == np.inf:
                         nlp_lb = _INFEASIBILITY_SENTINEL
+                    elif nlp_lb == -np.inf:
+                        _gap_certified = False
                     result_lbs[i] = nlp_lb
                     result_sols[i] = nlp_result.x
                     result_feas[i] = False
@@ -2297,6 +2517,12 @@ def solve_model(
                     result_sols[i] = 0.5 * (lb_clipped + ub_clipped)
                     result_feas[i] = False
         jax_time += time.perf_counter() - t_jax_start
+
+        if np.any(node_infeasible_mask):
+            for idx in np.flatnonzero(node_infeasible_mask):
+                i = int(idx)
+                result_lbs[i] = _INFEASIBILITY_SENTINEL
+                result_feas[i] = False
 
         # --- Optional GNN branching scoring ---
         # GNN computes variable scores and passes hints to Rust TreeManager,
@@ -2510,6 +2736,9 @@ def solve_model(
                         n_tightened = 0
                         flat_idx = 0
                         for bi, vinfo in enumerate(model._variables):
+                            if vinfo.size != 1:
+                                flat_idx += vinfo.size
+                                continue
                             for j in range(vinfo.size):
                                 new_lo = fbbt_lbs[bi]
                                 new_hi = fbbt_ubs[bi]
@@ -2594,7 +2823,8 @@ def solve_model(
         if model._objective.sense == ObjectiveSense.MAXIMIZE:
             obj_val = -obj_val
 
-        if tree.gap() <= gap_tolerance or tree.is_finished():
+        search_closed = tree.gap() <= gap_tolerance or tree.is_finished()
+        if search_closed and _gap_certified:
             status = "optimal"
         else:
             status = "feasible"
@@ -2615,18 +2845,23 @@ def solve_model(
     assert model._objective is not None
     if bound_val is not None and model._objective.sense == ObjectiveSense.MAXIMIZE:
         bound_val = -bound_val
+    gap_val = stats["gap"]
+    if not _gap_certified:
+        bound_val = None
+        gap_val = None
 
     return SolveResult(
         status=status,
         objective=obj_val,
         bound=bound_val,
-        gap=stats["gap"],
+        gap=gap_val,
         x=x_dict,
         wall_time=wall_time,
         node_count=stats["total_nodes"],
         rust_time=rust_time,
         jax_time=jax_time,
         python_time=python_time,
+        gap_certified=_gap_certified,
     )
 
 
@@ -2653,7 +2888,22 @@ def _solve_continuous(
     evaluator = _make_evaluator(model)
     jax_time = time.perf_counter() - t_jax_start
 
-    lb, ub = evaluator.variable_bounds
+    raw_lb, raw_ub = evaluator.variable_bounds
+    lb = np.asarray(raw_lb, dtype=np.float64).copy()
+    ub = np.asarray(raw_ub, dtype=np.float64).copy()
+    tightened_lb, tightened_ub, nonlinear_infeasible = _apply_nonlinear_tightening_with_status(
+        model, lb, ub
+    )
+    if nonlinear_infeasible:
+        wall_time = time.perf_counter() - t_start
+        return SolveResult(
+            status="infeasible",
+            wall_time=wall_time,
+            gap_certified=True,
+            jax_time=jax_time,
+            python_time=wall_time - jax_time,
+        )
+    lb, ub = tightened_lb, tightened_ub
     lb_clipped = np.clip(lb, -_SPC, _SPC)
     ub_clipped = np.clip(ub, -_SPC, _SPC)
     if initial_point is not None:
@@ -2661,13 +2911,12 @@ def _solve_continuous(
         logger.info("Using warm-start point for continuous NLP")
     else:
         x0 = 0.5 * (lb_clipped + ub_clipped)
-        # Variables that are effectively unbounded on both sides collapse
-        # to midpoint 0 above. Zero is a stationary point of periodic
-        # functions (sin, cos) and other even functions, so single-start
-        # local NLP gets stuck at a local max (e.g. cos(0) = 1). Nudge
-        # unbounded coordinates to 0.5 so first-order methods can pick a
-        # descent direction and escape the pathological start.
-        fully_unbounded = (lb <= -_BOUND_WARN_THRESHOLD) & (ub >= _BOUND_WARN_THRESHOLD)
+        # Variables that are effectively unbounded on both sides can collapse
+        # to midpoint 0 even after nonlinear tightening produces a compact
+        # box. Zero is a stationary or nonsmooth point for common atoms
+        # (sin/cos, sqrt(x^2), abs), so keep the original sentinel-bound
+        # signal when nudging starts away from that pathological point.
+        fully_unbounded = (raw_lb <= -_BOUND_WARN_THRESHOLD) & (raw_ub >= _BOUND_WARN_THRESHOLD)
         x0 = np.where(fully_unbounded, 0.5, x0)
         # On problems with one-sided large bounds (e.g. x >= 1e-5 with no
         # upper bound), the midpoint of the clipped [-_SPC, _SPC] range
@@ -2687,15 +2936,16 @@ def _solve_continuous(
     opts["max_wall_time"] = max(remaining, 0.1)
 
     constraint_bounds = None
+    backend_evaluator = cast(NLPEvaluator, _BoundOverrideEvaluator(evaluator, lb, ub))
 
     t_jax_start = time.perf_counter()
     if nlp_solver == "ripopt":
         from discopt.solvers.nlp_ripopt import solve_nlp as solve_nlp_ripopt
 
         nlp_result = solve_nlp_ripopt(
-            evaluator, x0, constraint_bounds=constraint_bounds, options=opts
+            backend_evaluator, x0, constraint_bounds=constraint_bounds, options=opts
         )
-    elif nlp_solver == "sparse_ipm" and hasattr(evaluator, "_obj_fn"):
+    elif nlp_solver == "sparse_ipm" and hasattr(backend_evaluator, "_obj_fn"):
         from discopt._jax.sparse_ipm import solve_nlp_sparse_ipm
 
         # Build sparse Jacobian function if beneficial
@@ -2712,18 +2962,22 @@ def _solve_continuous(
         except Exception as e:
             logger.debug("Sparse Jacobian setup failed: %s", e)
         nlp_result = solve_nlp_sparse_ipm(
-            evaluator,
+            backend_evaluator,
             x0,
             constraint_bounds=constraint_bounds,
             options=opts,
             sparse_jac_fn=sparse_jac_fn,
         )
-    elif nlp_solver == "ipm" and hasattr(evaluator, "_obj_fn"):
+    elif nlp_solver == "ipm" and hasattr(backend_evaluator, "_obj_fn"):
         from discopt._jax.ipm import solve_nlp_ipm
 
-        nlp_result = solve_nlp_ipm(evaluator, x0, constraint_bounds=constraint_bounds, options=opts)
+        nlp_result = solve_nlp_ipm(
+            backend_evaluator, x0, constraint_bounds=constraint_bounds, options=opts
+        )
     else:
-        nlp_result = solve_nlp(evaluator, x0, constraint_bounds=constraint_bounds, options=opts)
+        nlp_result = solve_nlp(
+            backend_evaluator, x0, constraint_bounds=constraint_bounds, options=opts
+        )
     jax_time += time.perf_counter() - t_jax_start
 
     wall_time = time.perf_counter() - t_start
@@ -2754,7 +3008,7 @@ def _solve_continuous(
         status=status,
         objective=obj_val,
         bound=obj_val if status == "optimal" else None,
-        gap=0.0 if status == "optimal" else None,
+        gap=_optimal_relative_gap(obj_val) if status == "optimal" and obj_val is not None else None,
         x=x_dict,
         constraint_duals=constraint_duals,
         bound_duals_lower=bound_duals_lower,
@@ -2823,6 +3077,35 @@ def _solve_nlp_bb(
 
     # --- Extract variable info and create tree ---
     n_vars, lb, ub, int_offsets, int_sizes = _extract_variable_info(model)
+
+    # --- Root presolve: FBBT + integer-bound rounding before tree creation ---
+    t_rust_start = time.perf_counter()
+    from discopt.solvers._root_presolve import tighten_root_bounds_with_fbbt
+
+    lb, ub, root_infeasible, _ = tighten_root_bounds_with_fbbt(
+        model,
+        lb,
+        ub,
+        int_offsets,
+        int_sizes,
+    )
+    rust_time += time.perf_counter() - t_rust_start
+    if root_infeasible:
+        wall_time = time.perf_counter() - t_start
+        return SolveResult(
+            status="infeasible",
+            objective=None,
+            bound=None,
+            gap=None,
+            x=None,
+            wall_time=wall_time,
+            node_count=0,
+            rust_time=rust_time,
+            jax_time=jax_time,
+            python_time=wall_time - rust_time - jax_time,
+            nlp_bb=True,
+            gap_certified=_gap_certified,
+        )
 
     t_rust_start = time.perf_counter()
     tree = PyTreeManager(
@@ -2902,11 +3185,17 @@ def _solve_nlp_bb(
         # Tighten node bounds via constraint propagation (FBBT).
         # This resolves degenerate bounds (e.g., x <= M*y with y fixed at 0)
         # that cause IPM convergence failures.
+        node_infeasible_mask = np.zeros(n_batch, dtype=bool)
         if cl_list:
             for i in range(n_batch):
                 node_lb_i = np.array(batch_lb[i])
                 node_ub_i = np.array(batch_ub[i])
-                t_lb, t_ub = _tighten_node_bounds(evaluator, node_lb_i, node_ub_i, cl_list, cu_list)
+                t_lb, t_ub, node_infeasible = _tighten_node_bounds_with_status(
+                    evaluator, node_lb_i, node_ub_i, cl_list, cu_list
+                )
+                if node_infeasible:
+                    node_infeasible_mask[i] = True
+                    continue
                 batch_lb[i] = t_lb.tolist()
                 batch_ub[i] = t_ub.tolist()
 
@@ -3062,6 +3351,12 @@ def _solve_nlp_bb(
                     result_feas[i] = False
 
         jax_time += time.perf_counter() - t_jax_start
+
+        if np.any(node_infeasible_mask):
+            for idx in np.flatnonzero(node_infeasible_mask):
+                i = int(idx)
+                result_lbs[i] = _INFEASIBILITY_SENTINEL
+                result_feas[i] = False
 
         # --- Feasibility pump after root node ---
         if iteration == 0 and not _fp_ran:
@@ -3343,20 +3638,7 @@ def _solve_node_nlp_ripopt(
     from discopt.solvers import NLPResult
     from discopt.solvers.nlp_ripopt import solve_nlp as solve_nlp_ripopt
 
-    class _BoundOverride:
-        """Thin proxy that overrides variable_bounds on the evaluator."""
-
-        def __init__(self, ev, lb, ub):
-            self._ev = ev
-            self._lb = lb
-            self._ub = ub
-
-        def __getattr__(self, name):
-            if name == "variable_bounds":
-                return (self._lb, self._ub)
-            return getattr(self._ev, name)
-
-    proxy = _BoundOverride(evaluator, node_lb, node_ub)
+    proxy = _BoundOverrideEvaluator(evaluator, node_lb, node_ub)
 
     # Guard against ripopt stalling on degenerate/infeasible subproblems
     # by enforcing a per-node wall time limit. Cap at 30s per node, but
@@ -4149,7 +4431,7 @@ def _solve_lp(model: Model, t_start: float, time_limit: float | None = None) -> 
         status=status,
         objective=obj_val,
         bound=obj_val if status == "optimal" else None,
-        gap=0.0 if status == "optimal" else None,
+        gap=_optimal_relative_gap(obj_val) if status == "optimal" else None,
         x=_unpack_solution(model, x_flat),
         wall_time=wall_time,
         node_count=0,
@@ -4232,7 +4514,7 @@ def _solve_lp_highs(
             status="optimal",
             objective=obj_val,
             bound=obj_val,
-            gap=0.0,
+            gap=_optimal_relative_gap(obj_val),
             x=_unpack_solution(model, np.asarray(result.x[:n_orig])),
             wall_time=wall_time,
             node_count=0,
@@ -4368,7 +4650,7 @@ def _solve_qp_highs(
             status="optimal",
             objective=obj_val,
             bound=obj_val,
-            gap=0.0,
+            gap=_optimal_relative_gap(obj_val),
             x=_unpack_solution(model, x_flat),
             wall_time=wall_time,
             node_count=result.node_count,
@@ -4535,7 +4817,7 @@ def _solve_qp_jax(model: Model, t_start: float) -> SolveResult:
         status=status,
         objective=obj_val,
         bound=obj_val if status == "optimal" else None,
-        gap=0.0 if status == "optimal" else None,
+        gap=_optimal_relative_gap(obj_val) if status == "optimal" else None,
         x=_unpack_solution(model, x_flat),
         wall_time=wall_time,
         node_count=0,

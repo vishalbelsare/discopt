@@ -273,11 +273,7 @@ mod tests {
                 rhs: 1.0,
                 name: None,
             }],
-            variables: vec![
-                vinfo_bin("b0", 0),
-                vinfo_bin("b1", 1),
-                vinfo_bin("b2", 2),
-            ],
+            variables: vec![vinfo_bin("b0", 0), vinfo_bin("b1", 1), vinfo_bin("b2", 2)],
             n_vars: 3,
         };
         let (c, s) = extract_cliques(&model);
@@ -392,11 +388,7 @@ mod tests {
                 rhs: 2.0,
                 name: None,
             }],
-            variables: vec![
-                vinfo_bin("b0", 0),
-                vinfo_bin("b1", 1),
-                vinfo_bin("b2", 2),
-            ],
+            variables: vec![vinfo_bin("b0", 0), vinfo_bin("b1", 1), vinfo_bin("b2", 2)],
             n_vars: 3,
         };
         let (c, _) = extract_cliques(&model);

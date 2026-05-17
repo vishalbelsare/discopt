@@ -95,30 +95,33 @@ jobs:
       - name: Run pytest (PR-fast, parallel)
         run: |
           source .venv/bin/activate
-          # -n auto: parallel across runner CPUs.
+          # Keep worker count bounded so JAX compilation and AMP relaxations do
+          # not multiply peak memory unexpectedly.
           # --dist loadgroup keeps tests sharing a class on the same worker
           #   so xdist-incompatible fixtures stay serialized.
           # Coverage is intentionally dropped from the PR path — see the
           # `python-coverage` job (nightly + label-triggered) for full coverage.
-          pytest python/tests/ \
+          scripts/run_memory_capped_pytest.sh pytest python/tests/ \
             -q --tb=short --timeout=120 \
-            -m "not slow" \
+            -m "not slow and not correctness and not integration and not amp_benchmark and not requires_cyipopt and not memory_heavy" \
             --ignore=python/tests/test_correctness.py \
-            -n auto --dist loadgroup \
+            -n "${PYTEST_XDIST_WORKERS}" --dist loadgroup \
             --durations=20
         env:
           JAX_PLATFORMS: cpu
           JAX_ENABLE_X64: "1"
+          PYTEST_MEMORY_LIMIT_MB: "16384"
+          PYTEST_XDIST_WORKERS: "2"
 
   python-coverage:
     name: Python coverage (3.12, ubuntu)
-    # Run coverage nightly (scheduled), or on PRs explicitly opted in via the
-    # `coverage` label. Skipped on plain main pushes so the post-merge wall
-    # clock isn't gated on the coverage instrumentation tax (~100s vs the
-    # fast job). See issue #68 for the per-PR/main turnaround target.
+    # Run coverage nightly, after main pushes, or on PRs explicitly opted in
+    # via the `coverage` label.
     if: >-
       github.event_name == 'schedule' ||
-      contains(github.event.pull_request.labels.*.name, 'coverage')
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+        contains(github.event.pull_request.labels.*.name, 'coverage'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -156,19 +159,54 @@ jobs:
       - name: Run pytest with coverage
         run: |
           source .venv/bin/activate
-          pytest python/tests/ \
+          scripts/run_memory_capped_pytest.sh pytest python/tests/ \
             -q --tb=short --timeout=120 \
-            -m "not slow" \
+            -m "not slow and not correctness and not integration and not amp_benchmark and not requires_cyipopt and not memory_heavy" \
             --ignore=python/tests/test_correctness.py \
-            -n auto --dist loadgroup \
-            --cov=discopt --cov-report=term-missing --cov-report=xml:coverage.xml
+            -n "${PYTEST_XDIST_WORKERS}" --dist loadgroup \
+            --cov=discopt --cov-report=term-missing --cov-report=xml:coverage.xml \
+            --cov-fail-under=85
         env:
           JAX_PLATFORMS: cpu
           JAX_ENABLE_X64: "1"
+          PYTEST_MEMORY_LIMIT_MB: "16384"
+          PYTEST_XDIST_WORKERS: "2"
       - name: Upload to Codecov
         if: always()
         uses: codecov/codecov-action@v5
         with:
           files: coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  python-amp-coverage:
+    name: Python AMP coverage (3.12, ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: |
+          python -m venv .venv
+          source .venv/bin/activate
+          pip install maturin
+          pip install jax jaxlib numpy scipy highspy pytest pytest-timeout pytest-cov "ruff==0.14.6"
+          maturin develop
+      - name: Test AMP fast battery with coverage
+        run: |
+          source .venv/bin/activate
+          scripts/run_memory_capped_pytest.sh pytest python/tests/test_amp.py -v --timeout=120 -m "not slow and not integration and not amp_benchmark and not requires_cyipopt and not memory_heavy" --cov=discopt --cov-report=term-missing --cov-report=xml:coverage-amp.xml
+        env:
+          JAX_PLATFORMS: cpu
+          JAX_ENABLE_X64: "1"
+          PYTEST_MEMORY_LIMIT_MB: "16384"
+      - name: Upload AMP coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage-amp.xml
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false

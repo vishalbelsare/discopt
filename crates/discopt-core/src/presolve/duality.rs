@@ -127,7 +127,11 @@ pub fn reduced_cost_fixing(
         if cbar > 1e-12 && lb.is_finite() {
             // ub_new = lb + gap / cbar
             let candidate = lb + gap / cbar;
-            let candidate = if is_integer { candidate.floor() } else { candidate };
+            let candidate = if is_integer {
+                candidate.floor()
+            } else {
+                candidate
+            };
             if candidate < new_ub {
                 new_ub = candidate;
             }
@@ -135,7 +139,11 @@ pub fn reduced_cost_fixing(
         if cbar < -1e-12 && ub.is_finite() {
             // lb_new = ub + gap / cbar (cbar < 0 ⇒ adds a negative number)
             let candidate = ub + gap / cbar;
-            let candidate = if is_integer { candidate.ceil() } else { candidate };
+            let candidate = if is_integer {
+                candidate.ceil()
+            } else {
+                candidate
+            };
             if candidate > new_lb {
                 new_lb = candidate;
             }
@@ -158,9 +166,10 @@ pub fn reduced_cost_fixing(
         if (bounds[block_idx].hi - bounds[block_idx].lo).abs() < 1e-12
             && (new_lb > lb || new_ub < ub)
         {
-            stats
-                .vars_fixed
-                .push((block_idx, 0.5 * (bounds[block_idx].lo + bounds[block_idx].hi)));
+            stats.vars_fixed.push((
+                block_idx,
+                0.5 * (bounds[block_idx].lo + bounds[block_idx].hi),
+            ));
         }
     }
     stats

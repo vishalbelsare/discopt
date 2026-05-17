@@ -324,13 +324,7 @@ mod tests {
         }
     }
 
-    fn linear_2var(
-        arena: &mut ExprArena,
-        cx: f64,
-        x: ExprId,
-        cy: f64,
-        y: ExprId,
-    ) -> ExprId {
+    fn linear_2var(arena: &mut ExprArena, cx: f64, x: ExprId, cy: f64, y: ExprId) -> ExprId {
         let cx_n = arena.add(ExprNode::Constant(cx));
         let cy_n = arena.add(ExprNode::Constant(cy));
         let cxx = arena.add(ExprNode::BinaryOp {

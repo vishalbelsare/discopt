@@ -165,8 +165,8 @@ pub fn compute_equilibration(model: &ModelRepr) -> (ScalingFactors, ScalingStats
 mod tests {
     use super::*;
     use crate::expr::{
-        BinOp, ConstraintRepr, ConstraintSense, ExprArena, ExprNode, ModelRepr,
-        ObjectiveSense, VarInfo, VarType,
+        BinOp, ConstraintRepr, ConstraintSense, ExprArena, ExprNode, ModelRepr, ObjectiveSense,
+        VarInfo, VarType,
     };
 
     fn scalar_var(arena: &mut ExprArena, name: &str, idx: usize) -> ExprId {
@@ -236,7 +236,11 @@ mod tests {
         };
         let (f, s) = compute_equilibration(&model);
         assert_eq!(f.row_scales.len(), 1);
-        assert!((f.row_scales[0] - 1.0).abs() < 1e-9, "row = {}", f.row_scales[0]);
+        assert!(
+            (f.row_scales[0] - 1.0).abs() < 1e-9,
+            "row = {}",
+            f.row_scales[0]
+        );
         assert!((s.worst_row_dynamic_range - 1e4).abs() < 1e-3);
         assert_eq!(s.linear_rows_sampled, 1);
     }

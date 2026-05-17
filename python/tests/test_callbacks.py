@@ -132,6 +132,8 @@ needs_rust = pytest.mark.skipif(not _has_rust, reason="discopt._rust not availab
 
 @pytest.mark.slow
 @needs_rust
+@pytest.mark.slow
+@pytest.mark.integration
 class TestNodeCallback:
     def test_node_callback_called(self):
         """Node callback should be invoked at least once during B&B."""
@@ -165,6 +167,8 @@ class TestNodeCallback:
 
 @pytest.mark.slow
 @needs_rust
+@pytest.mark.slow
+@pytest.mark.integration
 class TestLazyConstraints:
     def test_lazy_cut_excludes_solution(self):
         """Lazy constraints can exclude the otherwise-optimal solution.
@@ -203,6 +207,8 @@ class TestLazyConstraints:
 
 @pytest.mark.slow
 @needs_rust
+@pytest.mark.slow
+@pytest.mark.integration
 class TestIncumbentCallback:
     def test_incumbent_rejection(self):
         """Incumbent callback can reject solutions where y=0."""
@@ -233,6 +239,8 @@ class TestIncumbentCallback:
 
 @pytest.mark.slow
 @needs_rust
+@pytest.mark.slow
+@pytest.mark.integration
 class TestCallbackExceptionHandling:
     def test_node_callback_exception_logged(self, caplog):
         """A node callback that raises should not crash the solver."""
@@ -277,6 +285,8 @@ class TestCallbackExceptionHandling:
 
 @pytest.mark.slow
 @needs_rust
+@pytest.mark.slow
+@pytest.mark.integration
 class TestCallbacksWithMILP:
     def test_all_callbacks_together(self):
         """All three callbacks can be used simultaneously."""

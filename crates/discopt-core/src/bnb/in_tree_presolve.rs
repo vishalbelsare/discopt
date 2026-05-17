@@ -199,8 +199,7 @@ mod tests {
             max_iter: 16,
             tol: 1e-9,
         };
-        let delta =
-            run_in_tree_presolve(&model, &[3.0, 0.0], &[10.0, 10.0], 1, None, &opts);
+        let delta = run_in_tree_presolve(&model, &[3.0, 0.0], &[10.0, 10.0], 1, None, &opts);
         assert!(delta.ran);
         assert!(!delta.infeasible);
         assert!(delta.bounds_tightened >= 1);
@@ -216,8 +215,7 @@ mod tests {
             depth_stride: 0,
             ..Default::default()
         };
-        let delta =
-            run_in_tree_presolve(&model, &[3.0, 0.0], &[10.0, 10.0], 1, None, &opts);
+        let delta = run_in_tree_presolve(&model, &[3.0, 0.0], &[10.0, 10.0], 1, None, &opts);
         assert!(!delta.ran);
         assert_eq!(delta.bounds_tightened, 0);
         assert_eq!(delta.lb, vec![3.0, 0.0]);
@@ -248,14 +246,7 @@ mod tests {
             depth_stride: 1,
             ..Default::default()
         };
-        let delta = run_in_tree_presolve(
-            &model,
-            &[10.0, 10.0],
-            &[10.0, 10.0],
-            1,
-            None,
-            &opts,
-        );
+        let delta = run_in_tree_presolve(&model, &[10.0, 10.0], &[10.0, 10.0], 1, None, &opts);
         assert!(delta.ran);
         assert!(delta.infeasible);
     }
@@ -269,8 +260,7 @@ mod tests {
             ..Default::default()
         };
         // Caller-supplied tighter ub on x.
-        let delta =
-            run_in_tree_presolve(&model, &[0.0, 0.0], &[1.0, 10.0], 0, None, &opts);
+        let delta = run_in_tree_presolve(&model, &[0.0, 0.0], &[1.0, 10.0], 0, None, &opts);
         assert!(delta.ran);
         // The ub on x must remain at 1.0 (or tighter), never relax to 5.
         assert!(delta.ub[0] <= 1.0 + 1e-9);

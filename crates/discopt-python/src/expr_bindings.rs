@@ -385,10 +385,7 @@ impl PyModelRepr {
     ///
     /// Returns a new `PyModelRepr` plus a stats dict with keys
     /// `variables_fixed`, `constraints_removed`, `candidates_examined`.
-    fn eliminate_variables(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<(PyModelRepr, PyObject)> {
+    fn eliminate_variables(&self, py: Python<'_>) -> PyResult<(PyModelRepr, PyObject)> {
         use discopt_core::presolve::eliminate::eliminate_variables;
         let (new_model, stats) = eliminate_variables(&self.inner);
         let dict = PyDict::new(py);
@@ -406,10 +403,7 @@ impl PyModelRepr {
     /// `constraints_rewritten`, `constraints_skipped`,
     /// `aux_variables_introduced`, `aux_constraints_introduced`,
     /// `aux_bounds_derived`.
-    fn reformulate_polynomial(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<(PyModelRepr, PyObject)> {
+    fn reformulate_polynomial(&self, py: Python<'_>) -> PyResult<(PyModelRepr, PyObject)> {
         use discopt_core::presolve::polynomial::reformulate_polynomial;
         let (new_model, stats) = reformulate_polynomial(&self.inner);
         let dict = PyDict::new(py);
@@ -447,6 +441,28 @@ impl PyModelRepr {
         let lb_arr = numpy::PyArray1::from_vec(py, lbs);
         let ub_arr = numpy::PyArray1::from_vec(py, ubs);
         Ok((lb_arr.into_any().unbind(), ub_arr.into_any().unbind()))
+    }
+
+    /// Classify AMP nonlinear product terms using the Rust expression arena.
+    fn classify_nonlinear_terms(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let terms = discopt_core::amp::classify_nonlinear_terms(&self.inner);
+        let dict = PyDict::new(py);
+
+        dict.set_item("bilinear", terms.bilinear)?;
+        dict.set_item("trilinear", terms.trilinear)?;
+        dict.set_item("multilinear", terms.multilinear)?;
+        dict.set_item("monomial", terms.monomial)?;
+        dict.set_item("general_nl_count", terms.general_nl_count)?;
+        dict.set_item("partition_candidates", terms.partition_candidates)?;
+
+        let incidence = PyDict::new(py);
+        for (var_idx, term_ids) in terms.term_incidence {
+            let ids: Vec<usize> = term_ids.into_iter().collect();
+            incidence.set_item(var_idx, ids)?;
+        }
+        dict.set_item("term_incidence", incidence)?;
+
+        Ok(dict.into())
     }
 
     /// Detect candidate variable permutation orbits (item D4 of issue #51).
@@ -522,7 +538,14 @@ impl PyModelRepr {
             max_iter,
             tol,
         };
-        let delta = run_in_tree_presolve(&self.inner, &node_lb, &node_ub, node_depth, incumbent, &opts);
+        let delta = run_in_tree_presolve(
+            &self.inner,
+            &node_lb,
+            &node_ub,
+            node_depth,
+            incumbent,
+            &opts,
+        );
         let out = PyDict::new(py);
         out.set_item(
             "lb",
@@ -613,9 +636,7 @@ impl PyModelRepr {
                 let cutoff: f64 = d
                     .get_item("cutoff")?
                     .ok_or_else(|| {
-                        pyo3::exceptions::PyKeyError::new_err(
-                            "reduced_cost_info missing 'cutoff'",
-                        )
+                        pyo3::exceptions::PyKeyError::new_err("reduced_cost_info missing 'cutoff'")
                     })?
                     .extract()?;
                 let reduced_costs: Vec<f64> = d
@@ -710,14 +731,8 @@ impl PyModelRepr {
             dd.set_item("bounds_tightened", d.bounds_tightened)?;
             dd.set_item("aux_vars_introduced", d.aux_vars_introduced)?;
             dd.set_item("aux_constraints_introduced", d.aux_constraints_introduced)?;
-            dd.set_item(
-                "constraints_removed",
-                d.constraints_removed.clone(),
-            )?;
-            dd.set_item(
-                "constraints_rewritten",
-                d.constraints_rewritten.clone(),
-            )?;
+            dd.set_item("constraints_removed", d.constraints_removed.clone())?;
+            dd.set_item("constraints_rewritten", d.constraints_rewritten.clone())?;
             dd.set_item("vars_fixed", d.vars_fixed.clone())?;
             let aggs = pyo3::types::PyList::empty(py);
             for a in &d.vars_aggregated {
@@ -740,10 +755,7 @@ impl PyModelRepr {
                 dd.set_item("cliques", edges)?;
             }
             if !d.structure.convex_constraints.is_empty() {
-                dd.set_item(
-                    "convex_constraints",
-                    d.structure.convex_constraints.clone(),
-                )?;
+                dd.set_item("convex_constraints", d.structure.convex_constraints.clone())?;
             }
             dd.set_item("work_units", d.work_units)?;
             dd.set_item("wall_time_ms", d.wall_time_ms)?;
@@ -751,7 +763,12 @@ impl PyModelRepr {
         }
         stats.set_item("deltas", deltas_list)?;
 
-        Ok((PyModelRepr { inner: result.model }, stats.into()))
+        Ok((
+            PyModelRepr {
+                inner: result.model,
+            },
+            stats.into(),
+        ))
     }
 }
 

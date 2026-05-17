@@ -77,10 +77,7 @@ pub struct ImpliedBoundsStats {
 /// Run implied-bound propagation over `model`'s linear rows, tightening
 /// `bounds` in place. Pure function on the inputs apart from the
 /// `bounds` argument.
-pub fn propagate_implied_bounds(
-    model: &ModelRepr,
-    bounds: &mut [Interval],
-) -> ImpliedBoundsStats {
+pub fn propagate_implied_bounds(model: &ModelRepr, bounds: &mut [Interval]) -> ImpliedBoundsStats {
     let mut stats = ImpliedBoundsStats::default();
 
     for c in &model.constraints {
@@ -144,11 +141,7 @@ fn extract_linear_row(model: &ModelRepr, body: ExprId) -> Option<LinearRow> {
 /// Resolve a polynomial leaf id to a scalar bound index. Returns
 /// `None` if the leaf is not a scalar `Variable` or if the index is
 /// out of range.
-fn leaf_scalar_bound_index(
-    arena: &ExprArena,
-    model: &ModelRepr,
-    leaf: ExprId,
-) -> Option<usize> {
+fn leaf_scalar_bound_index(arena: &ExprArena, model: &ModelRepr, leaf: ExprId) -> Option<usize> {
     match arena.get(leaf) {
         ExprNode::Variable { index, size, .. } if *size == 1 => {
             let v = model.variables.get(*index)?;
@@ -258,8 +251,8 @@ fn scaled_interval(c: f64, lo: f64, hi: f64) -> (f64, f64) {
 mod tests {
     use super::*;
     use crate::expr::{
-        BinOp, ConstraintRepr, ConstraintSense, ExprArena, ExprNode, ModelRepr,
-        ObjectiveSense, VarInfo, VarType,
+        BinOp, ConstraintRepr, ConstraintSense, ExprArena, ExprNode, ModelRepr, ObjectiveSense,
+        VarInfo, VarType,
     };
 
     fn scalar_var(arena: &mut ExprArena, name: &str, idx: usize) -> ExprId {

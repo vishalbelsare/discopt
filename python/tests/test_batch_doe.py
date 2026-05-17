@@ -80,6 +80,8 @@ class ExpDecayExperiment(Experiment):
 
 
 class TestGreedyBatch:
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_returns_requested_count(self):
         exp = ExpDecayExperiment()
         res = batch_optimal_experiment(
@@ -95,6 +97,8 @@ class TestGreedyBatch:
         assert len(res.fim_results) == 3
         assert res.joint_fim.shape == (1, 1)
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_fim_additivity(self):
         """joint_fim == sum(per-point FIMs) + prior when prior=None."""
         exp = LinearExperiment()
@@ -108,6 +112,8 @@ class TestGreedyBatch:
         summed = sum(r.fim for r in res.fim_results)
         np.testing.assert_allclose(res.joint_fim, summed, rtol=1e-9, atol=1e-12)
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_per_round_monotone_d_optimal(self):
         """log det of running FIM is non-decreasing when adding experiments."""
         exp = LinearExperiment()
@@ -122,6 +128,8 @@ class TestGreedyBatch:
         deltas = np.diff(res.per_round_criterion)
         assert np.all(deltas >= -1e-9)
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_n_equals_one_matches_optimal_experiment(self):
         exp = ExpDecayExperiment()
         single = optimal_experiment(
@@ -141,6 +149,8 @@ class TestGreedyBatch:
         assert isinstance(dr, DesignResult)
         assert dr.design["t"] == pytest.approx(single.design["t"], abs=1e-2)
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_prior_fim_respected(self):
         """A huge prior changes what greedy picks."""
         exp = ExpDecayExperiment()
@@ -163,6 +173,8 @@ class TestGreedyBatch:
         # Joint FIM with the huge prior must reflect it.
         assert big_prior.joint_fim[0, 0] > no_prior.joint_fim[0, 0] + 1e5
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_linear_two_param_joint_fim_invertible(self):
         """For y=a*x+b, 2 greedy picks make the joint FIM well-posed."""
         exp = LinearExperiment()
@@ -203,6 +215,8 @@ class TestGreedyBatch:
 
 
 class TestBatchDesignResult:
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_summary_runs(self):
         exp = LinearExperiment()
         res = batch_optimal_experiment(
@@ -217,6 +231,8 @@ class TestBatchDesignResult:
         assert "Experiment 1" in s
         assert "Experiment 2" in s
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_covariance_psd(self):
         exp = LinearExperiment()
         res = batch_optimal_experiment(
@@ -230,6 +246,8 @@ class TestBatchDesignResult:
         eigs = np.linalg.eigvalsh(cov)
         assert np.all(eigs >= -1e-9)
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_to_design_result_requires_one(self):
         exp = LinearExperiment()
         res = batch_optimal_experiment(
@@ -249,6 +267,8 @@ class TestBatchDesignResult:
 
 
 class TestJointBatch:
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_joint_ge_greedy_linear(self):
         exp = LinearExperiment()
         greedy = batch_optimal_experiment(
@@ -283,6 +303,8 @@ class TestJointBatch:
         assert xs[0] == pytest.approx(0.0, abs=0.05)
         assert xs[1] == pytest.approx(1.0, abs=0.05)
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_joint_n_equals_one_matches_single(self):
         exp = ExpDecayExperiment()
         single = optimal_experiment(
@@ -306,6 +328,8 @@ class TestJointBatch:
 
 
 class TestPenalizedBatch:
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_min_distance_enforced(self):
         exp = LinearExperiment()
         res = batch_optimal_experiment(
@@ -322,6 +346,8 @@ class TestPenalizedBatch:
         for i in range(len(xs) - 1):
             assert xs[i + 1] - xs[i] >= 0.2 - 1e-9
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_penalized_n_equals_one(self):
         exp = ExpDecayExperiment()
         single = optimal_experiment(
@@ -346,6 +372,8 @@ class TestPenalizedBatch:
 
 
 class TestSequentialBatch:
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_batched_sequential_records_batch_and_calls_runner(self):
         exp = ExpDecayExperiment()
         k_true = 0.7
@@ -374,6 +402,8 @@ class TestSequentialBatch:
             assert r.data_collected is not None
             assert len(np.atleast_1d(r.data_collected["y"])) == 2
 
+    @pytest.mark.slow
+    @pytest.mark.integration
     def test_single_experiment_per_round_preserves_behavior(self):
         exp = ExpDecayExperiment()
 

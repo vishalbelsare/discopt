@@ -69,7 +69,8 @@ impl PresolvePass for FbbtPass {
     }
     fn run(&mut self, ctx: &mut PresolveContext) -> PresolveDelta {
         let before = ctx.bounds.clone();
-        let new_bounds = fbbt_with_cutoff(&ctx.model, self.max_iter, self.tol, self.incumbent_bound);
+        let new_bounds =
+            fbbt_with_cutoff(&ctx.model, self.max_iter, self.tol, self.incumbent_bound);
         // Intersect with the orchestrator's running bounds — the kernel
         // ignores the caller's current state and re-derives from the
         // model's declared bounds, so we have to fold in any prior
@@ -196,8 +197,7 @@ impl PresolvePass for EliminatePass {
         // the count using a synthetic "removed" range. For diagnostics
         // only — downstream code uses counts, not specific indices.
         if stats.constraints_removed > 0 {
-            delta.constraints_removed =
-                (n_constr_after..n_constr_before).collect::<Vec<usize>>();
+            delta.constraints_removed = (n_constr_after..n_constr_before).collect::<Vec<usize>>();
         }
         // vars_fixed: the kernel pins lb=ub but doesn't list which.
         // We don't reconstruct it here; the count is implied by
@@ -245,8 +245,7 @@ impl PresolvePass for AggregatePass {
         let mut delta = PresolveDelta::empty("aggregate", ctx.iter);
         delta.work_units = stats.candidates_examined as u64;
         if stats.variables_aggregated > 0 {
-            delta.constraints_removed =
-                (n_constr_after..n_constr_before).collect::<Vec<usize>>();
+            delta.constraints_removed = (n_constr_after..n_constr_before).collect::<Vec<usize>>();
             // Use bounds_tightened to expose progress to the
             // orchestrator's `made_progress()` check, since dropping a
             // variable block also tightens (in fact, replaces) bounds
@@ -512,8 +511,7 @@ impl PresolvePass for PolynomialReformPass {
 
         let mut delta = PresolveDelta::empty("polynomial_reform", ctx.iter);
         delta.aux_vars_introduced = stats.aux_variables_introduced as u32;
-        delta.aux_constraints_introduced =
-            (n_constr_after.saturating_sub(n_constr_before)) as u32;
+        delta.aux_constraints_introduced = (n_constr_after.saturating_sub(n_constr_before)) as u32;
         // Constraints "rewritten" — we know the count but not specific
         // indices. Leaving the index list empty; the count is implied
         // by stats.constraints_rewritten and made_progress() picks up

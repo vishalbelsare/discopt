@@ -4,6 +4,7 @@ Nonlinear Term Classifier for AMP (Adaptive Multivariate Partitioning).
 Walks the expression DAG of a Model and catalogs nonlinear term structure:
   - bilinear terms:   x_i * x_j  (two distinct continuous variables)
   - trilinear terms:  x_i * x_j * x_k  (three distinct continuous variables)
+  - multilinear terms: x_i * ... * x_k (four or more distinct variables)
   - monomial terms:   x_i^n  (single variable raised to integer power n ≥ 2)
   - general_nl:       all other nonlinearities (sin, cos, exp, log, etc.)
 
@@ -20,7 +21,10 @@ Theory references:
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
+from operator import index as operator_index
+from typing import Any
 
 from discopt.modeling.core import (
     BinaryOp,
@@ -55,23 +59,31 @@ class NonlinearTerms:
         The pair is always sorted (i <= j) to avoid duplicates.
     trilinear : list of (int, int, int)
         Each entry is a sorted triple of flat variable indices for x_i * x_j * x_k.
+    multilinear : list of tuple[int, ...]
+        Each entry is a sorted tuple of four or more flat variable indices for
+        a distinct-variable product.
     monomial : list of (int, int)
         Each entry is (var_idx, exponent) for x_i^n, n integer ≥ 2.
     general_nl : list of Expression
-        Nonlinear expression nodes that are neither bilinear, trilinear, nor monomial
-        (e.g., sin, cos, exp, log, sqrt, tan, abs).
+        Nonlinear expression nodes that are neither bilinear, trilinear,
+        higher-order multilinear, nor monomial (e.g., sin, cos, exp, log,
+        sqrt, tan, abs).
     term_incidence : dict[int, set[int]]
         Maps flat variable index → set of term indices (into the combined bilinear +
-        trilinear list) that the variable appears in.  Used for vertex-cover computation.
+        trilinear + multilinear list) that the variable appears in. Term indices
+        are assigned in product-term discovery order and are used for vertex-cover
+        computation.
     partition_candidates : list[int]
-        Sorted list of flat variable indices appearing in any bilinear or trilinear term.
-        These are the candidates for domain partitioning in AMP.
+        Sorted list of flat variable indices appearing in any bilinear,
+        trilinear, or higher-order multilinear product.  These are the
+        candidates for domain partitioning in AMP.
         (Monomials are convex/treated separately; general_nl may also be candidates
         but are currently excluded from partitioning as AMP focuses on polynomial terms.)
     """
 
     bilinear: list[tuple[_VarIdx, _VarIdx]] = field(default_factory=list)
     trilinear: list[tuple[_VarIdx, _VarIdx, _VarIdx]] = field(default_factory=list)
+    multilinear: list[tuple[_VarIdx, ...]] = field(default_factory=list)
     monomial: list[tuple[_VarIdx, int]] = field(default_factory=list)
     fractional_power: list[tuple[_VarIdx, float]] = field(default_factory=list)
     # Products of a linear variable with a fractional-power factor, recorded as
@@ -97,6 +109,27 @@ def _compute_var_offset(var: Variable, model: Model) -> int:
     return offset
 
 
+def _as_scalar_index(value: Any) -> int | None:
+    """Return a Python integer index, or None for slices and non-scalars."""
+    try:
+        return operator_index(value)
+    except TypeError:
+        return None
+
+
+def _tuple_to_flat_index(indices: Sequence[int], shape: Sequence[int]) -> int | None:
+    """Flatten a scalar multidimensional index in row-major order."""
+    if len(indices) != len(shape):
+        return None
+
+    flat = 0
+    stride = 1
+    for idx, dim in zip(reversed(indices), reversed(shape)):
+        flat += idx * stride
+        stride *= dim
+    return flat
+
+
 def _get_flat_index(expr: Expression, model: Model) -> int | None:
     """Return the flat variable index for a scalar Variable or IndexExpression.
 
@@ -109,11 +142,52 @@ def _get_flat_index(expr: Expression, model: Model) -> int | None:
     if isinstance(expr, IndexExpression) and isinstance(expr.base, Variable):
         base_off = _compute_var_offset(expr.base, model)
         idx = expr.index
-        if isinstance(idx, int):
-            return base_off + idx
-        if isinstance(idx, tuple) and len(idx) == 1 and isinstance(idx[0], int):
-            return base_off + idx[0]
+        scalar_idx = _as_scalar_index(idx)
+        if scalar_idx is not None:
+            return base_off + scalar_idx
+        if isinstance(idx, tuple):
+            scalar_indices = []
+            for item in idx:
+                item_idx = _as_scalar_index(item)
+                if item_idx is None:
+                    return None
+                scalar_indices.append(item_idx)
+            flat = _tuple_to_flat_index(scalar_indices, expr.base.shape)
+            if flat is not None:
+                return base_off + flat
     return None
+
+
+def _contains_expandable_square(model: Model) -> bool:
+    """Return True if Python classification should expand a non-leaf square."""
+
+    def visit(expr: Expression) -> bool:
+        if isinstance(expr, BinaryOp):
+            if (
+                expr.op == "**"
+                and isinstance(expr.right, Constant)
+                and float(expr.right.value) == 2.0
+                and _get_flat_index(expr.left, model) is None
+            ):
+                return True
+            return visit(expr.left) or visit(expr.right)
+        if isinstance(expr, UnaryOp):
+            return visit(expr.operand)
+        if isinstance(expr, FunctionCall):
+            return any(visit(arg) for arg in expr.args)
+        if isinstance(expr, IndexExpression):
+            return not isinstance(expr.base, Variable) and visit(expr.base)
+        if isinstance(expr, SumExpression):
+            return visit(expr.operand)
+        if isinstance(expr, SumOverExpression):
+            return any(visit(term) for term in expr.terms)
+        if isinstance(expr, MatMulExpression):
+            return visit(expr.left) or visit(expr.right)
+        return False
+
+    if model._objective is not None and visit(model._objective.expression):
+        return True
+    return any(visit(constraint.body) for constraint in model._constraints)
 
 
 # ---------------------------------------------------------------------------
@@ -155,12 +229,15 @@ def distribute_products(expr: Expression) -> Expression:
     """Recursively distribute multiplication over addition/subtraction.
 
     ``(a + b) * c`` → ``a*c + b*c``;  ``c * (a - b)`` → ``c*a - c*b``.
+    ``(a + b)^2`` → ``(a + b) * (a + b)`` before distribution.
     Applied bottom-up so nested distributions resolve.  Other expression
     types are returned with operator-tree shape preserved structurally.
     """
     if isinstance(expr, BinaryOp):
         left = distribute_products(expr.left)
         right = distribute_products(expr.right)
+        if expr.op == "**" and isinstance(right, Constant) and float(right.value) == 2.0:
+            return distribute_products(BinaryOp("*", left, left))
         if expr.op == "*":
             if isinstance(right, BinaryOp) and right.op in ("+", "-"):
                 return BinaryOp(
@@ -236,6 +313,57 @@ def _collect_extended_factors(
 def classify_nonlinear_terms(model: Model) -> NonlinearTerms:
     """Walk the model's expression DAG and catalog nonlinear term structure.
 
+    Uses the Rust expression-arena classifier for polynomial/product models when
+    available, falling back to the Python implementation for unsupported models
+    and for cases that need concrete ``general_nl`` expression objects.
+    """
+    if not _contains_expandable_square(model):
+        rust_terms = _classify_nonlinear_terms_rust(model)
+        if rust_terms is not None:
+            return rust_terms
+    return _classify_nonlinear_terms_python(model)
+
+
+def _classify_nonlinear_terms_rust(model: Model) -> NonlinearTerms | None:
+    """Return Rust-classified terms when the fast path can preserve the API."""
+    try:
+        from discopt._rust import model_to_repr
+    except Exception:
+        return None
+
+    try:
+        payload = model_to_repr(model).classify_nonlinear_terms()
+    except Exception:
+        return None
+
+    # The public API exposes the actual Python expression objects for general_nl.
+    # The Rust arena sees only node ids, so keep those models on the Python path.
+    if int(payload.get("general_nl_count", 0)) != 0:
+        return None
+
+    return _terms_from_rust_payload(payload)
+
+
+def _terms_from_rust_payload(payload: dict[str, Any]) -> NonlinearTerms:
+    """Convert the PyO3 classifier payload into the public dataclass."""
+    incidence_payload = payload.get("term_incidence", {})
+    return NonlinearTerms(
+        bilinear=[(int(i), int(j)) for i, j in payload.get("bilinear", [])],
+        trilinear=[(int(i), int(j), int(k)) for i, j, k in payload.get("trilinear", [])],
+        multilinear=[tuple(int(idx) for idx in term) for term in payload.get("multilinear", [])],
+        monomial=[(int(var_idx), int(exp)) for var_idx, exp in payload.get("monomial", [])],
+        general_nl=[],
+        term_incidence={
+            int(var_idx): {int(term_idx) for term_idx in term_ids}
+            for var_idx, term_ids in incidence_payload.items()
+        },
+        partition_candidates=[int(var_idx) for var_idx in payload.get("partition_candidates", [])],
+    )
+
+
+def _classify_nonlinear_terms_python(model: Model) -> NonlinearTerms:
+    """Walk the model's expression DAG and catalog nonlinear term structure.
+
     Scans all constraints and the objective.  Each unique bilinear/trilinear/monomial
     pattern is recorded at most once (deduplicated by sorted variable index tuple).
 
@@ -254,15 +382,19 @@ def classify_nonlinear_terms(model: Model) -> NonlinearTerms:
     # Track seen terms to avoid duplicates
     seen_bilinear: set[tuple[int, int]] = set()
     seen_trilinear: set[tuple[int, int, int]] = set()
+    seen_multilinear: set[tuple[int, ...]] = set()
     seen_monomial: set[tuple[int, int]] = set()
     seen_fractional: set[tuple[int, float]] = set()
     seen_bilinear_fp: set[tuple[int, tuple[int, float]]] = set()
+
+    def _next_product_term_idx() -> int:
+        return len(result.bilinear) + len(result.trilinear) + len(result.multilinear)
 
     def _record_bilinear(i: int, j: int) -> None:
         key = (min(i, j), max(i, j))
         if key not in seen_bilinear:
             seen_bilinear.add(key)
-            term_idx = len(result.bilinear) + len(result.trilinear)
+            term_idx = _next_product_term_idx()
             result.bilinear.append(key)
             # Update term incidence
             for v in key:
@@ -273,8 +405,19 @@ def classify_nonlinear_terms(model: Model) -> NonlinearTerms:
         key = (a, b, c)
         if key not in seen_trilinear:
             seen_trilinear.add(key)
-            term_idx = len(result.bilinear) + len(result.trilinear)
+            term_idx = _next_product_term_idx()
             result.trilinear.append(key)
+            for v in key:
+                result.term_incidence.setdefault(v, set()).add(term_idx)
+
+    def _record_multilinear(indices: list[int]) -> None:
+        key = tuple(sorted(indices))
+        if len(key) < 4:
+            raise ValueError("multilinear terms require at least four variables")
+        if key not in seen_multilinear:
+            seen_multilinear.add(key)
+            term_idx = _next_product_term_idx()
+            result.multilinear.append(key)
             for v in key:
                 result.term_incidence.setdefault(v, set()).add(term_idx)
 
@@ -349,11 +492,8 @@ def classify_nonlinear_terms(model: Model) -> NonlinearTerms:
                         # Mixed repeated-factor products such as x*x*y are not
                         # represented correctly by the current bilinear/trilinear
                         # relaxation pipeline. Keep the whole product in general_nl
-                        # and recurse so nested pure monomials like x*x are still
-                        # discovered on their own subexpressions.
+                        # without also classifying subproducts from the same term.
                         result.general_nl.append(expr)
-                        _classify_node(expr.left)
-                        _classify_node(expr.right)
                         return
                     if n_unique == 2:
                         _record_bilinear(unique_vars[0], unique_vars[1])
@@ -362,11 +502,7 @@ def classify_nonlinear_terms(model: Model) -> NonlinearTerms:
                         _record_trilinear(unique_vars[0], unique_vars[1], unique_vars[2])
                         return
                     else:
-                        # Higher-order multilinear — decompose into bilinear pairs
-                        # (AMP handles multilinear via repeated bilinear decomposition)
-                        for ii in range(len(unique_vars)):
-                            for jj in range(ii + 1, len(unique_vars)):
-                                _record_bilinear(unique_vars[ii], unique_vars[jj])
+                        _record_multilinear(unique_vars)
                         return
                 # Pure-variable decomposition failed.  Try the extended walk
                 # which permits fractional powers as virtual factors.
@@ -462,8 +598,8 @@ def classify_nonlinear_terms(model: Model) -> NonlinearTerms:
         _classify_node(distribute_products(constraint.body))
 
     # ── Build partition_candidates ──
-    # Variables that appear in bilinear or trilinear terms (not just monomials,
-    # since x^2 is convex and handled by alphaBB/direct secant).
+    # Variables that appear in product terms (not just monomials, since x^2 is
+    # convex and handled by alphaBB/direct secant).
     candidates: set[int] = set()
     for i, j in result.bilinear:
         candidates.add(i)
@@ -472,6 +608,8 @@ def classify_nonlinear_terms(model: Model) -> NonlinearTerms:
         candidates.add(i)
         candidates.add(j)
         candidates.add(k)
+    for term in result.multilinear:
+        candidates.update(term)
     # Bilinear-with-fractional-power lifts the fp into an aux column, but the
     # underlying base variable still needs domain partitioning to tighten the
     # secant/tangent envelopes on a = x^p.
@@ -480,11 +618,6 @@ def classify_nonlinear_terms(model: Model) -> NonlinearTerms:
         candidates.add(fp_base)
     for fp_base, _exp in result.fractional_power:
         candidates.add(fp_base)
-    # Monomial-base variables benefit from partitioning too: refining the partition
-    # tightens both the tangent under-estimators (more tangent points) and, when the
-    # MILP relaxation supports piecewise secants, the over-estimator as well.
-    for mono_base, _n in result.monomial:
-        candidates.add(mono_base)
     result.partition_candidates = sorted(candidates)
 
     return result

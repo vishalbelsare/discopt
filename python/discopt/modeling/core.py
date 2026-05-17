@@ -833,6 +833,8 @@ class SolveResult:
         Total wall-clock solve time in seconds.
     node_count : int
         Number of Branch & Bound nodes explored.
+    mip_count : int
+        Number of MIP/MILP solves performed by the algorithm, when tracked.
     rust_time : float
         Time spent in the Rust backend (B&B tree management).
     jax_time : float
@@ -859,6 +861,7 @@ class SolveResult:
     x: Optional[dict[str, np.ndarray]] = None
     wall_time: float = 0.0
     node_count: int = 0
+    mip_count: int = 0
 
     # Layer profiling
     rust_time: float = 0.0
@@ -1813,8 +1816,9 @@ class Model:
         r"""
         Solve the model.
 
-        For pure-continuous models, solves the NLP directly. For models with
-        integer/binary variables, uses NLP-based spatial Branch & Bound.
+        For convex pure-continuous models, solves the NLP directly. For
+        nonconvex continuous models and models with integer/binary variables,
+        uses spatial Branch & Bound unless another solver backend is selected.
 
         Parameters
         ----------
@@ -1842,7 +1846,8 @@ class Model:
         initial_solution : dict, optional
             Initial feasible solution mapping Variable objects to values
             (scalars, lists, or numpy arrays).  Used as a warm-start point
-            for NLP solves and as the initial incumbent in Branch & Bound.
+            for NLP solves, AMP local incumbent improvement, and as the initial
+            incumbent in Branch & Bound.
             Values are validated against variable bounds and integrality
             requirements; violations produce warnings and are corrected
             automatically (clamped / rounded).
@@ -1868,6 +1873,20 @@ class Model:
         node_callback : callable, optional
             Node callback. Called after each batch of nodes is processed.
             Should accept ``(ctx, model)`` and return ``None``.
+        solver : str, optional
+            Optional backend selector. Use ``solver="amp"`` to select
+            Adaptive Multivariate Partitioning. AMP-specific keyword
+            arguments include ``rel_gap``, ``abs_tol``, ``max_iter``,
+            ``n_init_partitions``, ``partition_method``, ``milp_time_limit``,
+            ``milp_gap_tolerance``, ``presolve_bt``, ``presolve_bt_algo``,
+            ``presolve_bt_time_limit``, ``presolve_bt_mip_time_limit``,
+            ``apply_partitioning``, ``disc_var_pick``,
+            ``partition_scaling_factor``, ``partition_scaling_factor_update``,
+            ``disc_add_partition_method``, ``disc_abs_width_tol``,
+            ``convhull_formulation``, ``convhull_ebd``,
+            ``convhull_ebd_encoding``, ``use_start_as_incumbent``,
+            ``obbt_at_root``, ``obbt_with_cutoff``, ``alphabb_cutoff_obbt``,
+            and ``obbt_time_limit``.
         validate : bool, default False
             If True, run Examiner-style KKT validation on the returned
             point and attach the :class:`~discopt.validation.ExaminerReport`
@@ -1918,9 +1937,6 @@ class Model:
         from discopt._jax.deadline import deadline_scope
         from discopt.solver import solve_model
 
-        if solver is not None:
-            kwargs["solver"] = solver
-
         # Install a process-global wall-clock deadline that JAX-compiled
         # while_loops (LP/QP/NLP IPM) can poll via host callback so they
         # self-terminate within ``time_limit + ε`` instead of running to
@@ -1940,6 +1956,7 @@ class Model:
                 lazy_constraints=lazy_constraints,
                 incumbent_callback=incumbent_callback,
                 node_callback=node_callback,
+                solver=solver,
                 **kwargs,
             )
 

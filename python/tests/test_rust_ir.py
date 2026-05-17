@@ -225,6 +225,107 @@ class TestStructureDetection:
 
 
 # ─────────────────────────────────────────────────────────────
+# Test: AMP term classification
+# ─────────────────────────────────────────────────────────────
+
+
+class TestAmpTermClassification:
+    def test_rust_classifier_matches_python_terms_and_incidence(self):
+        from discopt._jax.term_classifier import (
+            _classify_nonlinear_terms_python,
+            _classify_nonlinear_terms_rust,
+            classify_nonlinear_terms,
+        )
+
+        m = dm.Model("amp_terms")
+        x = m.continuous("x", shape=(4,), lb=0, ub=10)
+        m.minimize(x[0] * x[1] + (x[0] * x[1] * x[2]) + x[3] ** 3)
+        m.subject_to(x[0] * x[1] * x[2] * x[3] <= 100)
+
+        rust_terms = _classify_nonlinear_terms_rust(m)
+        python_terms = _classify_nonlinear_terms_python(m)
+
+        assert rust_terms is not None
+        assert rust_terms == python_terms
+        assert classify_nonlinear_terms(m) == rust_terms
+        assert rust_terms.term_incidence[0] == {0, 1, 2}
+        assert rust_terms.partition_candidates == [0, 1, 2, 3]
+
+    def test_rust_classifier_flattens_multidimensional_indices(self):
+        from discopt._jax.term_classifier import (
+            _classify_nonlinear_terms_python,
+            _classify_nonlinear_terms_rust,
+            classify_nonlinear_terms,
+        )
+
+        m = dm.Model("amp_terms_multidim")
+        x = m.continuous("x", shape=(2, 4), lb=0, ub=10)
+        m.minimize(x[1, 2] * x[1, 3])
+        m.subject_to(x[0, 0] * x[0, 1] <= 1)
+
+        rust_terms = _classify_nonlinear_terms_rust(m)
+        python_terms = _classify_nonlinear_terms_python(m)
+
+        assert rust_terms is not None
+        assert rust_terms == python_terms
+        assert classify_nonlinear_terms(m) == rust_terms
+        assert set(rust_terms.bilinear) == {(6, 7), (0, 1)}
+        assert rust_terms.partition_candidates == [0, 1, 6, 7]
+        assert rust_terms.term_incidence[6] == {0}
+        assert rust_terms.term_incidence[7] == {0}
+
+    def test_python_fallback_flattens_multidimensional_indices(self):
+        from discopt._jax.term_classifier import (
+            _classify_nonlinear_terms_rust,
+            classify_nonlinear_terms,
+        )
+
+        m = dm.Model("amp_terms_multidim_fallback")
+        x = m.continuous("x", shape=(2, 4), lb=0.1, ub=10)
+        m.minimize(dm.sin(x[0, 0]) + x[1, 2] * x[1, 3])
+
+        assert _classify_nonlinear_terms_rust(m) is None
+
+        terms = classify_nonlinear_terms(m)
+        assert terms.bilinear == [(6, 7)]
+        assert terms.partition_candidates == [6, 7]
+        assert terms.general_nl
+
+    def test_repeated_factor_product_does_not_double_classify_subproducts(self):
+        from discopt._jax.term_classifier import classify_nonlinear_terms
+
+        m = dm.Model("amp_terms_repeated_factor")
+        x = m.continuous("x", shape=(2,), lb=0, ub=10)
+        m.minimize(x[0] * x[0] * x[1])
+
+        terms = classify_nonlinear_terms(m)
+
+        assert len(terms.general_nl) == 1
+        assert terms.monomial == []
+        assert terms.bilinear == []
+
+    def test_public_classifier_falls_back_for_general_nonlinear_objects(self):
+        from discopt._jax.term_classifier import (
+            _classify_nonlinear_terms_python,
+            _classify_nonlinear_terms_rust,
+            classify_nonlinear_terms,
+        )
+
+        m = dm.Model("general_nl")
+        x = m.continuous("x", lb=0.1, ub=2.0)
+        y = m.continuous("y", lb=0.1, ub=2.0)
+        m.minimize(dm.sin(x) + x * y)
+
+        assert _classify_nonlinear_terms_rust(m) is None
+
+        terms = classify_nonlinear_terms(m)
+        python_terms = _classify_nonlinear_terms_python(m)
+        assert terms == python_terms
+        assert terms.general_nl
+        assert terms.bilinear == [(0, 1)]
+
+
+# ─────────────────────────────────────────────────────────────
 # Test: Evaluation
 # ─────────────────────────────────────────────────────────────
 

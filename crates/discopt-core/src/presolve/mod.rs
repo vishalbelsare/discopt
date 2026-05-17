@@ -48,15 +48,16 @@ pub mod symmetry;
 pub use aggregate::{aggregate_variables, AggregationRecord, AggregationStats};
 pub use cliques::{extract_cliques, CliqueSet, CliqueStats};
 pub use coefficient_strengthening::{coefficient_strengthening, CoefficientStrengtheningStats};
+pub use delta::{
+    Implication as DeltaImplication, PresolveDelta, StructureManifest, TerminationReason,
+    VarAggregation,
+};
 pub use duality::{reduced_cost_fixing, ReducedCostInfo, ReducedCostStats};
-pub use fbbt_fp::{fbbt_fixed_point, FbbtFpOptions, FbbtFpStats};
-pub use implied_bounds::{propagate_implied_bounds, ImpliedBoundsStats};
-pub use redundancy::{detect_row_redundancy, RedundancyStats};
-pub use scaling::{compute_equilibration, ScalingFactors, ScalingStats};
-pub use delta::{Implication as DeltaImplication, PresolveDelta, StructureManifest, TerminationReason, VarAggregation};
 pub use eliminate::{eliminate_variables, EliminationStats};
 pub use factorable_elim::{factorable_eliminate, FactorableElimStats};
 pub use fbbt::{backward_propagate, fbbt, fbbt_with_cutoff, forward_propagate, Interval};
+pub use fbbt_fp::{fbbt_fixed_point, FbbtFpOptions, FbbtFpStats};
+pub use implied_bounds::{propagate_implied_bounds, ImpliedBoundsStats};
 pub use obbt::{apply_obbt_bounds, extract_linear_rows, obbt_candidates, LinearRow, ObbtResult};
 pub use orchestrator::{run as run_orchestrator, OrchestratorOptions, PresolveResult};
 pub use pass::{PassCategory, PresolveContext, PresolvePass};
@@ -68,7 +69,9 @@ pub use passes::{
 pub use polynomial::{
     reformulate_polynomial, try_polynomial, Monomial, Polynomial, ReformulationStats,
 };
-pub use reduction_constraints::{detect_reduction_constraints, ReductionStats};
 pub use probing::{probe_binary_vars, Implication, ProbingResult};
+pub use reduction_constraints::{detect_reduction_constraints, ReductionStats};
+pub use redundancy::{detect_row_redundancy, RedundancyStats};
+pub use scaling::{compute_equilibration, ScalingFactors, ScalingStats};
 pub use simplify::{simplify, SimplifyResult};
 pub use symmetry::{detect_symmetries, Orbit, SymmetryStats};

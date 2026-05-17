@@ -25,18 +25,17 @@ from discopt._jax.term_classifier import NonlinearTerms
 
 
 def _all_terms(terms: NonlinearTerms) -> list[tuple[int, ...]]:
-    """Flatten all nonlinear terms into covering tuples for vertex-cover selection.
+    """Flatten nonlinear terms into covering tuples for vertex-cover selection.
 
     Each tuple lists the variables whose partitioning would tighten the relaxation
-    of that term: bilinear/trilinear factor pairs, monomial bases, fractional-power
-    bases, and bilinear-with-fractional-power factors.  Including monomial / fp
-    terms here ensures that problems whose only nonlinearities are squares or
-    fractional powers still drive partition refinement, instead of being left
-    with a single global secant.
+    of that term.  The minimum-cover code later filters these tuples through
+    ``terms.partition_candidates``, so monomial tuples only matter when the
+    caller has explicitly made monomials partition candidates.
     """
     all_t: list[tuple[int, ...]] = []
     all_t.extend(terms.bilinear)
     all_t.extend(terms.trilinear)
+    all_t.extend(terms.multilinear)
     for var_idx, _n in terms.monomial:
         all_t.append((var_idx,))
     for var_idx, _exp in terms.fractional_power:

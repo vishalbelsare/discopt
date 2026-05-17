@@ -156,8 +156,10 @@ pub fn fbbt_fixed_point(
         // Snapshot the variables this constraint touches so we can
         // detect which ones changed after backward propagation.
         let vs = &per_constr_vars[ci];
-        let snapshot: Vec<(usize, Interval)> =
-            vs.iter().filter_map(|&v| bounds.get(v).map(|b| (v, *b))).collect();
+        let snapshot: Vec<(usize, Interval)> = vs
+            .iter()
+            .filter_map(|&v| bounds.get(v).map(|b| (v, *b)))
+            .collect();
 
         backward_propagate(
             &model.arena,
@@ -234,9 +236,7 @@ fn walk(arena: &ExprArena, id: ExprId, out: &mut Vec<usize>) {
                 walk(arena, *t, out);
             }
         }
-        ExprNode::Constant(_)
-        | ExprNode::Parameter { .. }
-        | ExprNode::ConstantArray(_, _) => {}
+        ExprNode::Constant(_) | ExprNode::Parameter { .. } | ExprNode::ConstantArray(_, _) => {}
     }
 }
 
@@ -244,8 +244,8 @@ fn walk(arena: &ExprArena, id: ExprId, out: &mut Vec<usize>) {
 mod tests {
     use super::*;
     use crate::expr::{
-        BinOp, ConstraintRepr, ConstraintSense, ExprArena, ExprNode, ModelRepr,
-        ObjectiveSense, VarInfo, VarType,
+        BinOp, ConstraintRepr, ConstraintSense, ExprArena, ExprNode, ModelRepr, ObjectiveSense,
+        VarInfo, VarType,
     };
 
     fn scalar_var(arena: &mut ExprArena, name: &str, idx: usize) -> ExprId {

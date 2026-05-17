@@ -59,10 +59,7 @@ pub struct ReductionStats {
 /// from the model — that is the orchestrator/redundancy pass's job;
 /// here we only record their indices so the redundancy pass can drop
 /// them on the next sweep.
-pub fn detect_reduction_constraints(
-    model: &ModelRepr,
-    bounds: &mut [Interval],
-) -> ReductionStats {
+pub fn detect_reduction_constraints(model: &ModelRepr, bounds: &mut [Interval]) -> ReductionStats {
     let leaves = build_leaf_to_block_map(model);
     let mut stats = ReductionStats::default();
 
@@ -79,9 +76,10 @@ pub fn detect_reduction_constraints(
         // positive AND every factor exponent even. (Even exponents make
         // each factor non-negative; positive coefficients keep the sum
         // non-negative.)
-        let nonneg = poly.monomials.iter().all(|m| {
-            m.coeff > 0.0 && m.factors.iter().all(|(_, e)| *e % 2 == 0)
-        });
+        let nonneg = poly
+            .monomials
+            .iter()
+            .all(|m| m.coeff > 0.0 && m.factors.iter().all(|(_, e)| *e % 2 == 0));
         if !nonneg {
             continue;
         }

@@ -86,9 +86,7 @@ pub struct CoefficientStrengtheningStats {
 /// composable inside the orchestrator's fixed-point loop: idempotent
 /// after one fully-converged run, and safe to interleave with other
 /// rewriters.
-pub fn coefficient_strengthening(
-    model: &ModelRepr,
-) -> (ModelRepr, CoefficientStrengtheningStats) {
+pub fn coefficient_strengthening(model: &ModelRepr) -> (ModelRepr, CoefficientStrengtheningStats) {
     let mut stats = CoefficientStrengtheningStats::default();
     let mut out = model.clone();
 
@@ -168,10 +166,7 @@ fn extract_linear_row(model: &ModelRepr, ci: usize) -> Option<LinearRow> {
         let leaf_id = m.factors[0].0;
         let block = match model.arena.get(leaf_id) {
             ExprNode::Variable {
-                index,
-                size,
-                shape,
-                ..
+                index, size, shape, ..
             } => {
                 // v0: scalar variables only. Indexed access into an
                 // array variable shows up here too but we can't read
@@ -201,7 +196,11 @@ fn extract_linear_row(model: &ModelRepr, ci: usize) -> Option<LinearRow> {
 fn strengthen_row(model: &ModelRepr, row: &LinearRow) -> Option<LinearRow> {
     // Reflect ≥ to ≤ by negating LHS + RHS.
     let (mut terms, mut rhs, _sense) = match row.sense {
-        ConstraintSense::Le => (row.terms.clone(), row.rhs - row.constant, ConstraintSense::Le),
+        ConstraintSense::Le => (
+            row.terms.clone(),
+            row.rhs - row.constant,
+            ConstraintSense::Le,
+        ),
         ConstraintSense::Ge => (
             row.terms.iter().map(|(id, b, c)| (*id, *b, -*c)).collect(),
             -(row.rhs - row.constant),

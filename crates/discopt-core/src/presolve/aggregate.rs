@@ -56,9 +56,7 @@
 use std::collections::HashSet;
 
 use super::polynomial::try_polynomial;
-use crate::expr::{
-    ConstraintSense, ExprArena, ExprId, ExprNode, ModelRepr, VarInfo, VarType,
-};
+use crate::expr::{ConstraintSense, ExprArena, ExprId, ExprNode, ModelRepr, VarInfo, VarType};
 
 /// Per-pass statistics from variable aggregation.
 #[derive(Debug, Clone, Default)]
@@ -388,7 +386,11 @@ fn renumber_variable_indices(arena: &ExprArena, drop_block: usize) -> ExprArena 
                 shape,
             } => ExprNode::Variable {
                 name: name.clone(),
-                index: if *index > drop_block { index - 1 } else { *index },
+                index: if *index > drop_block {
+                    index - 1
+                } else {
+                    *index
+                },
                 size: *size,
                 shape: shape.clone(),
             },

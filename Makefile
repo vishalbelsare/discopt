@@ -19,11 +19,14 @@
 #   make test-modeling       # modeling layer slice (PR-fast)
 #   make test-solvers        # solver/B&B/OA slice (PR-fast)
 #   make test-amp            # AMP / DOE / discrimination slice (PR-fast)
+#   make test-amp-fast       # Run fast AMP regression battery
+#   make test-amp-integration # Run opt-in AMP Alpine/incidence suite
 #   make test-nn             # NN embedding slice (PR-fast)
 #   make test-convexity      # convexity certification slice (PR-fast)
 #   make test-jax            # JAX compiler / relaxation slice (PR-fast)
 #   make test-llm            # LLM modules slice (PR-fast)
 #   make lint                # Ruff lint + format check
+#   make hooks               # Install pre-commit hooks
 #   make clean               # Remove build artifacts
 #
 # Results are saved to results/ with ISO-8601 timestamps.
@@ -35,13 +38,20 @@ SHELL := /bin/bash
 PYTHON      ?= python
 MATURIN     ?= maturin
 PYTEST      ?= pytest
+PYTEST_MEMORY_CAP ?= scripts/run_memory_capped_pytest.sh
+PYTEST_MEMORY_LIMIT_MB ?= 16384
+PYTEST_CPU_LIMIT_SECONDS ?= 0
+PYTEST_XDIST_WORKERS ?=
+PYTEST_CAPPED = PYTEST_MEMORY_LIMIT_MB=$(PYTEST_MEMORY_LIMIT_MB) PYTEST_CPU_LIMIT_SECONDS=$(PYTEST_CPU_LIMIT_SECONDS) $(PYTEST_MEMORY_CAP) $(PYTEST)
 RUFF        ?= ruff
 JUPYTER     ?= jupyter
+PRE_COMMIT  ?= pre-commit
 
 PROJECT_DIR := $(shell pwd)
 RESULTS_DIR := $(PROJECT_DIR)/results
 NOTEBOOK    := docs/notebooks/benchmarks_by_class.ipynb
-SO_TARGET   := python/discopt/_rust.cpython-312-darwin.so
+EXT_SUFFIX  := $(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_config_var('EXT_SUFFIX') or '.so')")
+SO_TARGET   := python/discopt/_rust$(EXT_SUFFIX)
 
 # Timestamp for output files
 TS := $(shell date -u +%Y-%m-%dT%H-%M-%S)
@@ -66,9 +76,10 @@ CUTEST_ENV      := $(CUTEST_PREFIX)/env.sh
 
 # --- Phony targets ------------------------------------------------------------
 
-.PHONY: all benchmarks build test test-all test-quick test-slow test-correctness \
-        test-modeling test-solvers test-amp test-nn test-convexity test-jax test-llm \
-        lint clean help \
+.PHONY: all benchmarks build test test-fast test-all test-quick test-slow test-correctness \
+        test-modeling test-solvers test-amp test-amp-fast test-amp-integration \
+        test-nn test-convexity test-jax test-llm \
+        lint hooks clean help \
         bench-notebook bench-smoke bench-phase3-gate bench-tests \
         bench-cutest bench-cutest-smoke setup-cutest check-cutest \
         docs docs-open notebooks \
@@ -91,11 +102,14 @@ help:
 	@echo "  make test-modeling      Modeling layer slice"
 	@echo "  make test-solvers       Solver/B&B/OA slice"
 	@echo "  make test-amp           AMP / DOE / discrimination slice"
+	@echo "  make test-amp-fast      Run fast AMP regression battery"
+	@echo "  make test-amp-integration Run opt-in AMP Alpine/incidence suite"
 	@echo "  make test-nn            NN embedding slice"
 	@echo "  make test-convexity     Convexity certification slice"
 	@echo "  make test-jax           JAX compiler / relaxation slice"
 	@echo "  make test-llm           LLM modules slice"
 	@echo "  make lint               Ruff lint + format check"
+	@echo "  make hooks              Install pre-commit hooks"
 	@echo "  make bench-notebook     Run benchmark notebook, save HTML + JSON"
 	@echo "  make bench-smoke        Quick smoke benchmark via run_benchmarks.py"
 	@echo "  make bench-phase3-gate  Phase 3 gate validation script"
@@ -139,8 +153,8 @@ $(SO_TARGET): $(RUST_SRCS)
 	$(MATURIN) develop --release
 	@# maturin develop may install to site-packages; copy to project dir
 	@SP=$$($(PYTHON) -c "import sysconfig; print(sysconfig.get_path('purelib'))"); \
-	if [ -f "$$SP/discopt/_rust.cpython-312-darwin.so" ]; then \
-		cp "$$SP/discopt/_rust.cpython-312-darwin.so" $(SO_TARGET); \
+	if [ -f "$$SP/discopt/_rust$(EXT_SUFFIX)" ]; then \
+		cp "$$SP/discopt/_rust$(EXT_SUFFIX)" $(SO_TARGET); \
 		echo "==> Copied .so from site-packages"; \
 	fi
 	@touch $(SO_TARGET)
@@ -157,25 +171,37 @@ lint:
 	$(RUFF) format --check python/
 	@echo "==> Lint passed"
 
+hooks:
+	@echo "==> Installing pre-commit hooks..."
+	$(PRE_COMMIT) install
+	@echo "==> Hooks installed"
+
 # --- Test ---------------------------------------------------------------------
 #
 # Tiers (issue #68):
-#   test          — PR-fast: matches CI python-fast job. Excludes `slow` and the
-#                   correctness suite. Target <5 min.
-#   test-all      — everything, including slow + correctness. Target ~20 min.
-#   test-quick    — unit + smoke only, dev inner loop. Target <60 s.
-#   test-slow     — only slow-marked tests (full backend cross-product etc.).
-#   test-correctness — full known-optima validation suite (test_correctness.py).
-#   test-<slice>  — subject-area slice run with the PR-fast filter applied.
+#   test          - PR-fast: matches CI python-fast job. Excludes `slow`,
+#                   `correctness`, `integration`, `amp_benchmark`, and
+#                   `requires_cyipopt` while
+#                   keeping the curated `pr_correctness` subset. Target <10 min.
+#   test-all      - everything, including slow + correctness. Target ~20 min.
+#   test-quick    - unit + smoke only, dev inner loop. Target <60 s.
+#   test-slow     - only slow-marked tests (full backend cross-product etc.).
+#   test-correctness - full known-optima validation suite (test_correctness.py).
+#   test-<slice>  - subject-area slice run with the PR-fast filter applied.
 
 # Common flags for the PR-fast tier (kept in sync with .github/workflows/ci.yml).
-# `not slow` excludes the heavy backend matrix; the curated PR correctness
-# subset (test_pr_correctness.py) is *not* slow-marked so it still runs.
-# `-n auto --dist loadgroup` parallelizes across CPUs while keeping
-# class-shared fixtures pinned to one worker (matches CI).
-PYTEST_FAST_FLAGS := --timeout=120 -m "not slow" \
+# These exclusions keep the PR gate focused on ordinary feature tests plus the
+# curated `pr_correctness` subset. Full correctness, integration, and benchmark
+# coverage stay available through the explicit targets below.
+# `--dist loadgroup` keeps tests sharing a class on the same worker so
+# xdist-incompatible fixtures stay serialized.
+PYTEST_FAST_FLAGS := --timeout=120 -m "not slow and not correctness and not integration and not amp_benchmark and not requires_cyipopt and not memory_heavy" \
     --ignore=python/tests/test_correctness.py \
-    -n auto --dist loadgroup
+    -n $(or $(PYTEST_XDIST_WORKERS),auto) --dist loadgroup
+
+PYTEST_QUICK_FLAGS := --timeout=60 -m "(unit or smoke) and not slow and not integration and not amp_benchmark and not requires_cyipopt and not memory_heavy"
+
+PYTEST_AMP_FAST_FLAGS := --timeout=120 -m "not slow and not integration and not amp_benchmark and not requires_cyipopt and not memory_heavy"
 
 # File groups for slice targets. A test file may appear in more than one group.
 TEST_MODELING := \
@@ -274,55 +300,67 @@ TEST_LLM := \
 # PR-fast: matches python-fast CI job. This is what `make test` should mean.
 test: build
 	@echo "==> Running PR-fast pytest suite (matches CI python-fast)..."
-	$(PYTEST) python/tests/ -v --tb=short -q $(PYTEST_FAST_FLAGS)
+	$(PYTEST_CAPPED) python/tests/ -v --tb=short -q $(PYTEST_FAST_FLAGS)
 	@echo "==> PR-fast tests passed"
+
+test-fast: test
 
 # Full suite: every test, no exclusions. Use before releases or when triaging.
 test-all: build
 	@echo "==> Running full pytest suite (slow + correctness + everything)..."
-	$(PYTEST) python/tests/ -v --tb=short -q
+	$(PYTEST_CAPPED) python/tests/ -v --tb=short -q
 	@echo "==> Full suite passed"
 
 # Dev inner loop: only unit and smoke markers. Wired by Phase 3 of issue #68;
 # may be near-empty until those markers are populated.
 test-quick: build
 	@echo "==> Running quick tests (unit + smoke)..."
-	$(PYTEST) python/tests/ -v --tb=short -q --timeout=60 -m "unit or smoke"
+	$(PYTEST) python/tests/ -v --tb=short -q $(PYTEST_QUICK_FLAGS)
 	@echo "==> Quick tests passed"
 
 # Only the slow-marked tests (backend cross-product, big instances, ML training).
 test-slow: build
 	@echo "==> Running slow-marked tests..."
-	$(PYTEST) python/tests/ -v --tb=short -q -m "slow"
+	$(PYTEST_CAPPED) python/tests/ -v --tb=short -q -m "slow"
 	@echo "==> Slow tests passed"
 
 # Full known-optima validation. Heavy; not in PR gate.
 test-correctness: build
 	@echo "==> Running correctness suite (known-optima validation)..."
-	$(PYTEST) python/tests/test_correctness.py -v --tb=short -q
+	$(PYTEST_CAPPED) python/tests/test_correctness.py -v --tb=short -q
 	@echo "==> Correctness suite passed"
 
 # Slice targets: PR-fast filter applied within a subject area.
 test-modeling: build
-	$(PYTEST) $(TEST_MODELING) -v --tb=short -q $(PYTEST_FAST_FLAGS)
+	$(PYTEST_CAPPED) $(TEST_MODELING) -v --tb=short -q $(PYTEST_FAST_FLAGS)
 
 test-solvers: build
-	$(PYTEST) $(TEST_SOLVERS) -v --tb=short -q $(PYTEST_FAST_FLAGS)
+	$(PYTEST_CAPPED) $(TEST_SOLVERS) -v --tb=short -q $(PYTEST_FAST_FLAGS)
 
 test-amp: build
-	$(PYTEST) $(TEST_AMP) -v --tb=short -q $(PYTEST_FAST_FLAGS)
+	$(PYTEST_CAPPED) $(TEST_AMP) -v --tb=short -q $(PYTEST_FAST_FLAGS)
+
+test-amp-fast: build
+	@echo "==> Running fast AMP regression tests..."
+	$(PYTEST_CAPPED) python/tests/test_amp.py -v --tb=short -q $(PYTEST_AMP_FAST_FLAGS)
+	@echo "==> Fast AMP tests passed"
+
+test-amp-integration: build
+	@echo "==> Running opt-in AMP Alpine/incidence tests..."
+	$(PYTEST_CAPPED) python/tests/test_amp_integration.py -v --tb=short -q -m "slow or integration or amp_benchmark or requires_cyipopt or memory_heavy"
+	@echo "==> AMP integration tests passed"
 
 test-nn: build
-	$(PYTEST) $(TEST_NN) -v --tb=short -q $(PYTEST_FAST_FLAGS)
+	$(PYTEST_CAPPED) $(TEST_NN) -v --tb=short -q $(PYTEST_FAST_FLAGS)
 
 test-convexity: build
-	$(PYTEST) $(TEST_CONVEXITY) -v --tb=short -q $(PYTEST_FAST_FLAGS)
+	$(PYTEST_CAPPED) $(TEST_CONVEXITY) -v --tb=short -q $(PYTEST_FAST_FLAGS)
 
 test-jax: build
-	$(PYTEST) $(TEST_JAX) -v --tb=short -q $(PYTEST_FAST_FLAGS)
+	$(PYTEST_CAPPED) $(TEST_JAX) -v --tb=short -q $(PYTEST_FAST_FLAGS)
 
 test-llm: build
-	$(PYTEST) $(TEST_LLM) -v --tb=short -q $(PYTEST_FAST_FLAGS)
+	$(PYTEST_CAPPED) $(TEST_LLM) -v --tb=short -q $(PYTEST_FAST_FLAGS)
 
 # --- Results directory --------------------------------------------------------
 
@@ -377,7 +415,7 @@ bench-phase3-gate: build | $(RESULTS_DIR)
 
 bench-tests: build | $(RESULTS_DIR)
 	@echo "==> Running benchmark test suite..."
-	$(PYTEST) discopt_benchmarks/tests/ -v --tb=short -q \
+	$(PYTEST_CAPPED) discopt_benchmarks/tests/ -v --tb=short -q \
 		--junitxml=$(RESULTS_DIR)/bench_tests_$(TS).xml 2>&1 \
 		| tee $(RESULTS_DIR)/bench_tests_$(TS).log
 	@echo "==> Benchmark tests saved to $(RESULTS_DIR)/bench_tests_$(TS).*"

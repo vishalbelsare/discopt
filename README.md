@@ -122,10 +122,59 @@ git clone <ripopt-repo-url> ../ripopt
 # Build Rust-Python bindings (includes ripopt PyO3 bindings)
 cd crates/discopt-python && maturin develop && cd ../..
 
-# Run tests
+# Run the fast default PR battery
 cargo test -p discopt-core
-JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 pytest python/tests/ -v
+JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 make test
 ```
+
+`make test` matches the PR CI gate: ordinary non-slow tests plus the
+`pr_correctness` subset. Full correctness, integration, and benchmark markers
+remain available through the explicit Make targets.
+
+### AMP Test Suites
+
+Routine AMP development uses a fast default regression battery. The fast
+environment uses solver-independent checks plus HiGHS-backed MILP relaxations,
+and excludes optional cyipopt, longer Alpine, MINLPTests, and incidence-style
+AMP benchmark coverage. AMP and PR-fast Make targets run pytest through
+`scripts/run_memory_capped_pytest.sh`, which applies a 16 GB address-space cap
+with `prlimit` when available. Override with `PYTEST_MEMORY_LIMIT_MB=...`, or
+set `PYTEST_MEMORY_LIMIT_MB=0` to disable the cap. The broad `make test-quick`
+dev-loop target remains uncapped and excludes `memory_heavy` tests.
+
+```bash
+make test-amp-fast
+```
+
+Alpine-reference, MINLPTests, cyipopt, and incidence-style AMP checks are
+opt-in because they can require optional solvers and longer solve budgets:
+
+```bash
+# Uses a fresh .venv and pixi-provided solver libraries rather than a local Python env.
+pixi exec -s python=3.12 -s ipopt -s pkg-config -s c-compiler -s cxx-compiler -s gfortran -- \
+  uv venv --allow-existing .venv
+source .venv/bin/activate
+uv pip install maturin pytest pytest-timeout numpy scipy jax jaxlib highspy cyipopt
+uv pip install -e ".[dev,ipopt,highs]"
+maturin develop
+make test-amp-integration
+```
+
+For WSL or memory-constrained machines, keep broad AMP/JAX runs capped and use a
+bounded xdist worker count rather than `-n auto`:
+
+```bash
+PYTEST_MEMORY_LIMIT_MB=16384 PYTEST_XDIST_WORKERS=2 make test
+PYTEST_MEMORY_LIMIT_MB=16384 make test-amp-integration
+```
+
+WSL users should also set explicit memory and swap limits in `.wslconfig` so a
+single uncapped compile-heavy test cannot restart the host session. A stricter
+12 GB cap is useful for reproducing memory pressure, but the current JAX/XLA
+CPU stack can reserve more than 12 GB of virtual address space during AMP runs;
+use the `memory_heavy` marker selection when running with tighter caps.
+
+The full Python test suite remains available with `make test-all`.
 
 ## Command-Line Interface
 
@@ -195,4 +244,3 @@ See [ROADMAP.md](ROADMAP.md) for the full development roadmap and task history.
 ## License
 
 [Eclipse Public License 2.0 (EPL-2.0)](LICENSE)
-
