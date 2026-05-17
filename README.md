@@ -131,6 +131,48 @@ JAX_PLATFORMS=cpu JAX_ENABLE_X64=1 make test
 `pr_correctness` subset. Full correctness, integration, and benchmark markers
 remain available through the explicit Make targets.
 
+### Solving nonconvex MINLPs with AMP
+
+For problems with nonconvex nonlinearities (bilinear, trilinear, signomial,
+trig), the default branch-and-bound path only certifies optimality when the
+relaxation is convex. The Adaptive Multivariate Partitioning (AMP) solver
+gives discopt a **certified-global** path for these problems:
+
+```python
+import discopt.modeling as dm
+
+m = dm.Model("concave_qp")
+c = [-1.0, 0.5, 1.5]
+xs = [m.continuous(f"x{i}", lb=-2.0, ub=2.0) for i in range(3)]
+m.subject_to(sum(xs) >= -1.0)
+m.subject_to(sum(xs) <= 3.0)
+m.minimize(sum(-((xs[i] - c[i]) ** 2) for i in range(3)))  # concave
+
+result = m.solve(solver="amp", rel_gap=1e-4)
+print(result.status, result.objective, result.gap)
+```
+
+AMP iterates a piecewise-McCormick / convex-hull MILP relaxation against an
+NLP subproblem (Ipopt) and refines the partition where the relaxation gap is
+largest. At every iteration `LB_k <= global_opt <= UB_k`, so termination at
+`gap <= rel_gap` yields a certified global optimum.
+
+Common tuning knobs (all keyword-only on `Model.solve(solver="amp", ...)`):
+
+| Option | Default | Effect |
+| --- | --- | --- |
+| `rel_gap` | `1e-4` | Relative optimality gap stop criterion |
+| `max_iter` | `100` | Hard cap on partition-refinement iterations |
+| `n_init_partitions` | `4` | Initial partitions per discretized variable |
+| `convhull_formulation` | `"disaggregated"` | `"sos2"` or `"facet"` for tighter relaxations |
+| `convhull_ebd` | `False` | Logarithmic Gray-code embedded SOS2 binaries |
+| `presolve_bt` | `True` | OBBT/FBBT bound tightening before the first MILP |
+| `obbt_at_root` | `True` | Strengthen variable bounds at the root |
+| `partition_method` | `"adaptive"` | How to pick which variable/interval to refine |
+
+A worked end-to-end example with a non-trivially nonconvex model and the
+tuning knobs above is in `docs/notebooks/amp_global_minlp.ipynb`.
+
 ### AMP Test Suites
 
 Routine AMP development uses a fast default regression battery. The fast

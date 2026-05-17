@@ -16,6 +16,7 @@ parts:
   - caption: "Tutorials \u2014 Solver Backends"
     chapters:
       - file: notebooks/tutorial_oa
+      - file: notebooks/amp_global_minlp
       - file: notebooks/tutorial_solver_jax_ipm
       - file: notebooks/tutorial_solver_ripopt
       - file: notebooks/tutorial_ripopt_sipopt
